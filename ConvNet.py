@@ -25,14 +25,7 @@ def load_data(filename):
         train_set, valid_set, test_set = pickle.load(handle, encoding='latin1')
 
     def shared_dataset(data_xy, borrow=True):
-        """ Function that loads the dataset into shared variables
 
-        The reason we store our dataset in shared variables is to allow
-        Theano to copy it into the GPU memory (when code is run on GPU).
-        Since copying data into the GPU is slow, copying a minibatch everytime
-        is needed (the default behaviour if the data is not in a shared
-        variable) would lead to a large decrease in performance.
-        """
         data_x, data_y = data_xy
         shared_x = theano.shared(np.asarray(data_x,
                                                dtype=theano.config.floatX),
@@ -40,13 +33,7 @@ def load_data(filename):
         shared_y = theano.shared(np.asarray(data_y,
                                                dtype=theano.config.floatX),
                                  borrow=borrow)
-        # When storing data on the GPU it has to be stored as floats
-        # therefore we will store the labels as ``floatX`` as well
-        # (``shared_y`` does exactly that). But during our computations
-        # we need them as ints (we use labels as index, and if they are
-        # floats it doesn't make sense) therefore instead of returning
-        # ``shared_y`` we will have to cast it to int. This little hack
-        # lets ous get around this issue
+
         return shared_x, T.cast(shared_y, 'int32')
 
     test_set_x, test_set_y = shared_dataset(test_set)
@@ -56,24 +43,6 @@ def load_data(filename):
     rval = [(train_set_x, train_set_y), (valid_set_x, valid_set_y),
             (test_set_x, test_set_y)]
     return rval
-
-def make_shared(batch_x, batch_y, name, normalize, normalize_thresh=1.0,turn_bw=False):
-    '''' Load data into shared variables '''
-    if turn_bw:
-        dims = batch_x.shape[1]
-        bw_data = 0.2989*batch_x[:,0:dims/3] + 0.5870 * batch_x[:,dims/3:(2*dims)/3] + 0.1140 * batch_x[:,(dims*2)/3:dims]
-        batch_x = bw_data
-
-    if not normalize:
-        x_shared = theano.shared(batch_x, name + '_x_pkl')
-    else:
-        x_shared = theano.shared(batch_x, name + '_x_pkl')/normalize_thresh
-    max_val = np.max(x_shared.eval())
-    assert 0.004<=max_val<=1.
-    y_shared = T.cast(theano.shared(batch_y.astype(theano.config.floatX), name + '_y_pkl'), 'int32')
-    size = batch_x.shape[0]
-
-    return x_shared, y_shared
 
 def load_cifar_10():
     train_names = ['cifar_10_data_batch_1','cifar_10_data_batch_2','cifar_10_data_batch_3','cifar_10_data_batch_4']
@@ -88,15 +57,27 @@ def load_cifar_10():
         data_x.extend(dict.get('data'))
         data_y.extend(dict.get('labels'))
 
-    train_x,train_y = make_shared(np.asarray(data_x,dtype=theano.config.floatX),np.asarray(data_y,theano.config.floatX),'train',True, 255.)
+    def shared_dataset(data_xy, borrow=True):
+
+        data_x, data_y = data_xy
+        shared_x = theano.shared(np.asarray(data_x,
+                                               dtype=theano.config.floatX)/255.,
+                                 borrow=borrow)
+        shared_y = theano.shared(np.asarray(data_y,
+                                               dtype=theano.config.floatX),
+                                 borrow=borrow)
+
+        return shared_x, T.cast(shared_y, 'int32')
+
+    train_x,train_y = shared_dataset([data_x,data_y])
 
     f = open('data' + os.sep +valid_name, 'rb')
     dict = pickle.load(f,encoding='latin1')
-    valid_x,valid_y = make_shared(np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX),'valid',True, 255.)
+    valid_x,valid_y = shared_dataset([np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
 
     f = open('data' + os.sep +test_name, 'rb')
     dict = pickle.load(f,encoding='latin1')
-    test_x,test_y = make_shared(np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX),'test',True, 255.)
+    test_x,test_y = shared_dataset([np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
 
     f.close()
 
@@ -220,8 +201,8 @@ def eval_conv_net():
     )
     print('Theano Functions defined ...')
     n_epochs = 25
-    n_train_batches = int(train_set_x.eval().shape[0]/batch_size)
-    n_test_batches = int(test_set_x.eval().shape[0]/batch_size)
+    n_train_batches = int(train_set_x.get_value().shape[0]/batch_size)
+    n_test_batches = int(test_set_x.get_value().shape[0]/batch_size)
 
     for epoch in range(n_epochs):
         print('Epoch ',epoch)
