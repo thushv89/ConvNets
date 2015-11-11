@@ -21,9 +21,8 @@ class ConvPoolLayer(object):
         W_bound = np.sqrt(6./(fan_in + fan_out))
 
         self.W = theano.shared(np.asarray(
-    rng.uniform( low=-1.0/W_bound, high= 1./W_bound,
-                 size=filter_shape),
-    dtype=theano.config.floatX),name='W',borrow=True)
+                    rng.uniform( low=-1.0/W_bound, high= 1./W_bound,
+                    size=filter_shape), dtype=theano.config.floatX),name='W',borrow=True)
 
         b_values = np.zeros((filter_shape[0],),dtype=theano.config.floatX)
         self.b = theano.shared(value=b_values, borrow=True)
