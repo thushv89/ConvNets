@@ -136,11 +136,11 @@ def eval_conv_net():
 
     # kernel size refers to the number of feature maps in a given layer
     # 1st one being number of channels in the image
-    conv_activation = 'maxout'
+    conv_activation = 'relu'
 
-    nkerns=[3,1, 1, 1, 1]
-    nkerns_maxout=[3,1, 1, 1, 1]
-    fulcon_layer_sizes = [1024,1024,1024]
+    nkerns=[3, 64, 64, 64]
+    nkerns_maxout=[3,1, 1, 1]
+    fulcon_layer_sizes = [512]
     n_conv_layers = len(nkerns)-1
     n_fulcon_layers = len(fulcon_layer_sizes)
 
@@ -149,7 +149,7 @@ def eval_conv_net():
     x = T.matrix('x')
     y = T.ivector('y')
     batch_size = 100
-    learning_rate = 0.2
+    learning_rate = 0.01
     pooling = True
     img_w = 32 # input image width
     img_h = 32 # input image height
