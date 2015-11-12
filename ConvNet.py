@@ -138,7 +138,7 @@ def eval_conv_net():
     # 1st one being number of channels in the image
     conv_activation = 'maxout'
 
-    nkerns=[3,64, 64, 64, 64]
+    nkerns=[3,1, 1, 1, 1]
     nkerns_maxout=[3,1, 1, 1, 1]
     fulcon_layer_sizes = [1024,1024,1024]
     n_conv_layers = len(nkerns)-1

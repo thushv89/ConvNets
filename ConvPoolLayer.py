@@ -38,7 +38,7 @@ class ConvPoolLayer(object):
         return T.switch(x<0, 0., x)
 
     def maxout(self,x):
-        return T.tanh(T.max(x,axis=1).dimshuffle(0,'x',1,2))
+        return T.max(T.tanh(x),axis=1).dimshuffle(0,'x',1,2)
 
     def process(self,input):
 
