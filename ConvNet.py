@@ -107,28 +107,54 @@ def calc_conv_and_pool_params(in_w,in_h,in_ch,fil_w,fil_h, pool_w, pool_h):
 
     return [out_w,out_h]
 
+def calc_chained_out_shape(layer,img_w,img_h,filters, pools,pooling=True):
+
+    fil_count_w = img_w
+    fil_count_h = img_h
+
+    out_w = fil_count_w
+    out_h = fil_count_h
+
+    #if i<0
+    for i in range(layer+1):
+        # number of filters per feature map after convolution
+        fil_count_w = out_w - filters[i][0] + 1
+        fil_count_h = out_h - filters[i][0] + 1
+
+        # number of filters per feature map after max pooling
+        if pooling:
+            out_w = int(fil_count_w/pools[i][0])
+            out_h = int(fil_count_h/pools[i][0])
+        else:
+            out_w = fil_count_w
+            out_h = fil_count_h
+
+    return out_w,out_h
 
 def eval_conv_net():
     rng = np.random.RandomState(23455)
 
-    # kernel size refers to the number of feature maps in a given layer?
-    nkerns=[40, 50, 50]
-    full_conn_layer_sizes = [1024,1024,1024]
+    # kernel size refers to the number of feature maps in a given layer
+    # 1st one being number of channels in the image
+    nkerns=[3,128, 64, 64]
+    fulcon_layer_sizes = [512,512,512]
+    n_conv_layers = len(nkerns)-1
+    n_fulcon_layers = len(fulcon_layer_sizes)
+
     index = T.lscalar()
     x = T.matrix('x')
     y = T.ivector('y')
     batch_size = 100
     learning_rate = 0.25
+    pooling = False
+    img_w = 32 # input image width
+    img_h = 32 # input image height
 
-    in_w = 32 # input image width
-    in_h = 32 # input image height
-    in_ch = 3 # input image channels
+    # filter width and height
+    filters = [(5,5),(5,5),(5,5)]
 
-    fil_w = 5
-    fil_h = 5
-
-    pool_w = 2
-    pool_h = 2
+    # pool width and height
+    pools = [(2,2),(2,2),(1,1)]
 
     #datasets = load_data('data' + os.sep + 'mnist.pkl' )
     datasets = load_cifar_10()
@@ -137,52 +163,72 @@ def eval_conv_net():
     test_set_x, test_set_y = datasets[2]
 
     print('Building the model ...')
+    print('Pooling: ',pooling)
+    print('Image(Channels x Width x Height): ',nkerns[0],'x',img_w,'x',img_h)
+    layer0_input = x.reshape((batch_size,nkerns[0],img_w,img_h))
+    in_shapes = [(img_w,img_h)]
+    in_shapes.extend([calc_chained_out_shape(i,img_w,img_h,filters,pools,pooling) for i in range(n_conv_layers)])
 
-    layer0_input = x.reshape((batch_size,in_ch,in_w,in_h))
+    print('Convolutional layers')
 
-    #test_img = train_set_x.eval().reshape((-1,in_ch,in_w,in_h))[132,:,:,:]
-    #create_image_from_vector(test_img,'cifar-10')
-    #overlap offest for filters is 1
-    layer0 = ConvPoolLayer(rng,
-                           input=layer0_input,
-                           image_shape=(batch_size,in_ch,in_w,in_h),
-                           filter_shape=(nkerns[0],in_ch,fil_w,fil_h),
-                           poolsize=(pool_w,pool_h))
-
-    l0_out_w,l0_out_h = calc_conv_and_pool_params(in_w,in_h,in_ch,fil_w,fil_h,pool_w,pool_h)
-
-    layer1 = ConvPoolLayer(rng,
-                           input=layer0.output,
-                           image_shape=(batch_size,nkerns[0],l0_out_w,l0_out_h),
-                           filter_shape=(nkerns[1], nkerns[0], fil_w, fil_h),
-                           poolsize=(pool_w,pool_h)
+    #convolution / max-pooling layers
+    conv_layers = [ConvPoolLayer(rng,
+                           image_shape=(batch_size,nkerns[i],in_shapes[i][0],in_shapes[i][1]),
+                           filter_shape=(nkerns[i+1], nkerns[i], filters[i][0], filters[i][1]),
+                           poolsize=(pools[i][0],pools[i][1]),pooling=pooling
                            )
+                   for i in range(n_conv_layers)]
 
-    l1_out_w,l1_out_h = calc_conv_and_pool_params(l0_out_w,l0_out_h,in_ch,fil_w,fil_h,pool_w,pool_h)
+    # set the input
+    for i,layer in enumerate(conv_layers):
+        if i==0:
+            input = layer0_input
+        else:
+            input = conv_layers[i-1].output
+        layer.process(input)
 
-    layer2 = ConvPoolLayer(rng,
-                           input=layer1.output,
-                           image_shape=(batch_size,nkerns[1],l1_out_w,l1_out_h),
-                           filter_shape=(nkerns[2], nkerns[1], fil_w, fil_h),
-                           poolsize=(1,1)
-                           )
+    print('Convolution Layer Info ...')
+    check_model_io = [theano.function(
+        [],
+        [conv_layers[layer_idx].input.shape,conv_layers[layer_idx].output.shape],
+        givens={
+            x: train_set_x[0 * batch_size: 1 * batch_size]
+        },
+        on_unused_input='warn'
+    ) for layer_idx in range(n_conv_layers)]
 
-    l2_out_w, l2_out_h = calc_conv_and_pool_params(l1_out_w,l1_out_h,in_ch,fil_w,fil_h,1,1)
+    for i_conv in range(n_conv_layers):
+        info = check_model_io[i_conv]()
+        print('\tConvolutional Layer ',i_conv)
+        print('\t\tInput: ',info[0])
+        print('\t\tOutput: ',info[1])
 
-    layer3_input = layer2.output.flatten(2)
+    print('\nConvolutional layers created with Max-Pooling ...')
 
-    layer3 = HiddenLayer(rng,input=layer3_input,n_in=nkerns[2]* l2_out_w * l2_out_h,n_out=full_conn_layer_sizes[0],activation=T.tanh)
-    layer4 = HiddenLayer(rng,input=layer3.output,n_in=full_conn_layer_sizes[0],n_out=full_conn_layer_sizes[1],activation=T.tanh)
-    layer5 = HiddenLayer(rng,input=layer4.output,n_in=full_conn_layer_sizes[1],n_out=full_conn_layer_sizes[2],activation=T.tanh)
+    fulcon_start_in = conv_layers[-1].output.flatten(2)
 
-    layer6 = LogisticRegression(input=layer5.output, n_in=full_conn_layer_sizes[2], n_out=10)
+    fulcon_layers = [
+        HiddenLayer(rng,n_in=fulcon_layer_sizes[i-1],n_out=fulcon_layer_sizes[i],activation=T.tanh) if i>0 else
+        HiddenLayer(rng,n_in=nkerns[2]* in_shapes[-1][0] * in_shapes[-1][1],n_out=fulcon_layer_sizes[0],activation=T.tanh)
+        for i in range(n_fulcon_layers)
+    ]
 
-    cost = layer6.negative_log_likelihood(y)
+    for i,layer in enumerate(fulcon_layers):
+        if i==0:
+            input = fulcon_start_in
+        else:
+            input = fulcon_layers[i-1].output
+        layer.process(input)
+    print('Fully connected hidden layers created ...')
+
+    classif_layer = LogisticRegression(input=fulcon_layers[-1].output, n_in=fulcon_layer_sizes[-1], n_out=10)
+
+    cost = classif_layer.negative_log_likelihood(y)
 
     print('Inputs loaded ...')
     test_model = theano.function(
         [index],
-        layer6.errors(y),
+        classif_layer.errors(y),
         givens={
             x: test_set_x[index * batch_size: (index + 1) * batch_size],
             y: test_set_y[index * batch_size: (index + 1) * batch_size]
@@ -191,7 +237,7 @@ def eval_conv_net():
 
     validate_model = theano.function(
         [index],
-        layer6.errors(y),
+        classif_layer.errors(y),
         givens={
             x: valid_set_x[index * batch_size: (index + 1) * batch_size],
             y: valid_set_y[index * batch_size: (index + 1) * batch_size]
@@ -199,7 +245,9 @@ def eval_conv_net():
     )
 
     # create a list of all model parameters to be fit by gradient descent
-    params = layer6.params + layer5.params + layer4.params + layer3.params + layer2.params + layer1.params + layer0.params
+    params = []
+    params += [l.params[0] for l in fulcon_layers] + [l.params[1] for l in fulcon_layers]
+    params += [l.params[0] for l in conv_layers] + [l.params[1] for l in conv_layers]
 
     # create a list of gradients for all model parameters
     grads = T.grad(cost, params)
@@ -228,15 +276,6 @@ def eval_conv_net():
     n_train_batches = int(train_set_x.get_value().shape[0]/batch_size)
     n_test_batches = int(test_set_x.get_value().shape[0]/batch_size)
 
-    check_model_io = theano.function(
-        [index],
-        [layer0.input.shape,layer0.output.shape,layer1.input.shape,layer1.output.shape],
-        givens={
-            x: train_set_x[index * batch_size: (index + 1) * batch_size],
-            y: train_set_y[index * batch_size: (index + 1) * batch_size]
-        },
-        on_unused_input='warn'
-    )
 
     for epoch in range(n_epochs):
         print('Epoch ',epoch)

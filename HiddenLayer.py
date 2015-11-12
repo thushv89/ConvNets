@@ -12,7 +12,7 @@ import theano.tensor as T
 
 # start-snippet-1
 class HiddenLayer(object):
-    def __init__(self, rng, input, n_in, n_out, W=None, b=None,
+    def __init__(self, rng, n_in, n_out, W=None, b=None,
                  activation=T.tanh):
         """
         Typical hidden layer of a MLP: units are fully-connected and have
@@ -39,7 +39,8 @@ class HiddenLayer(object):
         :param activation: Non linearity to be applied in the hidden
                            layer
         """
-        self.input = input
+        self.input,self.output = None,None
+        self.activation = activation
         # end-snippet-1
 
         # `W` is initialized with `W_values` which is uniformely sampled
@@ -69,16 +70,18 @@ class HiddenLayer(object):
             W = theano.shared(value=W_values, name='W', borrow=True)
 
         if b is None:
-            b_values = numpy.zeros((n_out,), dtype=theano.config.floatX)
+            b_values = numpy.asarray(numpy.random.rand(n_out,)*0.1,dtype=theano.config.floatX)
             b = theano.shared(value=b_values, name='b', borrow=True)
 
         self.W = W
         self.b = b
 
-        lin_output = T.dot(input, self.W) + self.b
-        self.output = (
-            lin_output if activation is None
-            else activation(lin_output)
-        )
         # parameters of the model
         self.params = [self.W, self.b]
+
+    def process(self,input):
+        lin_output = T.dot(input, self.W) + self.b
+        self.output = (
+            lin_output if self.activation is None
+            else self.activation(lin_output)
+        )
