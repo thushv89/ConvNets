@@ -73,11 +73,11 @@ def load_cifar_10():
 
     f = open('data' + os.sep +valid_name, 'rb')
     dict = pickle.load(f,encoding='latin1')
-    valid_x,valid_y = shared_dataset([np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
+    valid_x,valid_y = shared_dataset([np.asarray(dict.get('data')/255.,dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
 
     f = open('data' + os.sep +test_name, 'rb')
     dict = pickle.load(f,encoding='latin1')
-    test_x,test_y = shared_dataset([np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
+    test_x,test_y = shared_dataset([np.asarray(dict.get('data')/255.,dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
 
     f.close()
 
@@ -136,8 +136,8 @@ def eval_conv_net():
 
     # kernel size refers to the number of feature maps in a given layer
     # 1st one being number of channels in the image
-    nkerns=[3,64, 64, 64]
-    fulcon_layer_sizes = [512,512,512]
+    nkerns=[3,64, 64, 64, 64]
+    fulcon_layer_sizes = [1024,1024,1024]
     n_conv_layers = len(nkerns)-1
     n_fulcon_layers = len(fulcon_layer_sizes)
 
@@ -145,16 +145,16 @@ def eval_conv_net():
     x = T.matrix('x')
     y = T.ivector('y')
     batch_size = 100
-    learning_rate = 0.75
+    learning_rate = 0.2
     pooling = True
     img_w = 32 # input image width
     img_h = 32 # input image height
     labels = 10
     # filter width and height
-    filters = [(5,5),(3,3),(3,3)]
+    filters = [(5,5),(3,3),(3,3),(1,1)]
 
     # pool width and height
-    pools = [(2,2),(2,2),(1,1)]
+    pools = [(2,2),(2,2),(1,1),(1,1)]
 
     #datasets = load_data('data' + os.sep + 'mnist.pkl' )
     datasets = load_cifar_10()
@@ -164,6 +164,7 @@ def eval_conv_net():
 
     print('Building the model ...')
     print('Pooling: ',pooling,' ',pools)
+    print('Learning Rate: ', learning_rate)
     print('Image(Channels x Width x Height): ',nkerns[0],'x',img_w,'x',img_h)
     layer0_input = x.reshape((batch_size,nkerns[0],img_w,img_h))
     in_shapes = [(img_w,img_h)]
@@ -209,7 +210,7 @@ def eval_conv_net():
 
     fulcon_layers = [
         HiddenLayer(rng,n_in=fulcon_layer_sizes[i-1],n_out=fulcon_layer_sizes[i],activation=T.tanh) if i>0 else
-        HiddenLayer(rng,n_in=nkerns[2]* in_shapes[-1][0] * in_shapes[-1][1],n_out=fulcon_layer_sizes[0],activation=T.tanh)
+        HiddenLayer(rng,n_in=nkerns[-1]* in_shapes[-1][0] * in_shapes[-1][1],n_out=fulcon_layer_sizes[0],activation=T.tanh)
         for i in range(n_fulcon_layers)
     ]
 
@@ -284,7 +285,7 @@ def eval_conv_net():
         for minibatch_index in range(n_train_batches):
             cost_ij= train_model(minibatch_index)
             print('\t Finished mini batch', minibatch_index,' Cost: ',cost_ij)
-            if (minibatch_index+1)%25==0:
+            if (minibatch_index+1)%100==0:
                 v_losses = [validate_model(v_mini_idx) for v_mini_idx in range(n_valid_batches)]
                 print('\t Valid Error: ',np.mean(v_losses)*100.)
 

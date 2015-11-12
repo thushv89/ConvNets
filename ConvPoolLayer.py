@@ -33,7 +33,8 @@ class ConvPoolLayer(object):
 
         self.params = [self.W, self.b]
 
-
+    def relu(self,x):
+        return T.switch(x<0, 0., x)
 
     def process(self,input):
 
