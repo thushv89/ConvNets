@@ -29,7 +29,7 @@ class ConvPoolLayer(object):
                     size=filter_shape), dtype=theano.config.floatX),name='W',borrow=True)
 
         b_values = np.asarray(np.random.rand(filter_shape[0],)*0.1,dtype=theano.config.floatX)
-        self.b = theano.shared(value=b_values, borrow=True)
+        self.b = theano.shared(value=b_values, borrow=True,name='b')
 
         self.params = [self.W, self.b]
 

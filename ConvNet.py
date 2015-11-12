@@ -136,7 +136,7 @@ def eval_conv_net():
 
     # kernel size refers to the number of feature maps in a given layer
     # 1st one being number of channels in the image
-    nkerns=[3,128, 64, 64]
+    nkerns=[3,64, 64, 64]
     fulcon_layer_sizes = [512,512,512]
     n_conv_layers = len(nkerns)-1
     n_fulcon_layers = len(fulcon_layer_sizes)
@@ -145,13 +145,13 @@ def eval_conv_net():
     x = T.matrix('x')
     y = T.ivector('y')
     batch_size = 100
-    learning_rate = 0.25
-    pooling = False
+    learning_rate = 0.75
+    pooling = True
     img_w = 32 # input image width
     img_h = 32 # input image height
-
+    labels = 10
     # filter width and height
-    filters = [(5,5),(5,5),(5,5)]
+    filters = [(5,5),(3,3),(3,3)]
 
     # pool width and height
     pools = [(2,2),(2,2),(1,1)]
@@ -163,7 +163,7 @@ def eval_conv_net():
     test_set_x, test_set_y = datasets[2]
 
     print('Building the model ...')
-    print('Pooling: ',pooling)
+    print('Pooling: ',pooling,' ',pools)
     print('Image(Channels x Width x Height): ',nkerns[0],'x',img_w,'x',img_h)
     layer0_input = x.reshape((batch_size,nkerns[0],img_w,img_h))
     in_shapes = [(img_w,img_h)]
@@ -187,7 +187,7 @@ def eval_conv_net():
             input = conv_layers[i-1].output
         layer.process(input)
 
-    print('Convolution Layer Info ...')
+    print('\nConvolution Layer Info ...')
     check_model_io = [theano.function(
         [],
         [conv_layers[layer_idx].input.shape,conv_layers[layer_idx].output.shape],
@@ -219,9 +219,10 @@ def eval_conv_net():
         else:
             input = fulcon_layers[i-1].output
         layer.process(input)
+
     print('Fully connected hidden layers created ...')
 
-    classif_layer = LogisticRegression(input=fulcon_layers[-1].output, n_in=fulcon_layer_sizes[-1], n_out=10)
+    classif_layer = LogisticRegression(input=fulcon_layers[-1].output, n_in=fulcon_layer_sizes[-1], n_out=labels)
 
     cost = classif_layer.negative_log_likelihood(y)
 
@@ -248,6 +249,7 @@ def eval_conv_net():
     params = []
     params += [l.params[0] for l in fulcon_layers] + [l.params[1] for l in fulcon_layers]
     params += [l.params[0] for l in conv_layers] + [l.params[1] for l in conv_layers]
+    params += classif_layer.params
 
     # create a list of gradients for all model parameters
     grads = T.grad(cost, params)
@@ -274,15 +276,17 @@ def eval_conv_net():
     print('Theano Functions defined ...')
     n_epochs = 25
     n_train_batches = int(train_set_x.get_value().shape[0]/batch_size)
+    n_valid_batches = int(valid_set_x.get_value().shape[0]/batch_size)
     n_test_batches = int(test_set_x.get_value().shape[0]/batch_size)
-
 
     for epoch in range(n_epochs):
         print('Epoch ',epoch)
         for minibatch_index in range(n_train_batches):
-            print('\t Processing mini batch', minibatch_index)
             cost_ij= train_model(minibatch_index)
-
+            print('\t Finished mini batch', minibatch_index,' Cost: ',cost_ij)
+            if (minibatch_index+1)%25==0:
+                v_losses = [validate_model(v_mini_idx) for v_mini_idx in range(n_valid_batches)]
+                print('\t Valid Error: ',np.mean(v_losses)*100.)
 
         # test it on the test set
         test_losses = [test_model(i) for i in range(n_test_batches)]
