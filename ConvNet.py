@@ -73,11 +73,11 @@ def load_cifar_10():
 
     f = open('data' + os.sep +valid_name, 'rb')
     dict = pickle.load(f,encoding='latin1')
-    valid_x,valid_y = shared_dataset([np.asarray(dict.get('data')/255.,dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
+    valid_x,valid_y = shared_dataset([np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
 
     f = open('data' + os.sep +test_name, 'rb')
     dict = pickle.load(f,encoding='latin1')
-    test_x,test_y = shared_dataset([np.asarray(dict.get('data')/255.,dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
+    test_x,test_y = shared_dataset([np.asarray(dict.get('data'),dtype=theano.config.floatX),np.asarray(dict.get('labels'),dtype=theano.config.floatX)])
 
     f.close()
 
@@ -136,10 +136,14 @@ def eval_conv_net():
 
     # kernel size refers to the number of feature maps in a given layer
     # 1st one being number of channels in the image
+    conv_activation = 'maxout'
+
     nkerns=[3,64, 64, 64, 64]
+    nkerns_maxout=[3,1, 1, 1, 1]
     fulcon_layer_sizes = [1024,1024,1024]
     n_conv_layers = len(nkerns)-1
     n_fulcon_layers = len(fulcon_layer_sizes)
+
 
     index = T.lscalar()
     x = T.matrix('x')
@@ -173,12 +177,19 @@ def eval_conv_net():
     print('Convolutional layers')
 
     #convolution / max-pooling layers
-    conv_layers = [ConvPoolLayer(rng,
-                           image_shape=(batch_size,nkerns[i],in_shapes[i][0],in_shapes[i][1]),
-                           filter_shape=(nkerns[i+1], nkerns[i], filters[i][0], filters[i][1]),
-                           poolsize=(pools[i][0],pools[i][1]),pooling=pooling
-                           )
-                   for i in range(n_conv_layers)]
+    if not  conv_activation=='maxout':
+        conv_layers = [ConvPoolLayer(rng,
+                               image_shape=(batch_size,nkerns[i],in_shapes[i][0],in_shapes[i][1]),
+                               filter_shape=(nkerns[i+1], nkerns[i], filters[i][0], filters[i][1]),
+                               poolsize=(pools[i][0],pools[i][1]),pooling=pooling,activation=conv_activation)
+                       for i in range(n_conv_layers)]
+    else:
+        # for maxout the number of input kernels will always be 1 since we're only taking the maximum feature map
+        conv_layers = [ConvPoolLayer(rng,
+                               image_shape=(batch_size,nkerns_maxout[i],in_shapes[i][0],in_shapes[i][1]),
+                               filter_shape=(nkerns[i+1], nkerns_maxout[i], filters[i][0], filters[i][1]),
+                               poolsize=(pools[i][0],pools[i][1]),pooling=pooling,activation=conv_activation)
+                       for i in range(n_conv_layers)]
 
     # set the input
     for i,layer in enumerate(conv_layers):
@@ -210,7 +221,10 @@ def eval_conv_net():
 
     fulcon_layers = [
         HiddenLayer(rng,n_in=fulcon_layer_sizes[i-1],n_out=fulcon_layer_sizes[i],activation=T.tanh) if i>0 else
-        HiddenLayer(rng,n_in=nkerns[-1]* in_shapes[-1][0] * in_shapes[-1][1],n_out=fulcon_layer_sizes[0],activation=T.tanh)
+        HiddenLayer(
+            rng,
+            n_in=(nkerns[-1] if not conv_activation=='maxout' else nkerns_maxout[-1])* in_shapes[-1][0] * in_shapes[-1][1], #if it is maxout there will be only 1 kernel
+            n_out=fulcon_layer_sizes[0],activation=T.tanh)
         for i in range(n_fulcon_layers)
     ]
 
