@@ -22,7 +22,7 @@ def load_data(filename):
     '''
 
     with open(filename, 'rb') as handle:
-        train_set, valid_set, test_set = pickle.load(handle, encoding='latin1')
+        train_set, valid_set, test_set = pickle.load(handle)
 
     def shared_dataset(data_xy, borrow=True):
 
@@ -140,7 +140,7 @@ def eval_conv_net():
 
     nkerns=[3, 64, 64, 64]
     nkerns_maxout=[3,1, 1, 1]
-    fulcon_layer_sizes = [512]
+    fulcon_layer_sizes = [512,256]
     n_conv_layers = len(nkerns)-1
     n_fulcon_layers = len(fulcon_layer_sizes)
 
@@ -155,10 +155,10 @@ def eval_conv_net():
     img_h = 32 # input image height
     labels = 10
     # filter width and height
-    filters = [(5,5),(3,3),(3,3),(1,1)]
+    filters = [(5,5),(3,3),(3,3),(3,3),(1,1)]
 
     # pool width and height
-    pools = [(2,2),(2,2),(1,1),(1,1)]
+    pools = [(1,1),(1,1),(1,1),(2,2),(2,2)]
 
     #datasets = load_data('data' + os.sep + 'mnist.pkl' )
     datasets = load_cifar_10()
