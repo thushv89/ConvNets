@@ -32,6 +32,7 @@ class ContinuousState(object):
         console.setLevel(logging_level)
         self.rl_logger.addHandler(console)
 
+        self.actions = ['add,C_K5x5x16_S3x3,P_K5x5_S3x3',]
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
         self.prev_state = restore_data['prev_state']
