@@ -57,6 +57,7 @@ iconv_ops = ['fulcon_out'] #ops will give the order of layers
 hyparams = {
     'fulcon_out':{'in':image_size*image_size*num_channels, 'out':num_labels, 'whd':[image_size,image_size,num_channels]}
 }
+conv_depths = {}
 weights,biases = {},{}
 
 # it's not wise to include always changing values such as (layer_count) in the id
@@ -132,7 +133,7 @@ def update_fulcon_out(to_w,to_h,to_d):
     weights[get_layer_id('fulcon_out')] = new_weights
 
 
-def add_conv_layer(w,stride):
+def add_conv_layer(w,stride,conv_id):
     '''
     Specify the tensor variables and hyperparameters for a convolutional neuron layer. And update conv_ops list
     :param w: Weights of the receptive field
@@ -141,7 +142,7 @@ def add_conv_layer(w,stride):
     '''
     global layer_count,weights,biases,hyparams
 
-    conv_id = get_layer_id('conv_'+str(layer_count))
+
     hyparams[conv_id]={'weights':w,'stride':stride,'padding':'SAME'}
     weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
     biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
@@ -152,9 +153,9 @@ def add_conv_layer(w,stride):
     iconv_ops.append(conv_id)
     iconv_ops.append(out_id)
 
-    layer_count += 1
 
-def add_pool_layer(ksize,stride,type):
+
+def add_pool_layer(ksize,stride,type,pool_id):
     '''
     Specify the hyperparameters for a pooling layer. And update conv_ops
     :param ksize: Kernel size
@@ -163,13 +164,11 @@ def add_pool_layer(ksize,stride,type):
     :return: None
     '''
     global layer_count,hyparams
-    pool_id = get_layer_id('pool_'+str(layer_count))
     hyparams[pool_id] = {'type':type,'kernel':ksize,'stride':stride,'padding':'SAME'}
 
     out_id = iconv_ops.pop(-1)
     iconv_ops.append(pool_id)
     iconv_ops.append(out_id)
-    layer_count += 1
 
 def remove_layer():
     '''
@@ -282,6 +281,35 @@ def accuracy(predictions, labels):
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
 
+def get_op_from_action(action):
+    '''
+    converts a given action (add,C_K5x5x64_S1x1)
+    to a tuple of operation,hyperparameters
+    :param action: action to be converted to an op
+    :return: a Tuple of (op_type, kernel, stride)
+    '''
+    op_tokens = action.split(',')[0]
+    op = ''
+    if 'C_' in action:
+        #add,C_K5x5x64_S1x1
+        conv_tokens = op_tokens.split('_')
+        for tok in conv_tokens:
+            if 'K' in tok:
+                kernel=[int(k) for k in tok[1:].split('x')]
+            elif 'S' in tok:
+                stride=[int(k) for k in tok[1:].split('x')]
+        op = ('conv',kernel,stride)
+    elif 'P_' in action:
+        #add,P_K5x5_S3x3
+        pool_tokens = op_tokens.split('_')
+        for tok in pool_tokens:
+            if 'K' in tok:
+                kernel=[int(k) for k in tok[1:].split('x')]
+            elif 'S' in tok:
+                stride=[int(k) for k in tok[1:].split('x')]
+        op = ('pool',kernel,stride)
+
+    return op
 if __name__=='__main__':
     global logger
 
@@ -346,6 +374,7 @@ if __name__=='__main__':
 
         start_time = time.clock()
         for batch_id in range(ceil(train_size//batch_size)-1):
+
             time_stamp = batch_id
             batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
@@ -365,7 +394,23 @@ if __name__=='__main__':
             valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
             time_log.append(end_time-start_time)
 
-            if batch_id>0 and batch_id % policy_interval == 0:
+
+            # every 10000 batch, within the next 500 batches we assess the best actions
+            if batch_id>0 and 0 <= batch_id % 100*policy_interval <= 500:
+                if batch_id % 5 == 0:
+                    mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-5]):])
+                    param_count = get_parameter_count()
+                    duration = np.sum(time_log[np.max([0,len(time_log)-5]):])
+                    data = {'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count}
+                    action_picker.update_policy(time_stamp,data)
+
+                if batch_id % 100*policy_interval == 500:
+                    predicted_actions = action_picker.get_best_actions()
+                    # update the policy action space
+                    policy_learner.update_action_space(predicted_actions)
+
+            elif batch_id>0 and batch_id % policy_interval == 0:
+
 
                 print('Global step: %d'%global_step.eval())
                 print('Minibatch loss at step %d: %f' % (batch_id, l))
@@ -382,21 +427,36 @@ if __name__=='__main__':
                       (time_stamp,np.max([0,len(time_log)-(policy_interval//2)]),len(time_log),time_log)
                 )
 
-
                 data = {'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count}
-            # every 10000 batch, within the next 500 batches we assess the best actions
-            if batch_id>0 and 0 <= batch_id % 100*policy_interval < 500:
-                if batch_id % 5 == 0:
-                    mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-5]):])
-                    param_count = get_parameter_count()
-                    duration = np.sum(time_log[np.max([0,len(time_log)-5]):])
-                    action_picker.update_policy(time_stamp,{'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count})
+                action = policy_learner.update_policy(time_stamp,data)
+                op_info = get_op_from_action(action)
+                if op_info[0]=='conv':
+                    conv_id = get_layer_id('conv_'+str(layer_count))
+                    layer_count += 1
+                    if 'conv' not in iconv_ops:
+                        conv_depths[conv_id]={'in':num_channels,'out':op_info[1][2]}
+                    else:
+                        #find the last conv_id currently in conv_ops
+                        prev_conv_id = ''
+                        for op in iconv_ops:
+                            if 'conv' in op:
+                                prev_conv_id = op
 
-            elif batch_id>0 and batch_id % policy_interval == 0:
-                #
-                policy_learner.update_policy(time_stamp,{'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count})
+                        conv_depths[conv_id]={'in':conv_depths[prev_conv_id]['out'],'out':op_info[1][2]}
+
+                    w = [op_info[1][0],op_info[1][1],conv_depths[conv_id]['in'],conv_depths[conv_id]['out']]
+                    s = [1,op_info[2][0],op_info[2][1],1]
+                    add_conv_layer(w,s,conv_id)
+
+                elif op_info[0]=='pool':
+                    pool_id = get_layer_id('pool_'+str(layer_count))
+                    layer_count += 1
+                else:
+                    raise NotImplementedError
+                logits = get_logits(tf_dataset)
+
             else:
-                raise NotImplementedError
+                # don't do anything
 
             '''if batch_id == 101:
                 print('\n======================== Adding a convolutional layer ==========================')

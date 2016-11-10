@@ -41,7 +41,7 @@ class ActionPicker(object):
             'add,C_K5x5x16_S3x3','add,C_K5x5x64_S3x3','add,C_K5x5x16_S1x1','add,C_K5x5x64_S1x1',
             'add,C_K3x3x16_S3x3','add,C_K3x3x64_S3x3','add,C_K3x3x16_S1x1','add,C_K3x3x64_S1x1',
             'add,C_K1x1x16_S3x3','add,C_K1x1x64_S3x3','add,C_K1x1x16_S1x1','add,C_K1x1x64_S1x1',
-            'add_P_K5x5_S3x3','add_P_K5x5_S1x1','add_P_K2x2_S2x2','add_P_K2x2_S1x1','finetune','remove'
+            'add,P_K5x5_S3x3','add,P_K5x5_S1x1','add,P_K2x2_S2x2','add,P_K2x2_S1x1'
         ]
 
     def restore_policy(self,**restore_data):
@@ -77,6 +77,10 @@ class ActionPicker(object):
 
         self.local_time_stamp += 1
         self.rl_logger.info('\n')
+
+    def get_best_actions(self,count):
+        sorted_actions = sorted(self.q).reverse()
+        return sorted_actions[0:count]
 
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action
