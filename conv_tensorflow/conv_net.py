@@ -1,7 +1,7 @@
 # These are all the modules we'll be using later. Make sure you can import them
 # before proceeding further.
 from __future__ import print_function
-import numpy as np
+
 import tensorflow as tf
 from six.moves import cPickle as pickle
 from six.moves import range
@@ -438,7 +438,7 @@ def calc_loss(logits,labels):
     # Training computation.
     if include_l2_loss:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels)) + \
-               (beta/2)*tf.reduce_sum([tf.nn.l2_loss(w) if 'fulcon' in kw or 'cov' in kw else 0 for kw,w in weights.items()])
+               (beta/2)*tf.reduce_sum([tf.nn.l2_loss(w) if 'fulcon' in kw or 'conv' in kw else 0 for kw,w in weights.items()])
     else:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels))
 

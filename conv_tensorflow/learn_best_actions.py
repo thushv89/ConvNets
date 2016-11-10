@@ -19,10 +19,7 @@ class ContinuousState(object):
         self.params = params
         self.learning_rate = params['learning_rate']
         self.discount_rate = params['discount_rate']
-        self.eta_1 = params['eta_1'] # Q collection starts after this
-        self.eta_2 = params['eta_2'] # Evenly perform actions until this
-        self.gp_interval = params['gp_interval'] #GP calculating interval (10)
-        self.policy_intervel = params['policy_interval']
+
         self.q = {} #store Q values
         self.gps = {} #store gaussian curves
         self.rl_logger = logging.getLogger('Policy Logger')
@@ -36,7 +33,7 @@ class ContinuousState(object):
             'add,C_K5x5x16_S3x3','add,C_K5x5x64_S3x3','add,C_K5x5x16_S1x1','add,C_K5x5x64_S1x1',
             'add,C_K3x3x16_S3x3','add,C_K3x3x64_S3x3','add,C_K3x3x16_S1x1','add,C_K3x3x64_S1x1',
             'add,C_K1x1x16_S3x3','add,C_K1x1x64_S3x3','add,C_K1x1x16_S1x1','add,C_K1x1x64_S1x1',
-            'add_P_K5x5_S3x3','add_P_K5x5_S1x1','add_P_K2x2_S2x2','add_P_K2x2_S1x1'
+            'add_P_K5x5_S3x3','add_P_K5x5_S1x1','add_P_K2x2_S2x2','add_P_K2x2_S1x1','finetune','remove'
         ]
 
     def restore_policy(self,**restore_data):
@@ -56,34 +53,8 @@ class ContinuousState(object):
         time_cost = data['avg_time_cost']
         param_cost = data['param_cost']
 
-        # If we haven't completed eta_1 iterations, keep pooling
-        if global_step <=self.eta_1:
-            # do pool operation
-            return
 
-        # Calculate state
-        # architecture_similarity is calculated as follows.
-        # say you have two architectures
-        # C_k3x3x3x32_s1x1, P_k2x2_s1x1, C_k3x3x32x16_s2x2, P_k2x2_s2x2, F_1024, F_10
-        # C_k2x2x3x16_s1x1, P_k3x3_s1x1, F_1024, F_512, F_10
-        # Break C,P together and F separate. This gives
-        # [C_k3x3x3x32_s1x1, P_k2x2_s1x1, C_k3x3x32x16_s2x2, P_k2x2_s2x2]
-        # [C_k2x2x3x16_s1x1, P_k3x3_s1x1]
-        # [F_1024, F_10]
-        # [F_1024, F_512, F_10]
-        # Pad 0s C,P vector, so they have same length
-        # [C_k3x3x3x32_s1x1, P_k2x2_s1x1, C_k3x3x32x16_s2x2, P_k2x2_s2x2]
-        # [C_k2x2x3x16_s1x1, P_k3x3_s1x1, C_k0x0x0x0_s0x0, P_k0x0_s0x0]
-        # convert these to vectors following way
-        # [0.6*sqrt(3*3*3*32)-0.4(1*1),0.6*(3*3)-0.4*(1*1),...] <- For 1st CP Vector
-        # Convert this to a sum using moving avg (higher levels high weight)
-        # Currently focus only on CP vector ignore F
-        # Pad 0s, to end of F vector, so they have same length
-        # [F_1024, F_10, F_0]
-        # [F_1024, F_512, F_10]
-        # TODO: Convert to Vector
 
-        state = (data['error_t'], data['num_layers'],data['architecture_similarity'])
 
         err_diff = err_t - err_t_minus_1
         curr_err = err_t
