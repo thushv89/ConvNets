@@ -171,6 +171,16 @@ def add_pool_layer(ksize,stride,type):
     iconv_ops.append(out_id)
     layer_count += 1
 
+def remove_layer():
+    '''
+    Removes the last layer before the fulcon_out
+    We do not remove the hyperparameters or weights immediately. If the removed ones
+    are not used after a certain threshold, they will be removed
+    :return: id of the removed layer
+    '''
+    rm_op =  iconv_ops.pop(-2)
+    return rm_op
+
 def get_logits(dataset):
 
     print('Current set of operations: %s'%iconv_ops)
@@ -301,8 +311,12 @@ if __name__=='__main__':
          'policy_interval':policy_interval,'gp_interval':5*policy_interval,
          'eta_1':10*policy_interval,'eta_2':20*policy_interval}
     )
-    action_picker = learn_best_actions.
-    valid_accuracies = []
+    action_picker = learn_best_actions.ActionPicker({'learning_rate':0.5,'discount_rate':0.9})
+
+    valid_accuracy_log = []
+    time_log = []
+    param_log = []
+
     with tf.Session(graph=graph) as session:
 
         #global step is used to decay the learning rate
@@ -340,32 +354,51 @@ if __name__=='__main__':
             batch_valid_data = train_dataset[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :, :, :]
             batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
 
-
+            start_time = time.clock()
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
             _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
+            end_time = time.clock()
+
 
             valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
             valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
-            valid_accuracies.append(accuracy(valid_predictions[0],batch_valid_labels))
+            valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
+            time_log.append(end_time-start_time)
 
             if batch_id>0 and batch_id % policy_interval == 0:
-                end_time = time.clock()
+
                 print('Global step: %d'%global_step.eval())
                 print('Minibatch loss at step %d: %f' % (batch_id, l))
                 print('Learning rate: %.3f'%updated_lr)
                 print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
-                mean_valid_accuracy = np.mean(valid_accuracies[len(valid_accuracies)//2:])
-                print('%d Mean Valid accuracy (Latter half): %.1f%%' % (time_stamp,mean_valid_accuracy))
+                mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-(policy_interval//2)]):])
+                print('%d Mean Valid accuracy (Latter half)[%d:%d]: %.1f%%' %
+                      (time_stamp,np.max([0,len(valid_accuracy_log)-(policy_interval//2)]),len(valid_accuracy_log), mean_valid_accuracy)
+                      )
                 param_count = get_parameter_count()
                 print('%d Parameter count: %d'%(time_stamp,param_count))
-                duration = end_time-start_time
-                print('%d Time taken: %.3f'%(time_stamp,duration))
-                start_time = time.clock()
-                valid_accuracies = []
+                duration = np.sum(time_log[np.max([0,len(time_log)-(policy_interval//2)]):])
+                print('%d Time taken (Latter half)[%d:%d]: %.3f'%
+                      (time_stamp,np.max([0,len(time_log)-(policy_interval//2)]),len(time_log),time_log)
+                )
 
+
+                data = {'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count}
+            # every 10000 batch, within the next 500 batches we assess the best actions
+            if batch_id>0 and 0 <= batch_id % 100*policy_interval < 500:
+                if batch_id % 5 == 0:
+                    mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-5]):])
+                    param_count = get_parameter_count()
+                    duration = np.sum(time_log[np.max([0,len(time_log)-5]):])
+                    action_picker.update_policy(time_stamp,{'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count})
+
+            elif batch_id>0 and batch_id % policy_interval == 0:
+                #
                 policy_learner.update_policy(time_stamp,{'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count})
+            else:
+                raise NotImplementedError
 
-            if batch_id == 101:
+            '''if batch_id == 101:
                 print('\n======================== Adding a convolutional layer ==========================')
                 #pred = predict_with_logits(logits)
                 add_conv_layer([3,3,3,16],[1,1,1,1])
@@ -377,4 +410,4 @@ if __name__=='__main__':
                 logits = get_logits(tf_dataset)
                 print('====================================================================\n')
             if batch_id == 1001:
-                break
+                break'''
