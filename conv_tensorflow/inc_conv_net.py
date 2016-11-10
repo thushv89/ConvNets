@@ -9,6 +9,9 @@ from math import ceil,floor
 import load_data
 import logging
 import sys
+import time
+import qlearner
+import learn_best_actions
 
 logger = None
 logging_level = logging.INFO
@@ -248,6 +251,22 @@ def predict_with_dataset(dataset):
     prediction = tf.nn.softmax(get_logits(dataset))
     return prediction
 
+def get_parameter_count():
+    '''
+    Get the total number of parameters in the network
+    :return: total number of parametrs as an integer
+    '''
+    global weights
+    param_count = 0
+    for op in iconv_ops:
+        if 'conv' in op:
+            w_shape = weights[op].get_shape().as_list()
+            param_count += w_shape[0]*w_shape[1]*w_shape[2]*w_shape[3]
+        if 'fulcon' in op:
+            w_shape = weights[op].get_shape().as_list()
+            param_count += w_shape[0]*w_shape[1]
+
+    return param_count
 
 def accuracy(predictions, labels):
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
@@ -277,6 +296,13 @@ if __name__=='__main__':
 
     graph = tf.Graph()
 
+    policy_learner = qlearner.ContinuousState(
+        {'learning_rate':0.5,'discount_rate':0.9,
+         'policy_interval':policy_interval,'gp_interval':5*policy_interval,
+         'eta_1':10*policy_interval,'eta_2':20*policy_interval}
+    )
+    action_picker = learn_best_actions.
+    valid_accuracies = []
     with tf.Session(graph=graph) as session:
 
         #global step is used to decay the learning rate
@@ -287,7 +313,11 @@ if __name__=='__main__':
         tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
         tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-        init_iconvnet()
+        # Valid data
+        tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
+        tf_valid_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+
+        init_iconvnet() #initialize the initial conv net
 
         logits = get_logits(tf_dataset)
         loss = calc_loss(logits,tf_labels)
@@ -295,19 +325,46 @@ if __name__=='__main__':
         optimize = optimize_func(loss,global_step)
         inc_gstep = inc_global_step(global_step)
 
+        # valid predict function
+        pred_valid = predict_with_dataset(tf_valid_dataset)
+
         tf.initialize_all_variables().run()
-        for batch_id in range(ceil(train_size//batch_size)):
+
+        start_time = time.clock()
+        for batch_id in range(ceil(train_size//batch_size)-1):
+            time_stamp = batch_id
             batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
+
+            # validation batch
+            batch_valid_data = train_dataset[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :, :, :]
+            batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
+
 
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
             _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
 
-            if batch_id % policy_interval == 0:
+            valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
+            valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
+            valid_accuracies.append(accuracy(valid_predictions[0],batch_valid_labels))
+
+            if batch_id>0 and batch_id % policy_interval == 0:
+                end_time = time.clock()
                 print('Global step: %d'%global_step.eval())
                 print('Minibatch loss at step %d: %f' % (batch_id, l))
                 print('Learning rate: %.3f'%updated_lr)
                 print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
+                mean_valid_accuracy = np.mean(valid_accuracies[len(valid_accuracies)//2:])
+                print('%d Mean Valid accuracy (Latter half): %.1f%%' % (time_stamp,mean_valid_accuracy))
+                param_count = get_parameter_count()
+                print('%d Parameter count: %d'%(time_stamp,param_count))
+                duration = end_time-start_time
+                print('%d Time taken: %.3f'%(time_stamp,duration))
+                start_time = time.clock()
+                valid_accuracies = []
+
+                policy_learner.update_policy(time_stamp,{'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count})
+
             if batch_id == 101:
                 print('\n======================== Adding a convolutional layer ==========================')
                 #pred = predict_with_logits(logits)
