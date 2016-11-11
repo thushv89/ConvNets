@@ -129,6 +129,7 @@ def update_fulcon_out(to_w,to_h,to_d):
 
     new_shape = new_weights.get_shape().as_list()
     print('\tSize (fulcon_out) after modification %s'%new_shape)
+    assert np.all(np.asarray(new_shape)>0)
     # assigning the new weights
     hyparams[get_layer_id('fulcon_out')]['in']=new_shape[0]
     weights[get_layer_id('fulcon_out')] = new_weights
@@ -142,6 +143,7 @@ def update_conv(conv_id,to_d):
     '''
     from_d = conv_depths[get_layer_id(conv_id)]['in']
     conv_weights = hyparams[get_layer_id(conv_id)]['weights']
+
     logger.info("Need to update the layer %s in_depth from %d to %d"%(conv_id,from_d,to_d))
 
     if to_d<from_d:
@@ -150,7 +152,7 @@ def update_conv(conv_id,to_d):
         hyparams[get_layer_id(conv_id)]['weights'] =[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
         # update weights
         weights[get_layer_id(conv_id)] = tf.slice(weights[get_layer_id(conv_id)],
-                                                  [0,0,0,0],[0,0,to_d,0]
+                                                  [0,0,0,0],[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
                                                   )
         # no need to update biase
     elif to_d>from_d:
@@ -167,7 +169,8 @@ def update_conv(conv_id,to_d):
 
     new_shape = weights[get_layer_id(conv_id)].get_shape().as_list()
     logger.info('Shape of new weights after the modification: %s'%new_shape)
-
+    logger.warn('Zero sized Dimension detected')
+    assert np.all(np.asarray(new_shape)>0)
 
 def add_conv_layer(w,stride,conv_id):
     '''
@@ -178,6 +181,12 @@ def add_conv_layer(w,stride,conv_id):
     '''
     global layer_count,weights,biases,hyparams
 
+    #find the convolutional layer before the addition
+    prev_conv_id = None
+    for op in reversed(iconv_ops[:-1]):
+        if 'conv' in op:
+            prev_conv_id = op
+            break
 
     hyparams[conv_id]={'weights':w,'stride':stride,'padding':'SAME'}
     weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
@@ -189,7 +198,11 @@ def add_conv_layer(w,stride,conv_id):
     iconv_ops.append(conv_id)
     iconv_ops.append(out_id)
 
-
+    weight_shape = weights[conv_id].get_shape().as_list()
+    logger.warn('Zero sized Dimension detected')
+    assert np.all(np.asarray(weight_shape)>0)
+    if prev_conv_id is not None:
+        assert weights[prev_conv_id].get_shape().as_list()[3] == weight_shape[2]
 
 def add_pool_layer(ksize,stride,type,pool_id):
     '''
@@ -275,6 +288,7 @@ def get_logits(dataset):
             if 'conv' in op:
                 logger.debug('\tConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
                 logger.debug('\t\tX before convolution:%s'%(x.get_shape().as_list()))
+                logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
                 x = tf.nn.conv2d(x, weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding'])
                 logger.debug('\t\t Relu with x(%s) and b(%s)'%(x.get_shape().as_list(),biases[op].get_shape().as_list()))
                 x = tf.nn.relu(x + biases[op])
@@ -288,12 +302,16 @@ def get_logits(dataset):
             if 'fulcon' in op:
                 break
 
+
         # we need to reshape the output of last subsampling layer to
         # convert 4D output to a 2D input to the hidden layer
         # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
         shape = x.get_shape().as_list()
         rows = shape[0]
 
+        fin_xw,fin_xh = get_final_x(None,None)
+        logger.debug("My calculation, TensorFlow calculation: (%d,%d), (%d,%d)"%(fin_xw,fin_xh,shape[1],shape[2]))
+        assert fin_xw == shape[1] and fin_xh == shape[2]
         # updating fulcon_layer to match the changed layers (if needed)
         update_fulcon_out(shape[1],shape[2],shape[3])
         hyparams[get_layer_id('fulcon_out')]['whd']=[shape[1],shape[2],shape[3]]
@@ -392,19 +410,22 @@ def get_final_x(new_op,hyp):
         if 'conv' in op:
             fw,fh = hyp_op['weights'][0], hyp_op['weights'][1]
             sw,sh = hyp_op['stride'][1], hyp_op['stride'][2]
-            xw,xh = floor((xw+2*(fw-1))//sw),floor((xh+2*(fh-1))//sh)
+
+            xw,xh = ceil(float(xw)/float(sw)),ceil(float(xh)/float(sh))
         elif 'pool' in op:
             fw,fh = hyp_op['kernel'][1], hyp_op['kernel'][2]
             sw,sh = hyp_op['stride'][1], hyp_op['stride'][2]
-            xw,xh = floor((xw+2*(fw-1))//sw),floor((xh+2*(fh-1))//sh)
+            xw,xh = ceil(float(xw)/float(sw)),ceil(float(xh)/float(sh))
 
-    if 'conv' in new_op:
-        fw,fh = hyp['weights'][0],hyp['weights'][1]
-    elif 'pool' in new_op:
-        fw,fh = hyp['kernel'][1],hyp['kernel'][2]
-    sw,sh = hyp['stride'][1],hyp['stride'][2]
+    if new_op is not None:
+        if 'conv' in new_op:
+            fw,fh = hyp['weights'][0],hyp['weights'][1]
+        elif 'pool' in new_op:
+            fw,fh = hyp['kernel'][1],hyp['kernel'][2]
+        sw,sh = hyp['stride'][1],hyp['stride'][2]
 
-    xw,xh = floor((xw+2*(fw-1))//sw),floor((xh+2*(fh-1))//sh)
+        xw,xh = ceil(float(xw)/float(sw)),ceil(float(xh)/float(sh))
+
     return xw,xh
 
 def get_op_from_action(action):
@@ -503,8 +524,9 @@ def execute_action(action):
             # checking before adding the new layer if the input will be still valid <=0
             # after adding the layer
             fin_xw,fin_xh = get_final_x(conv_id,{'weights':op_info[1],'stride':op_info[2]})
+            fin_before_op_xw,fin_before_op_xh = get_final_x(None,None)
             logger.debug("Final output after convolution (%s): %d,%d"%(conv_id,fin_xw,fin_xh))
-            if fin_xh <=0 or fin_xw <=0:
+            if fin_xh <=1 or fin_xw <=1 or fin_before_op_xw < op_info[1][0] or fin_before_op_xh < op_info[1][1]:
                 logger.warn('Attempted an operation making the final input <= 0... Unsuccessful')
                 return False
 
@@ -539,8 +561,9 @@ def execute_action(action):
             # checking before adding the new layer if the input will be still valid <=0
             # after adding the layer
             fin_xw,fin_xh = get_final_x(pool_id,{'kernel':k,'stride':s})
+            fin_before_op_xw,fin_before_op_xh = get_final_x(None,None)
             logger.debug("Final output after pooling (%s): %d,%d"%(pool_id,fin_xw,fin_xh))
-            if fin_xh <=0 or fin_xw <=0:
+            if fin_xh <=1 or fin_xw <=1 or fin_before_op_xw<op_info[1][1] or fin_before_op_xh<op_info[1][2]:
                 logger.warn('Attempted an operation making the final input <= 0... Unsuccessful')
                 return False
 
