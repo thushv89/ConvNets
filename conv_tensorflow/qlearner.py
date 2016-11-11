@@ -2,7 +2,7 @@ __author__ = 'Thushan Ganegedara'
 
 from enum import IntEnum
 from collections import defaultdict
-from sklearn.gaussian_process import GaussianProcess
+from sklearn.gaussian_process import GaussianProcessRegressor
 import numpy as np
 import json
 import random
@@ -56,9 +56,13 @@ class ContinuousState(object):
         self.q = restore_data['q']
         self.gps = restore_data['gps']
 
-    def update_policy(self, global_time_stamp, data):
+    def update_policy(self, global_time_stamp, data,success=True):
 
-        self.rl_logger.info('\n=============================== Policy Update for %s ===================================='%self.local_time_stamp)
+        if not success:
+            self.rl_logger.warn('\n\n\n')
+            self.rl_logger.warn("Previous action wasn't successful ...\n\n\n")
+
+        self.rl_logger.info('\n============== Policy Update for %d (Global: %d) ==============='%(self.local_time_stamp,global_time_stamp))
         # Errors (current and previous) used to calculate reward
         # err_t should be calculated on something the CNN hasn't seen yet
         # err_t-1 should be calculated on something the CNN has seen (e.g mean of last 10 batches)
@@ -66,6 +70,7 @@ class ContinuousState(object):
         time_cost = data['time_cost']
         param_cost = data['param_cost']
         stride_cost = data['stride_cost']
+        success_cost = 0 if success else -100
 
         # architecture_similarity is calculated as follows.
         # say you have two architectures
@@ -111,13 +116,19 @@ class ContinuousState(object):
                     break
                 x, y = zip(*value_dict.items())
 
-                gp = GaussianProcess(theta0=0.1, thetaL=0.001, thetaU=1, nugget=0.1)
-                gp.fit(np.array(x), np.array(y))
+                #gp = GaussianProcessRegressor(theta0=0.1, thetaL=0.001, thetaU=1, nugget=0.1)
+                gp = GaussianProcessRegressor()
+
+                if np.array(x).size == len(state):
+                    gp.fit(np.asarray(x).reshape(1,-1),np.array(y))
+                else:
+                    gp.fit(np.array(x), np.array(y))
                 self.gps[a] = gp
 
         if self.prev_state or self.prev_action:
 
-            reward = -(curr_err + 0.01*time_cost + 0.001*param_cost + 0.5*stride_cost + 2**data['num_layers'])
+            reward = -(curr_err + 0.01*time_cost + 0.001*param_cost +
+                       2**(stride_cost//5) + 2**(data['num_layers']//2)) + success_cost
 
             # sample = reward + self.discount_rate * max(self.q[state, a] for a in self.actions)
             # len(gps) == 0 in the first time move() is called

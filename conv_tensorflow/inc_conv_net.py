@@ -15,7 +15,7 @@ import learn_best_actions
 
 logger = None
 logging_level = logging.DEBUG
-logging_format = '[%(name)s] [%(funcName)s] %(message)s'
+logging_format = '[%(funcName)s] %(message)s'
 
 #type of data training
 datatype = 'cifar-10'
@@ -59,6 +59,7 @@ hyparams = {
 }
 conv_depths = {}
 weights,biases = {},{}
+final_x = (image_size,image_size)
 
 # it's not wise to include always changing values such as (layer_count) in the id
 def get_layer_id(layer_name):
@@ -217,15 +218,22 @@ def remove_conv_layer(w,stride):
     global weights
     out_id = iconv_ops.pop(-1)
     rm_idx = 0
+
+    found_layer = False
     for op in iconv_ops:
         if 'conv' in op:
             if hyparams[op]['weights'][:2]==w[:2] and hyparams[op]['stride']==stride:
                 logger.info("Removing (Convolution) layer %s"%op)
                 iconv_ops.remove(op)
+                found_layer = True
                 break
         rm_idx += 1
     iconv_ops.append(out_id)
-    return op,rm_idx
+
+    if found_layer:
+        return op,rm_idx
+    else:
+        return None,None
 
 def remove_pool_layer(kernel,stride,pool_type):
     '''
@@ -236,38 +244,46 @@ def remove_pool_layer(kernel,stride,pool_type):
     :return: id of the removed layer
     '''
     global weights
+
+    found_layer = False
     out_id = iconv_ops.pop(-1)
     for op in iconv_ops:
         if 'pool' in op:
             if hyparams[op]['kernel']==kernel and hyparams[op]['stride']==stride and hyparams[op]['type']==pool_type:
                 logger.info("Removing (Pool) layer %s"%op)
                 iconv_ops.remove(op)
+                found_layer = True
                 break
 
     iconv_ops.append(out_id)
-    return op
+    if found_layer:
+        return op
+    else:
+        return None
 
 def get_logits(dataset):
 
-    print('Current set of operations: %s'%iconv_ops)
+    logger.info('Current set of operations: %s'%iconv_ops)
     x = dataset
-    print('Received data for X(%s)...'%x.get_shape().as_list())
+    logger.debug('Received data for X(%s)...'%x.get_shape().as_list())
 
-    print('\nPerforming the specified operations ...')
+    logger.info('Performing the specified operations ...')
     # if we have added atleaset one layer
     if len(iconv_ops)>1:
         #need to calculate the output according to the layers we have
         for op in iconv_ops:
             if 'conv' in op:
-                print('\tCovolving data (%s)'%op)
+                logger.debug('\tConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
+                logger.debug('\t\tX before convolution:%s'%(x.get_shape().as_list()))
                 x = tf.nn.conv2d(x, weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding'])
-
+                logger.debug('\t\t Relu with x(%s) and b(%s)'%(x.get_shape().as_list(),biases[op].get_shape().as_list()))
                 x = tf.nn.relu(x + biases[op])
-                print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+                logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
             if 'pool' in op:
-                print('\tPooling data')
+                logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
+
                 x = tf.nn.max_pool(x,ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
-                print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+                logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
 
             if 'fulcon' in op:
                 break
@@ -356,9 +372,40 @@ def get_stride_cost():
             stride = hyparams[op]['stride']
             total_stride += np.prod(stride)
     return total_stride
+
 def accuracy(predictions, labels):
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
+
+def get_final_x(new_op,hyp):
+    '''
+    Takes a new operations and concat with existing set of operations
+    then output what the final output size will be
+    :param op_list: list of operations
+    :param hyp: Hyperparameters fo the operation
+    :return: a tuple (width,height) of x
+    '''
+
+    xw,xh = image_size,image_size
+    for op in iconv_ops:
+        hyp_op = hyparams[op]
+        if 'conv' in op:
+            fw,fh = hyp_op['weights'][0], hyp_op['weights'][1]
+            sw,sh = hyp_op['stride'][1], hyp_op['stride'][2]
+            xw,xh = floor((xw+2*(fw-1))//sw),floor((xh+2*(fh-1))//sh)
+        elif 'pool' in op:
+            fw,fh = hyp_op['kernel'][1], hyp_op['kernel'][2]
+            sw,sh = hyp_op['stride'][1], hyp_op['stride'][2]
+            xw,xh = floor((xw+2*(fw-1))//sw),floor((xh+2*(fh-1))//sh)
+
+    if 'conv' in new_op:
+        fw,fh = hyp['weights'][0],hyp['weights'][1]
+    elif 'pool' in new_op:
+        fw,fh = hyp['kernel'][1],hyp['kernel'][2]
+    sw,sh = hyp['stride'][1],hyp['stride'][2]
+
+    xw,xh = floor((xw+2*(fw-1))//sw),floor((xh+2*(fh-1))//sh)
+    return xw,xh
 
 def get_op_from_action(action):
     '''
@@ -399,7 +446,13 @@ def get_op_from_action(action):
 
     return op
 
+
 def execute_action(action):
+    '''
+    Execute an action and output if it was successful
+    :param action: action as a string
+    :return: Whether successful or not
+    '''
     global layer_count
     if 'remove' in action:
         logger.info("Removing layer %s",action)
@@ -409,6 +462,9 @@ def execute_action(action):
             op_type,weights,stride = op_info
             logger.info('\tRemoving convolution layer')
             rm_op,rm_idx = remove_conv_layer(op_info[1],op_info[2])
+
+            if rm_op is None and rm_idx is None:
+                return False
 
             # if the layer we removed is not eh last convovolutional layer
             # if it's the last convo layer, next_rm_op will be the fulcon_out
@@ -427,58 +483,81 @@ def execute_action(action):
             #remove pool layer
             op_type,kernel,stride,pool_type = op_info
             logger.info('\tRemoving pool layer with kernel:%s,stride:%s,type:%s'%(kernel,stride,pool_type))
-            remove_pool_layer(kernel,stride,pool_type)
+            rm_op = remove_pool_layer(kernel,stride,pool_type)
+            if rm_op is None:
+                return False
+
         logger.info("\tRemoved layer: %s"%action)
-        return
+
+
+    # Convolution: 'op',[filter_w,filter_h,out_depth],[stride_w,stride_h]
+    # Pool: 'op',[filter_w,filter_h],[stride_w,stride_h]
+    if 'add' in action:
+        op_info = get_op_from_action(action)
+
+        if op_info[0]=='conv':
+            conv_id = get_layer_id('conv_'+str(layer_count))
+            layer_count += 1
+            initial_conv_layer = np.all([True if 'conv' not in op else False for op in iconv_ops])
+
+            # checking before adding the new layer if the input will be still valid <=0
+            # after adding the layer
+            fin_xw,fin_xh = get_final_x(conv_id,{'weights':op_info[1],'stride':op_info[2]})
+            logger.debug("Final output after convolution (%s): %d,%d"%(conv_id,fin_xw,fin_xh))
+            if fin_xh <=0 or fin_xw <=0:
+                logger.warn('Attempted an operation making the final input <= 0... Unsuccessful')
+                return False
+
+            print('Ops %s, Initial conv %s'%(iconv_ops,initial_conv_layer))
+            if initial_conv_layer:
+                conv_depths[conv_id]={'in':num_channels,'out':op_info[1][3]}
+                logger.debug('(Initial) Depth for the new Conv Layer: in:%d, out:%d'%(conv_depths[conv_id]['in'],conv_depths[conv_id]['out']))
+            else:
+                #find the last conv_id currently in conv_ops
+                prev_conv_id = ''
+                for op in iconv_ops:
+                    # if iteration come to current conv_op, keep the last previous and break the loop
+                    if op==conv_id:
+                        break
+                    if 'conv' in op:
+                        prev_conv_id = op
+
+                conv_depths[conv_id]={'in':conv_depths[prev_conv_id]['out'],'out':op_info[1][3]}
+                logger.debug('(Following) Depth for the new Conv Layer: in:%d, out:%d'%(conv_depths[conv_id]['in'],conv_depths[conv_id]['out']))
+
+            w = [op_info[1][0],op_info[1][1],conv_depths[conv_id]['in'],conv_depths[conv_id]['out']]
+            s = op_info[2]
+            logger.info('Adding Convolutional Layer %s'%conv_id)
+            logger.debug('\tWith Weights:%s,Stride:%s'%(w,s))
+            add_conv_layer(w,s,conv_id)
+
+        elif op_info[0]=='pool':
+            pool_id = get_layer_id('pool_'+str(layer_count))
+
+            k,s,pool_type = op_info[1],op_info[2],op_info[3]
+
+            # checking before adding the new layer if the input will be still valid <=0
+            # after adding the layer
+            fin_xw,fin_xh = get_final_x(pool_id,{'kernel':k,'stride':s})
+            logger.debug("Final output after pooling (%s): %d,%d"%(pool_id,fin_xw,fin_xh))
+            if fin_xh <=0 or fin_xw <=0:
+                logger.warn('Attempted an operation making the final input <= 0... Unsuccessful')
+                return False
+
+            logger.info('Adding Pooling Layer %s'%pool_id)
+            logger.debug('\tWith Kernel:%s,Stride:%s,Type:%s'%(k,s,pool_type))
+            add_pool_layer(k,s,pool_type,pool_id)
+
+            layer_count += 1
+        else:
+            raise NotImplementedError
+
 
     if action=='finetune':
         #TODO
         logger.info("To be impelemented...")
-        return
 
-    # Convolution: 'op',[filter_w,filter_h,out_depth],[stride_w,stride_h]
-    # Pool: 'op',[filter_w,filter_h],[stride_w,stride_h]
-    op_info = get_op_from_action(action)
-
-    if op_info[0]=='conv':
-        conv_id = get_layer_id('conv_'+str(layer_count))
-        layer_count += 1
-        initial_conv_layer = np.all([True if 'conv' not in op else False for op in iconv_ops])
-        print('Ops %s, Initial conv %s'%(iconv_ops,initial_conv_layer))
-        if initial_conv_layer:
-            conv_depths[conv_id]={'in':num_channels,'out':op_info[1][3]}
-            logger.debug('(Initial) Depth for the new Conv Layer: in:%d, out:%d'%(conv_depths[conv_id]['in'],conv_depths[conv_id]['out']))
-        else:
-            #find the last conv_id currently in conv_ops
-            prev_conv_id = ''
-            for op in iconv_ops:
-                # if iteration come to current conv_op, keep the last previous and break the loop
-                if op==conv_id:
-                    break
-                if 'conv' in op:
-                    prev_conv_id = op
-
-            conv_depths[conv_id]={'in':conv_depths[prev_conv_id]['out'],'out':op_info[1][3]}
-            logger.debug('(Following) Depth for the new Conv Layer: in:%d, out:%d'%(conv_depths[conv_id]['in'],conv_depths[conv_id]['out']))
-
-        w = [op_info[1][0],op_info[1][1],conv_depths[conv_id]['in'],conv_depths[conv_id]['out']]
-        s = op_info[2]
-        logger.info('Adding Convolutional Layer %s'%conv_id)
-        logger.debug('\tWith Weights:%s,Stride:%s'%(w,s))
-        add_conv_layer(w,s,conv_id)
-
-    elif op_info[0]=='pool':
-        pool_id = get_layer_id('pool_'+str(layer_count))
-
-        k,s,pool_type = op_info[1],op_info[2],op_info[3]
-
-        logger.info('Adding Pooling Layer %s'%pool_id)
-        logger.debug('\tWith Kernel:%s,Stride:%s,Type:%s'%(k,s,pool_type))
-        add_pool_layer(k,s,pool_type,pool_id)
-
-        layer_count += 1
-    else:
-        raise NotImplementedError
+    return True
 
 if __name__=='__main__':
     global logger
@@ -512,6 +591,7 @@ if __name__=='__main__':
     valid_accuracy_log = []
     time_log = []
     param_log = []
+    current_action_success = True
 
     with tf.Session(graph=graph) as session:
 
@@ -527,6 +607,9 @@ if __name__=='__main__':
         tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
         tf_valid_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
+        tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
+        tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+
         init_iconvnet() #initialize the initial conv net
 
         logits = get_logits(tf_dataset)
@@ -537,6 +620,7 @@ if __name__=='__main__':
 
         # valid predict function
         pred_valid = predict_with_dataset(tf_valid_dataset)
+        pred_test = predict_with_dataset(tf_test_dataset)
 
         tf.initialize_all_variables().run()
 
@@ -606,19 +690,20 @@ if __name__=='__main__':
                 elif batch_id>0 and batch_id % policy_interval == 0:
 
                     logger.info('\n==================== Time Stamp: %d ====================='%time_stamp)
-                    logger.debug('Global step: %d'%global_step.eval())
-                    logger.info('Minibatch loss at step %d: %f' % (batch_id, l))
-                    logger.debug('Learning rate: %.3f'%updated_lr)
-                    logger.info('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
+                    logger.debug('\tGlobal step: %d'%global_step.eval())
+                    logger.debug('\tCurrent Ops: %s'%iconv_ops)
+                    logger.info('\tMinibatch loss at step %d: %f' % (batch_id, l))
+                    logger.debug('\tLearning rate: %.3f'%updated_lr)
+                    logger.info('\tMinibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
                     mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-(policy_interval//2)]):])
-                    logger.debug('%d Mean Valid accuracy (Latter half)[%d:%d]: %.1f%%' %
+                    logger.debug('\t%d Mean Valid accuracy (Latter half)[%d:%d]: %.1f%%' %
                           (time_stamp,np.max([0,len(valid_accuracy_log)-(policy_interval//2)]),len(valid_accuracy_log), mean_valid_accuracy)
                           )
                     param_count = get_parameter_count()
                     stride_cost = get_stride_cost()
-                    logger.debug('%d Parameter count: %d'%(time_stamp,param_count))
+                    logger.debug('\t%d Parameter count: %d'%(time_stamp,param_count))
                     duration = np.sum(time_log[np.max([0,len(time_log)-(policy_interval//2)]):])
-                    logger.debug('%d Time taken (Latter half)[%d:%d]: %.3f'%
+                    logger.debug('\t%d Time taken (Latter half)[%d:%d]: %.3f'%
                           (time_stamp,np.max([0,len(time_log)-(policy_interval//2)]),len(time_log),duration)
                     )
 
@@ -632,23 +717,34 @@ if __name__=='__main__':
                                 )
                     value_logger.info('%d,%s'%(time_stamp,data))
                     logger.info('=============================================================\n')
-                    action = policy_learner.update_policy(time_stamp,data)
+                    action = policy_learner.update_policy(time_stamp,data,current_action_success)
                     logger.info('\tReceived action %s'%action)
 
-                    execute_action(action)
+                    current_action_success = execute_action(action)
                     logits = get_logits(tf_dataset)
 
+        # test batches
+        test_accuracies = []
+        for batch_id in range(ceil(test_size//batch_size)):
+            batch_test_data = test_dataset[(batch_id)*batch_size:(batch_id+1)*batch_size, :, :, :]
+            batch_test_labels = test_labels[(batch_id)*batch_size:(batch_id+1)*batch_size, :]
 
-            '''if batch_id == 101:
-                print('\n======================== Adding a convolutional layer ==========================')
-                #pred = predict_with_logits(logits)
-                add_conv_layer([3,3,3,16],[1,1,1,1])
-                logits = get_logits(tf_dataset)
-                print('================================================================================\n')
-            if batch_id == 301:
-                print('\n================= Adding a pooling layer ===========================')
-                add_pool_layer([1,2,2,1],[1,2,2,1],'avg')
-                logits = get_logits(tf_dataset)
-                print('====================================================================\n')
-            if batch_id == 1001:
-                break'''
+            test_feed_dict = {tf_test_dataset:batch_test_data,tf_test_labels:batch_test_labels}
+            test_predictions = session.run([pred_test],feed_dict=test_feed_dict)
+            test_accuracies.append(accuracy(valid_predictions[0],batch_valid_labels))
+
+        logger.info("Test Accuracy: %.1f"%np.mean(test_accuracies))
+
+        '''if batch_id == 101:
+            print('\n======================== Adding a convolutional layer ==========================')
+            #pred = predict_with_logits(logits)
+            add_conv_layer([3,3,3,16],[1,1,1,1])
+            logits = get_logits(tf_dataset)
+            print('================================================================================\n')
+        if batch_id == 301:
+            print('\n================= Adding a pooling layer ===========================')
+            add_pool_layer([1,2,2,1],[1,2,2,1],'avg')
+            logits = get_logits(tf_dataset)
+            print('====================================================================\n')
+        if batch_id == 1001:
+            break'''
