@@ -150,13 +150,14 @@ def update_conv(conv_id,to_d):
         logger.info("\tRequired to remove %d depth layers"%(from_d-to_d))
         # update hyperparameters
         hyparams[get_layer_id(conv_id)]['weights'] =[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
+        logger.debug('\tNew weights should be: %s'%hyparams[get_layer_id(conv_id)]['weights'])
         # update weights
         weights[get_layer_id(conv_id)] = tf.slice(weights[get_layer_id(conv_id)],
                                                   [0,0,0,0],[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
                                                   )
         # no need to update biase
     elif to_d>from_d:
-        logger.info("\tRequired to add %d depth layers"%to_d-from_d)
+        logger.info("\tRequired to add %d depth layers"%(to_d-from_d))
         conv_new_weights = tf.Variable(tf.truncated_normal(
             [conv_weights[0],conv_weights[1],to_d-from_d,conv_weights[3]],
             stddev=2./(conv_weights[0]*conv_weights[1])
@@ -169,8 +170,23 @@ def update_conv(conv_id,to_d):
 
     new_shape = weights[get_layer_id(conv_id)].get_shape().as_list()
     logger.info('Shape of new weights after the modification: %s'%new_shape)
-    logger.warn('Zero sized Dimension detected')
+
     assert np.all(np.asarray(new_shape)>0)
+
+    #find the convolutional layer before the addition
+    prev_conv_id = None
+    for op in reversed(iconv_ops[:iconv_ops.index(conv_id)-1]):
+        if 'conv' in op:
+            prev_conv_id = op
+            break
+    if prev_conv_id is not None:
+        logger.debug("Prev_conv_id, conv_id %s,%s"%(prev_conv_id,conv_id))
+        assert weights[prev_conv_id].get_shape().as_list()[3]==new_shape[2]
+    else:
+        assert new_shape[2]==num_channels
+
+    assert new_shape == hyparams[conv_id]['weights']
+
 
 def add_conv_layer(w,stride,conv_id):
     '''
@@ -204,6 +220,7 @@ def add_conv_layer(w,stride,conv_id):
     if prev_conv_id is not None:
         assert weights[prev_conv_id].get_shape().as_list()[3] == weight_shape[2]
 
+    assert weight_shape == hyparams[conv_id]['weights']
 def add_pool_layer(ksize,stride,type,pool_id):
     '''
     Specify the hyperparameters for a pooling layer. And update conv_ops
