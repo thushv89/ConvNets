@@ -16,7 +16,7 @@ logging_format = '[%(name)s] [%(funcName)s] %(message)s'
 class ContinuousState(object):
 
     def __init__(self, **params):
-        self.params = params
+
         self.learning_rate = params['learning_rate']
         self.discount_rate = params['discount_rate']
         self.eta_1 = params['eta_1'] # Q collection starts after this
@@ -25,6 +25,7 @@ class ContinuousState(object):
         self.policy_intervel = params['policy_interval']
         self.q = {} #store Q values
         self.gps = {} #store gaussian curves
+
         self.rl_logger = logging.getLogger('Policy Logger')
         self.rl_logger.setLevel(logging_level)
         console = logging.StreamHandler(sys.stdout)
@@ -35,9 +36,17 @@ class ContinuousState(object):
         self.local_time_stamp = 0
         self.actions = None
 
+        self.prev_action = None
+        self.prev_state = None
+
     def update_action_space(self,actions):
-        self.actions = actions
-        self.actions.append('remove')
+
+        self.actions = []
+        for a in actions:
+            a_op = a.split(',')[1]
+            self.actions.append(a)
+            self.actions.append('remove,'+a_op)
+
         self.actions.append('finetune')
 
     def restore_policy(self,**restore_data):
@@ -49,19 +58,15 @@ class ContinuousState(object):
 
     def update_policy(self, global_time_stamp, data):
 
+        self.rl_logger.info('\n=============================== Policy Update for %s ===================================='%self.local_time_stamp)
         # Errors (current and previous) used to calculate reward
         # err_t should be calculated on something the CNN hasn't seen yet
         # err_t-1 should be calculated on something the CNN has seen (e.g mean of last 10 batches)
-        err_t = data['error']
-        time_cost = data['avg_time_cost']
+        err_t = data['error_t']
+        time_cost = data['time_cost']
         param_cost = data['param_cost']
+        stride_cost = data['stride_cost']
 
-        # If we haven't completed eta_1 iterations, keep pooling
-        if global_time_stamp <=self.eta_1:
-            # do pool operation
-            return
-
-        # Calculate state
         # architecture_similarity is calculated as follows.
         # say you have two architectures
         # C_k3x3x3x32_s1x1, P_k2x2_s1x1, C_k3x3x32x16_s2x2, P_k2x2_s2x2, F_1024, F_10
@@ -83,15 +88,15 @@ class ContinuousState(object):
         # [F_1024, F_512, F_10]
         # TODO: Convert to Vector
 
-        state = (data['error_t'], data['num_layers'],data['architecture_similarity'])
+        state = (data['error_t'], data['num_layers'],data['param_cost'])
 
         curr_err = err_t
 
-        if global_time_stamp > self.eta_1 and global_time_stamp <= self.eta_2:
+        if self.local_time_stamp <= self.eta_1:
             # TODO: Evenly collect Q values for each action
             # We will have a predefined set of actions
-            # A1 = [{'add'},'remove','finetune']
-
+            action = self.actions[-1]
+            self.rl_logger.info('\tNot enough data running action:%s'%action)
         # since we have a continuous state space, we need a regression technique to get the
         # Q-value for prev state and action for a discrete state space, this can be done by
         # using a hashtable Q(s,a) -> value
@@ -100,8 +105,10 @@ class ContinuousState(object):
         # self.q is like this there are 3 main items Action.pool, Action.reduce, Action.increment
         # each action has (s, q) value pairs
         # use this (s, q) pairs to predict the q value for a new state
-        if global_time_stamp % self.gp_interval==0:
+        elif self.local_time_stamp % self.gp_interval==0:
             for a, value_dict in self.q.items():
+                if len(value_dict) < 3:
+                    break
                 x, y = zip(*value_dict.items())
 
                 gp = GaussianProcess(theta0=0.1, thetaL=0.001, thetaU=1, nugget=0.1)
@@ -110,50 +117,54 @@ class ContinuousState(object):
 
         if self.prev_state or self.prev_action:
 
-            reward = -(curr_err + 0.01*time_cost + 0.001*param_cost)
+            reward = -(curr_err + 0.01*time_cost + 0.001*param_cost + 0.5*stride_cost + 2**data['num_layers'])
 
             # sample = reward + self.discount_rate * max(self.q[state, a] for a in self.actions)
             # len(gps) == 0 in the first time move() is called
-            if len(self.gps[self.prev_action]) < 3:
-                self.rl_logger.debug('Not enough data to predict with a GP. Using the reward as the sample ...')
+            if self.prev_action not in self.gps or len(self.q[self.prev_action]) < 3:
+                self.rl_logger.debug('\tNot enough data to predict with a GP. Using the reward as the sample ...')
                 sample = reward
             else:
-                self.rl_logger.debug('Predicting with a GP. Using the gp prediction + reward as the sample ...')
+                self.rl_logger.debug('\tPredicting with a GP. Using the gp prediction + reward as the sample ...')
                 sample = reward + self.discount_rate * max((np.asscalar(gp.predict([self.prev_state])[0])) for gp in self.gps.values())
 
-            self.rl_logger.info('Updating the Q values ...')
-            if self.prev_state in self.q[self.prev_action]:
-                self.rl_logger.debug('Previous state found in Q values. Updating it ...')
-                self.q[self.prev_action][self.prev_state] = (1 - self.learning_rate) * self.q[self.prev_action][self.prev_state] + \
-                                                            self.learning_rate * sample
+            self.rl_logger.info('\tUpdating the Q values ...')
+
+            if self.prev_action not in self.q:
+                self.rl_logger.debug('\tPrevious action not found in Q values. Creating a new entry ...')
+                self.rl_logger.debug("Q: %s"%self.q)
+                self.q[self.prev_action]={self.prev_state: sample}
             else:
-                self.rl_logger.debug('Previous state not found in Q values. Creating a new entry ...')
-                self.q[self.prev_action][self.prev_state] = sample
+                if self.prev_state in self.q[self.prev_action]:
+                    self.rl_logger.debug('\tPrevious state found in Q values. Updating it ...')
+                    self.q[self.prev_action][self.prev_state] = (1 - self.learning_rate) * self.q[self.prev_action][self.prev_state] + \
+                                                                self.learning_rate * sample
+                else:
+                    self.rl_logger.debug('\tPrevious state not found in Q values. Creating a new entry ...')
+                    self.q[self.prev_action][self.prev_state] = sample
 
 
             if len(self.gps) == 0 or self.local_time_stamp <= self.eta_2:
                 action = self.actions[self.local_time_stamp % len(self.actions)]
+                self.rl_logger.info("\tEvenly chose action: %s"%action)
             else:
                 # determine best action by sampling the GPs
                 if random.random() <= 0.1:
                     action = self.actions[self.local_time_stamp % len(self.actions)]
-                    self.rl_logger.info("Explore action: %s", action)
+                    self.rl_logger.info("\tExplore action: %s", action)
                 else:
                     action = max((np.asscalar(gp.predict(state)[0]), action) for action, gp in self.gps.items())[1]
-                    self.rl_logger.info("Chose with Q: %s", action)
+                    self.rl_logger.info("\tChose with Q: %s", action)
 
                 for a, gp in self.gps.items():
-                    self.rl_logger.debug("Approximated Q values for (above State,%s) pair: %10.3f",a, np.asscalar(gp.predict(state)[0]))
+                    self.rl_logger.debug("\tApproximated Q values for (above State,%s) pair: %10.3f",a, np.asscalar(gp.predict(state)[0]))
 
         self.local_time_stamp += 1
         self.prev_action = action
         self.prev_state = state
 
-        self.rl_logger.info('\n')
+        self.rl_logger.info('===========================================================================\n')
         return action
 
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action
-
-    def end(self):
-        return [{'name': 'q_state.json', 'json': json.dumps({str(k):{str(tup): value for tup, value in v.items()} for k,v in self.q.items()})}]

@@ -14,7 +14,7 @@ import qlearner
 import learn_best_actions
 
 logger = None
-logging_level = logging.INFO
+logging_level = logging.DEBUG
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
 
 #type of data training
@@ -132,6 +132,41 @@ def update_fulcon_out(to_w,to_h,to_d):
     hyparams[get_layer_id('fulcon_out')]['in']=new_shape[0]
     weights[get_layer_id('fulcon_out')] = new_weights
 
+def update_conv(conv_id,to_d):
+    '''
+    If a convolutional layer (intermediate) is removed. This function will
+     Correct the dimention mismatch either by adding more weights or removing
+    :param to_d: the depth to be updated to
+    :return:
+    '''
+    from_d = conv_depths[get_layer_id(conv_id)]['in']
+    conv_weights = hyparams[get_layer_id(conv_id)]['weights']
+    logger.info("Need to update the layer %s in_depth from %d to %d"%(conv_id,from_d,to_d))
+
+    if to_d<from_d:
+        logger.info("\tRequired to remove %d depth layers"%(from_d-to_d))
+        # update hyperparameters
+        hyparams[get_layer_id(conv_id)]['weights'] =[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
+        # update weights
+        weights[get_layer_id(conv_id)] = tf.slice(weights[get_layer_id(conv_id)],
+                                                  [0,0,0,0],[0,0,to_d,0]
+                                                  )
+        # no need to update biase
+    elif to_d>from_d:
+        logger.info("\tRequired to add %d depth layers"%to_d-from_d)
+        conv_new_weights = tf.Variable(tf.truncated_normal(
+            [conv_weights[0],conv_weights[1],to_d-from_d,conv_weights[3]],
+            stddev=2./(conv_weights[0]*conv_weights[1])
+        ))
+        tf.initialize_variables([conv_new_weights]).run()
+        weights[get_layer_id(conv_id)] = tf.concat(2,[weights[get_layer_id(conv_id)],conv_new_weights])
+    else:
+        logger.info('\tNo modifications done...')
+        return
+
+    new_shape = weights[get_layer_id(conv_id)].get_shape().as_list()
+    logger.info('Shape of new weights after the modification: %s'%new_shape)
+
 
 def add_conv_layer(w,stride,conv_id):
     '''
@@ -170,15 +205,47 @@ def add_pool_layer(ksize,stride,type,pool_id):
     iconv_ops.append(pool_id)
     iconv_ops.append(out_id)
 
-def remove_layer():
+
+def remove_conv_layer(w,stride):
     '''
-    Removes the last layer before the fulcon_out
+    Removes the first layer (furthest to fulcon_out) having the given w and stride
+    We only compare the width and height of w and the full stride
     We do not remove the hyperparameters or weights immediately. If the removed ones
     are not used after a certain threshold, they will be removed
     :return: id of the removed layer
     '''
-    rm_op =  iconv_ops.pop(-2)
-    return rm_op
+    global weights
+    out_id = iconv_ops.pop(-1)
+    rm_idx = 0
+    for op in iconv_ops:
+        if 'conv' in op:
+            if hyparams[op]['weights'][:2]==w[:2] and hyparams[op]['stride']==stride:
+                logger.info("Removing (Convolution) layer %s"%op)
+                iconv_ops.remove(op)
+                break
+        rm_idx += 1
+    iconv_ops.append(out_id)
+    return op,rm_idx
+
+def remove_pool_layer(kernel,stride,pool_type):
+    '''
+    Removes the first layer (furthest to fulcon_out) having the given w and stride
+    We compare the full kernel and stride
+    We do not remove the hyperparameters or weights immediately. If the removed ones
+    are not used after a certain threshold, they will be removed
+    :return: id of the removed layer
+    '''
+    global weights
+    out_id = iconv_ops.pop(-1)
+    for op in iconv_ops:
+        if 'pool' in op:
+            if hyparams[op]['kernel']==kernel and hyparams[op]['stride']==stride and hyparams[op]['type']==pool_type:
+                logger.info("Removing (Pool) layer %s"%op)
+                iconv_ops.remove(op)
+                break
+
+    iconv_ops.append(out_id)
+    return op
 
 def get_logits(dataset):
 
@@ -277,6 +344,18 @@ def get_parameter_count():
 
     return param_count
 
+def get_stride_cost():
+    '''
+    This is included in the reward to peanalize the algorithm for using high strides
+    :return:
+    '''
+    global weights
+    total_stride = 0
+    for op in iconv_ops:
+        if 'conv' in op or 'pool' in op:
+            stride = hyparams[op]['stride']
+            total_stride += np.prod(stride)
+    return total_stride
 def accuracy(predictions, labels):
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
@@ -288,28 +367,119 @@ def get_op_from_action(action):
     :param action: action to be converted to an op
     :return: a Tuple of (op_type, kernel, stride)
     '''
-    op_tokens = action.split(',')[0]
+    op_token = action.split(',')[1]
     op = ''
     if 'C_' in action:
         #add,C_K5x5x64_S1x1
-        conv_tokens = op_tokens.split('_')
+        conv_tokens = op_token.split('_')
         for tok in conv_tokens:
-            if 'K' in tok:
+            if 'K' == tok[0]:
                 kernel=[int(k) for k in tok[1:].split('x')]
-            elif 'S' in tok:
+                kernel.insert(2,-1)
+            elif 'S' == tok[0]:
                 stride=[int(k) for k in tok[1:].split('x')]
+                stride.insert(0,1)
+                stride.append(1)
+
         op = ('conv',kernel,stride)
     elif 'P_' in action:
         #add,P_K5x5_S3x3
-        pool_tokens = op_tokens.split('_')
+        pool_tokens = op_token.split('_')
         for tok in pool_tokens:
-            if 'K' in tok:
+            if 'K' == tok[0]:
                 kernel=[int(k) for k in tok[1:].split('x')]
-            elif 'S' in tok:
+                kernel.insert(0,1)
+                kernel.append(1)
+            elif 'S' == tok[0]:
                 stride=[int(k) for k in tok[1:].split('x')]
-        op = ('pool',kernel,stride)
+                stride.insert(0,1)
+                stride.append(1)
+
+        op = ('pool',kernel,stride,pool_tokens[-1])
 
     return op
+
+def execute_action(action):
+    global layer_count
+    if 'remove' in action:
+        logger.info("Removing layer %s",action)
+        op_info = get_op_from_action(action)
+        if op_info[0]=='conv':
+            #remove convolution layer
+            op_type,weights,stride = op_info
+            logger.info('\tRemoving convolution layer')
+            rm_op,rm_idx = remove_conv_layer(op_info[1],op_info[2])
+
+            # if the layer we removed is not eh last convovolutional layer
+            # if it's the last convo layer, next_rm_op will be the fulcon_out
+            next_rm_op,last_conv_layer = -1,True
+            for rm_idx in range(rm_idx,len(iconv_ops)):
+                if 'conv' in iconv_ops[rm_idx]:
+                    next_rm_op = iconv_ops[rm_idx]
+                    last_conv_layer = False
+
+            if not last_conv_layer:
+                update_conv(next_rm_op,conv_depths[rm_op]['in'])
+                conv_depths[next_rm_op]['in']=conv_depths[rm_op]['in']
+                logger.info("\tDepth of %s after update: %s"%(next_rm_op,conv_depths[next_rm_op]['in']))
+
+        elif op_info[0]=='pool':
+            #remove pool layer
+            op_type,kernel,stride,pool_type = op_info
+            logger.info('\tRemoving pool layer with kernel:%s,stride:%s,type:%s'%(kernel,stride,pool_type))
+            remove_pool_layer(kernel,stride,pool_type)
+        logger.info("\tRemoved layer: %s"%action)
+        return
+
+    if action=='finetune':
+        #TODO
+        logger.info("To be impelemented...")
+        return
+
+    # Convolution: 'op',[filter_w,filter_h,out_depth],[stride_w,stride_h]
+    # Pool: 'op',[filter_w,filter_h],[stride_w,stride_h]
+    op_info = get_op_from_action(action)
+
+    if op_info[0]=='conv':
+        conv_id = get_layer_id('conv_'+str(layer_count))
+        layer_count += 1
+        initial_conv_layer = np.all([True if 'conv' not in op else False for op in iconv_ops])
+        print('Ops %s, Initial conv %s'%(iconv_ops,initial_conv_layer))
+        if initial_conv_layer:
+            conv_depths[conv_id]={'in':num_channels,'out':op_info[1][3]}
+            logger.debug('(Initial) Depth for the new Conv Layer: in:%d, out:%d'%(conv_depths[conv_id]['in'],conv_depths[conv_id]['out']))
+        else:
+            #find the last conv_id currently in conv_ops
+            prev_conv_id = ''
+            for op in iconv_ops:
+                # if iteration come to current conv_op, keep the last previous and break the loop
+                if op==conv_id:
+                    break
+                if 'conv' in op:
+                    prev_conv_id = op
+
+            conv_depths[conv_id]={'in':conv_depths[prev_conv_id]['out'],'out':op_info[1][3]}
+            logger.debug('(Following) Depth for the new Conv Layer: in:%d, out:%d'%(conv_depths[conv_id]['in'],conv_depths[conv_id]['out']))
+
+        w = [op_info[1][0],op_info[1][1],conv_depths[conv_id]['in'],conv_depths[conv_id]['out']]
+        s = op_info[2]
+        logger.info('Adding Convolutional Layer %s'%conv_id)
+        logger.debug('\tWith Weights:%s,Stride:%s'%(w,s))
+        add_conv_layer(w,s,conv_id)
+
+    elif op_info[0]=='pool':
+        pool_id = get_layer_id('pool_'+str(layer_count))
+
+        k,s,pool_type = op_info[1],op_info[2],op_info[3]
+
+        logger.info('Adding Pooling Layer %s'%pool_id)
+        logger.debug('\tWith Kernel:%s,Stride:%s,Type:%s'%(k,s,pool_type))
+        add_pool_layer(k,s,pool_type,pool_id)
+
+        layer_count += 1
+    else:
+        raise NotImplementedError
+
 if __name__=='__main__':
     global logger
 
@@ -335,11 +505,9 @@ if __name__=='__main__':
     graph = tf.Graph()
 
     policy_learner = qlearner.ContinuousState(
-        {'learning_rate':0.5,'discount_rate':0.9,
-         'policy_interval':policy_interval,'gp_interval':5*policy_interval,
-         'eta_1':10*policy_interval,'eta_2':20*policy_interval}
+        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20
     )
-    action_picker = learn_best_actions.ActionPicker({'learning_rate':0.5,'discount_rate':0.9})
+    action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
 
     valid_accuracy_log = []
     time_log = []
@@ -373,90 +541,103 @@ if __name__=='__main__':
         tf.initialize_all_variables().run()
 
         start_time = time.clock()
-        for batch_id in range(ceil(train_size//batch_size)-1):
+        for _ in range(10):
+            for batch_id in range(ceil(train_size//batch_size)-1):
 
-            time_stamp = batch_id
-            batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
-            batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
+                time_stamp += 1
+                batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
+                batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
 
-            # validation batch
-            batch_valid_data = train_dataset[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :, :, :]
-            batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
+                # validation batch
+                batch_valid_data = train_dataset[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :, :, :]
+                batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
 
-            start_time = time.clock()
-            feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-            _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
-            end_time = time.clock()
-
-
-            valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
-            valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
-            valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
-            time_log.append(end_time-start_time)
+                start_time = time.clock()
+                feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
+                _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
+                end_time = time.clock()
 
 
-            # every 10000 batch, within the next 500 batches we assess the best actions
-            if batch_id>0 and 0 <= batch_id % 100*policy_interval <= 500:
-                if batch_id % 5 == 0:
-                    mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-5]):])
+                valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
+                valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
+                valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
+                time_log.append(end_time-start_time)
+
+
+                # for batch [1,2,3,...,500,10000,10001,...,10500,...]
+                if batch_id>0 and 0 < batch_id % (100*policy_interval) <= 500:
+
+                    #for batch [500,10500,20500,30500,...]
+                    if batch_id % (100*policy_interval) == 500:
+                        logger.info('Action Picker Finished ...')
+                        predicted_actions = action_picker.get_best_actions(5)
+                        logger.info('\t Got following best actions %s'%predicted_actions)
+                        # update the policy action space
+                        policy_learner.update_action_space(predicted_actions)
+
+                    #for batch [5,10,15,...]
+                    elif batch_id % 5 == 0:
+
+                        logger.info("====================== Executin action for time stamp %d ======================"%time_stamp)
+                        if batch_id!=5:
+                            rm_action = 'remove,'+action.split(',')[1]
+                            logger.debug("Removing  with %s",rm_action)
+                            execute_action(rm_action)
+
+                        mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-5]):])
+                        param_count = get_parameter_count()
+                        stride_cost = get_stride_cost()
+                        duration = np.sum(time_log[np.max([0,len(time_log)-5]):])
+                        data = {
+                            'error_t':100-mean_valid_accuracy,'time_cost':duration,
+                            'param_cost':param_count,'num_layers':len(iconv_ops),
+                            'stride_cost': stride_cost
+                        }
+                        logger.debug('Action Picker running for batch %d'%batch_id)
+                        logger.debug('\tWith data (Error:%.3f,Time:%.3f,Params:%d,Layers:%d,Stride:%.3f'%
+                                     (data['error_t'],data['time_cost'],data['param_cost'],data['num_layers'],data['stride_cost'])
+                                     )
+                        value_logger.info('%d,%s'%(time_stamp,data))
+                        action = action_picker.update_policy(time_stamp,data)
+                        logger.info('Executing action %s'%action)
+                        execute_action(action)
+
+                # for batch [100,200,300,400,...]
+                elif batch_id>0 and batch_id % policy_interval == 0:
+
+                    logger.info('\n==================== Time Stamp: %d ====================='%time_stamp)
+                    logger.debug('Global step: %d'%global_step.eval())
+                    logger.info('Minibatch loss at step %d: %f' % (batch_id, l))
+                    logger.debug('Learning rate: %.3f'%updated_lr)
+                    logger.info('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
+                    mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-(policy_interval//2)]):])
+                    logger.debug('%d Mean Valid accuracy (Latter half)[%d:%d]: %.1f%%' %
+                          (time_stamp,np.max([0,len(valid_accuracy_log)-(policy_interval//2)]),len(valid_accuracy_log), mean_valid_accuracy)
+                          )
                     param_count = get_parameter_count()
-                    duration = np.sum(time_log[np.max([0,len(time_log)-5]):])
-                    data = {'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count}
-                    action_picker.update_policy(time_stamp,data)
+                    stride_cost = get_stride_cost()
+                    logger.debug('%d Parameter count: %d'%(time_stamp,param_count))
+                    duration = np.sum(time_log[np.max([0,len(time_log)-(policy_interval//2)]):])
+                    logger.debug('%d Time taken (Latter half)[%d:%d]: %.3f'%
+                          (time_stamp,np.max([0,len(time_log)-(policy_interval//2)]),len(time_log),duration)
+                    )
 
-                if batch_id % 100*policy_interval == 500:
-                    predicted_actions = action_picker.get_best_actions()
-                    # update the policy action space
-                    policy_learner.update_action_space(predicted_actions)
+                    data = {
+                        'error_t':100-mean_valid_accuracy,'time_cost':duration,
+                        'param_cost':param_count,'num_layers':len(iconv_ops),
+                        'stride_cost': stride_cost
+                    }
+                    logger.info('%d Data for this episode: Error:%.3f, Time:%.3f, Param Count:%d, Layers:%d, Stride:%d'%
+                                (time_stamp,data['error_t'],data['time_cost'],data['param_cost'],data['num_layers'],data['stride_cost'])
+                                )
+                    value_logger.info('%d,%s'%(time_stamp,data))
+                    logger.info('=============================================================\n')
+                    action = policy_learner.update_policy(time_stamp,data)
+                    logger.info('\tReceived action %s'%action)
 
-            elif batch_id>0 and batch_id % policy_interval == 0:
+                    execute_action(action)
+                    logits = get_logits(tf_dataset)
 
-
-                print('Global step: %d'%global_step.eval())
-                print('Minibatch loss at step %d: %f' % (batch_id, l))
-                print('Learning rate: %.3f'%updated_lr)
-                print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
-                mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-(policy_interval//2)]):])
-                print('%d Mean Valid accuracy (Latter half)[%d:%d]: %.1f%%' %
-                      (time_stamp,np.max([0,len(valid_accuracy_log)-(policy_interval//2)]),len(valid_accuracy_log), mean_valid_accuracy)
-                      )
-                param_count = get_parameter_count()
-                print('%d Parameter count: %d'%(time_stamp,param_count))
-                duration = np.sum(time_log[np.max([0,len(time_log)-(policy_interval//2)]):])
-                print('%d Time taken (Latter half)[%d:%d]: %.3f'%
-                      (time_stamp,np.max([0,len(time_log)-(policy_interval//2)]),len(time_log),time_log)
-                )
-
-                data = {'error_t':mean_valid_accuracy,'time_cost':duration,'param_cost':param_count}
-                action = policy_learner.update_policy(time_stamp,data)
-                op_info = get_op_from_action(action)
-                if op_info[0]=='conv':
-                    conv_id = get_layer_id('conv_'+str(layer_count))
-                    layer_count += 1
-                    if 'conv' not in iconv_ops:
-                        conv_depths[conv_id]={'in':num_channels,'out':op_info[1][2]}
-                    else:
-                        #find the last conv_id currently in conv_ops
-                        prev_conv_id = ''
-                        for op in iconv_ops:
-                            if 'conv' in op:
-                                prev_conv_id = op
-
-                        conv_depths[conv_id]={'in':conv_depths[prev_conv_id]['out'],'out':op_info[1][2]}
-
-                    w = [op_info[1][0],op_info[1][1],conv_depths[conv_id]['in'],conv_depths[conv_id]['out']]
-                    s = [1,op_info[2][0],op_info[2][1],1]
-                    add_conv_layer(w,s,conv_id)
-
-                elif op_info[0]=='pool':
-                    pool_id = get_layer_id('pool_'+str(layer_count))
-                    layer_count += 1
-                else:
-                    raise NotImplementedError
-                logits = get_logits(tf_dataset)
-
-            else:
-                # don't do anything
 
             '''if batch_id == 101:
                 print('\n======================== Adding a convolutional layer ==========================')
