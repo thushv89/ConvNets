@@ -12,6 +12,7 @@ import sys
 import time
 import qlearner
 import learn_best_actions
+from data_pool import Pool
 
 logger = None
 logging_level = logging.DEBUG
@@ -116,14 +117,14 @@ def update_fulcon_out(to_w,to_h,to_d):
 
 
     elif mod_total>0:
-        #add weights
+        # add weights
         add_weights = tf.Variable(tf.truncated_normal([mod_total,num_labels],stddev=2./mod_total),name='add_weights')
         tf.initialize_variables([add_weights]).run()
         new_weights = tf.concat(0,[weights[get_layer_id('fulcon_out')],add_weights])
         print('\t\tAdded (%s,%s) weights'%(mod_total,num_labels))
 
     else:
-        #do nothing
+        # do nothing
         print('\t\tNo modification required... Skipping the update')
         new_weights = weights[get_layer_id('fulcon_out')]
 
@@ -355,6 +356,9 @@ def calc_loss(logits,labels):
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels))
 
     return loss
+
+def calc_loss_vector(logits,labels):
+    return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
 
 def optimize_func(loss,global_step):
     # Optimizer.
@@ -627,6 +631,7 @@ if __name__=='__main__':
         learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20
     )
     action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
+    hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,size=10000,batch_size=batch_size)
 
     valid_accuracy_log = []
     time_log = []
@@ -657,6 +662,7 @@ if __name__=='__main__':
         pred = predict_with_logits(logits)
         optimize = optimize_func(loss,global_step)
         inc_gstep = inc_global_step(global_step)
+        loss_vector = calc_loss_vector(logits,tf_labels)
 
         # valid predict function
         pred_valid = predict_with_dataset(tf_valid_dataset)
@@ -678,15 +684,23 @@ if __name__=='__main__':
 
                 start_time = time.clock()
                 feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-                _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
+                _, l, l_vec, (_,updated_lr), predictions,_ = session.run(
+                        [logits,loss,loss_vector,optimize,pred,inc_gstep], feed_dict=feed_dict
+                )
+
                 end_time = time.clock()
 
+                hard_fraction = 1.0 - float(accuracy(predictions, batch_labels))/100.0
+                logger.debug("Hard pool (pos,size) before adding %d points having %.1f hard examples:(%d,%d)"
+                             %(batch_labels.shape[0],hard_fraction,hard_pool.get_position(),hard_pool.get_size())
+                             )
+                hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hard_fraction)
+                logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
 
                 valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
                 valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
                 valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
                 time_log.append(end_time-start_time)
-
 
                 # for batch [1,2,3,...,500,10000,10001,...,10500,...]
                 if batch_id>0 and 0 < batch_id % (100*policy_interval) <= 500:

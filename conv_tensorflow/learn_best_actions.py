@@ -30,6 +30,12 @@ class ActionPicker(object):
 
         self.local_time_stamp = 0
 
+        self.action_logger = logging.getLogger('Policy Logger')
+        self.action_logger.setLevel(logging_level)
+        console = logging.StreamHandler(sys.stdout)
+        console.setFormatter(logging.Formatter(logging_format))
+        console.setLevel(logging_level)
+        self.action_logger.addHandler(console)
 
         self.actions = [
             'add,C_K5x5x16_S3x3','add,C_K5x5x64_S3x3','add,C_K5x5x16_S1x1','add,C_K5x5x64_S1x1',
