@@ -177,8 +177,8 @@ def update_conv(conv_id,to_d):
 
     #find the convolutional layer before the addition
     prev_conv_id = None
-    for op in reversed(iconv_ops[:iconv_ops.index(conv_id)-1]):
-        if 'conv' in op:
+    for op in reversed(iconv_ops[:iconv_ops.index(conv_id)]):
+        if 'conv' in op and conv_id!=op:
             prev_conv_id = op
             break
     if prev_conv_id is not None:
@@ -712,7 +712,7 @@ if __name__=='__main__':
                              %(batch_labels.shape[0],hard_fraction,hard_pool.get_position(),hard_pool.get_size())
                              )'''
                 hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hard_fraction)
-                logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
+                #logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
 
                 valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
                 valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
