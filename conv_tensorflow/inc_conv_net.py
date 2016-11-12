@@ -46,6 +46,7 @@ include_l2_loss = True
 beta = 1e-8
 
 policy_interval = 100
+assert_true = True
 
 train_dataset, train_labels = None,None
 valid_dataset, valid_labels = None,None
@@ -370,6 +371,10 @@ def optimize_func(loss,global_step):
     optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
     return optimizer,learning_rate
 
+def optimize_with_fixed_lr_func(loss,learning_rate):
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+    return optimizer
+
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
 
@@ -491,7 +496,10 @@ def get_op_from_action(action):
 
 def execute_action(action):
     '''
-    Execute an action and output if it was successful
+    Execute an action and output if it was successful. Include 3 main actions
+    Add,Type_Hyperparameters => Add a layer of given type with the given hyperparameters
+    Remove,Type_Hyperparameters => Removes a layer furthest from output layer having the given hyperparameters
+    Finetune => Finetune the network with a pool of data
     :param action: action as a string
     :return: Whether successful or not
     '''
@@ -596,10 +604,8 @@ def execute_action(action):
         else:
             raise NotImplementedError
 
-
     if action=='finetune':
-        #TODO
-        logger.info("To be impelemented...")
+        return True
 
     return True
 
@@ -631,7 +637,7 @@ if __name__=='__main__':
         learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20
     )
     action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
-    hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,size=10000,batch_size=batch_size)
+    hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,size=10000,batch_size=batch_size,assert_test=assert_true)
 
     valid_accuracy_log = []
     time_log = []
@@ -648,6 +654,9 @@ if __name__=='__main__':
         tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
         tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
+        tf_pool_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
+        tf_pool_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+
         # Valid data
         tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
         tf_valid_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
@@ -663,6 +672,10 @@ if __name__=='__main__':
         optimize = optimize_func(loss,global_step)
         inc_gstep = inc_global_step(global_step)
         loss_vector = calc_loss_vector(logits,tf_labels)
+
+        pool_logits = get_logits(tf_pool_dataset)
+        pool_loss = calc_loss(pool_logits,tf_pool_labels)
+        pool_optimize = optimize_with_fixed_lr_func(pool_loss,tf.constant(0.05))
 
         # valid predict function
         pred_valid = predict_with_dataset(tf_valid_dataset)
@@ -682,6 +695,7 @@ if __name__=='__main__':
                 batch_valid_data = train_dataset[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :, :, :]
                 batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
 
+
                 start_time = time.clock()
                 feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
                 _, l, l_vec, (_,updated_lr), predictions,_ = session.run(
@@ -690,12 +704,15 @@ if __name__=='__main__':
 
                 end_time = time.clock()
 
+                assert not np.isnan(l)
+
                 hard_fraction = 1.0 - float(accuracy(predictions, batch_labels))/100.0
-                logger.debug("Hard pool (pos,size) before adding %d points having %.1f hard examples:(%d,%d)"
+
+                '''logger.debug("Hard pool (pos,size) before adding %d points having %.1f hard examples:(%d,%d)"
                              %(batch_labels.shape[0],hard_fraction,hard_pool.get_position(),hard_pool.get_size())
-                             )
+                             )'''
                 hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hard_fraction)
-                logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
+                #logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
 
                 valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
                 valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
@@ -753,6 +770,7 @@ if __name__=='__main__':
                     logger.debug('\t%d Mean Valid accuracy (Latter half)[%d:%d]: %.1f%%' %
                           (time_stamp,np.max([0,len(valid_accuracy_log)-(policy_interval//2)]),len(valid_accuracy_log), mean_valid_accuracy)
                           )
+
                     param_count = get_parameter_count()
                     stride_cost = get_stride_cost()
                     logger.debug('\t%d Parameter count: %d'%(time_stamp,param_count))
@@ -774,7 +792,21 @@ if __name__=='__main__':
                     action = policy_learner.update_policy(time_stamp,data,current_action_success)
                     logger.info('\tReceived action %s'%action)
 
-                    current_action_success = execute_action(action)
+                    if action != 'finetune':
+                        current_action_success = execute_action(action)
+                    else:
+                        p_data = hard_pool.get_pool_data()
+
+                        for pbatch_id in range(hard_pool.get_size()//batch_size):
+                            pool_batch_data = p_data['pool_dataset'][pbatch_id*batch_size:(pbatch_id+1)*batch_size,:,:,:]
+                            pool_batch_labels = p_data['pool_labels'][pbatch_id*batch_size:(pbatch_id+1)*batch_size,:]
+
+                            feed_pool_dict = {tf_pool_dataset : pool_batch_data, tf_pool_labels : pool_batch_labels}
+                            _, pool_l, (_,updated_lr) = \
+                                session.run([pool_logits,pool_loss,pool_optimize], feed_dict=feed_pool_dict)
+
+                            assert not np.isnan(pool_l)
+
                     logits = get_logits(tf_dataset)
 
         # test batches

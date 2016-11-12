@@ -9,10 +9,11 @@ class Pool(object):
     '''
     def __init__(self,**params):
 
+        self.assert_test = params['assert_test']
         self.size = params['size']
         self.position = 0
-        self.dataset = None
-        self.labels = None
+        self.dataset = np.empty((self.size,params['image_size'],params['image_size'],params['num_channels']),dtype=np.float32)
+        self.labels = np.empty((self.size,params['num_labels']),dtype=np.float32)
         self.batch_size = params['batch_size']
         self.filled_size = 0
 
@@ -36,38 +37,35 @@ class Pool(object):
         :return: None
         '''
 
-        _,hard_indices = tf.nn.top_k(loss,k=int(fraction*self.batch_size),sorted=False,name='top_hard')
+        _,tf_hard_indices = tf.nn.top_k(loss,k=int(fraction*self.batch_size),sorted=False,name='top_hard')
+        add_size = tf_hard_indices.get_shape().as_list()[0]
+        hard_indices = tf_hard_indices.eval()
 
-        add_size = hard_indices.get_shape().as_list()[0]
-
-        if self.dataset is None and self.labels is None:
-            self.dataset = tf.constant(data)
-            self.labels = tf.constant(labels)
-
+        # if position has more space for all the hard_examples
+        if self.position <= self.size - add_size:
+            self.dataset[self.position:self.position+add_size,:,:,:] = data[hard_indices,:,:,:]
+            self.labels[self.position:self.position+add_size,:] = labels[hard_indices,:]
         else:
-            # if position has more space for all the hard_examples
-            if self.position <= self.size - add_size:
-                self.dataset[self.position:self.position+add_size,:,:,:] = data[hard_indices,:,:,:]
-                self.labels[self.position:self.position+add_size,:] = labels[hard_indices,:]
-            else:
-                overflow = (self.position + add_size) % self.size
-                end_chunk_size = self.size - self.position
+            overflow = (self.position + add_size) % self.size
+            end_chunk_size = self.size - self.position
 
-                # Adding till the end
-                self.dataset[self.position:,:,:,:] = data[hard_indices[self.position:end_chunk_size],:,:,:]
-                self.labels[self.position:,:] = labels[hard_indices[self.position:end_chunk_size],:]
+            # Adding till the end
+            self.dataset[self.position:,:,:,:] = data[hard_indices[self.position:end_chunk_size],:,:,:]
+            self.labels[self.position:,:] = labels[hard_indices[self.position:end_chunk_size],:]
 
-                # Starting from the beginning for the remaining
-                self.dataset[:overflow,:,:,:] = data[hard_indices[end_chunk_size:],:,:,:]
-                self.labels[:overflow,:] = labels[hard_indices[end_chunk_size:],:]
+            # Starting from the beginning for the remaining
+            self.dataset[:overflow,:,:,:] = data[hard_indices[end_chunk_size:],:,:,:]
+            self.labels[:overflow,:] = labels[hard_indices[end_chunk_size:],:]
 
+        if self.assert_test:
+            assert np.all(self.dataset[self.position,:,:,:].flatten()== data[hard_indices[0],:,:,:].flatten())
         self.position = (self.position+add_size)%self.size
 
     def get_position(self):
         return self.position
 
     def get_size(self):
-        if self.dataset is None:
-            return 0
-        else:
-            return self.dataset.get_shape().as_list()[0]
+        return self.dataset.shape[0]
+
+    def get_pool_data(self):
+        return {'pool_dataset':self.dataset,'pool_labels':self.labels}
