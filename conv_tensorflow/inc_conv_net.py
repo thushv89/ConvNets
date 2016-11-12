@@ -712,7 +712,7 @@ if __name__=='__main__':
                              %(batch_labels.shape[0],hard_fraction,hard_pool.get_position(),hard_pool.get_size())
                              )'''
                 hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hard_fraction)
-                #logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
+                logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
 
                 valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
                 valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
@@ -797,15 +797,18 @@ if __name__=='__main__':
                     else:
                         p_data = hard_pool.get_pool_data()
 
+                        logger.debug("Finetuning with pool of size %d"%hard_pool.get_size())
                         for pbatch_id in range(hard_pool.get_size()//batch_size):
                             pool_batch_data = p_data['pool_dataset'][pbatch_id*batch_size:(pbatch_id+1)*batch_size,:,:,:]
                             pool_batch_labels = p_data['pool_labels'][pbatch_id*batch_size:(pbatch_id+1)*batch_size,:]
 
                             feed_pool_dict = {tf_pool_dataset : pool_batch_data, tf_pool_labels : pool_batch_labels}
-                            _, pool_l, (_,updated_lr) = \
+
+                            _, pool_l, _ = \
                                 session.run([pool_logits,pool_loss,pool_optimize], feed_dict=feed_pool_dict)
 
-                            assert not np.isnan(pool_l)
+                            if assert_true:
+                                assert not np.isnan(pool_l)
 
                     logits = get_logits(tf_dataset)
 
