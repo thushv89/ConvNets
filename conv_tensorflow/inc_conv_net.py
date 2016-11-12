@@ -529,6 +529,8 @@ def execute_action(action):
                 conv_depths[next_rm_op]['in']=conv_depths[rm_op]['in']
                 logger.info("\tDepth of %s after update: %s"%(next_rm_op,conv_depths[next_rm_op]['in']))
 
+            layer_count -= 1
+
         elif op_info[0]=='pool':
             #remove pool layer
             op_type,kernel,stride,pool_type = op_info
@@ -536,6 +538,8 @@ def execute_action(action):
             rm_op = remove_pool_layer(kernel,stride,pool_type)
             if rm_op is None:
                 return False
+
+            layer_count -= 1
 
         logger.info("\tRemoved layer: %s"%action)
 
