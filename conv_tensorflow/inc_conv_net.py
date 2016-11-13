@@ -657,7 +657,7 @@ if __name__=='__main__':
     valid_accuracy_log = []
     time_log = []
     param_log = []
-    current_action_success = True
+    previous_action_success = True
 
     with tf.Session(graph=graph) as session:
 
@@ -774,9 +774,9 @@ if __name__=='__main__':
 
                         # add the new layer
                         value_logger.info('%d,%s'%(time_stamp,data))
-                        action = action_picker.update_policy(time_stamp,data)
+                        action = action_picker.update_policy(time_stamp,data,previous_action_success)
                         logger.info('Executing action %s'%action)
-                        execute_action(action)
+                        previous_action_success = execute_action(action)
 
                 # for batch [100,200,300,400,...]
                 elif time_stamp > 0 and time_stamp % policy_interval == 0:
@@ -810,11 +810,11 @@ if __name__=='__main__':
                                 )
                     value_logger.info('%d,%s'%(time_stamp,data))
                     logger.info('=============================================================\n')
-                    action = policy_learner.update_policy(time_stamp,data,current_action_success)
+                    action = policy_learner.update_policy(time_stamp,data,previous_action_success)
                     logger.info('\tReceived action %s'%action)
 
                     if action != 'finetune':
-                        current_action_success = execute_action(action)
+                        previous_action_success = execute_action(action)
                     else:
                         p_data = hard_pool.get_pool_data()
 

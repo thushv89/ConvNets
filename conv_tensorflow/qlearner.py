@@ -116,11 +116,11 @@ class ContinuousState(object):
                     break
                 x, y = zip(*value_dict.items())
 
-                format_x = np.asarray(x).flatten().reshape(-1,len(state))
-                self.rl_logger.debug("X: %s"%format_x)
-
                 gp = GaussianProcessRegressor()
-                gp.fit(format_x, np.asarray(y))
+                if np.asarray(x).shape[0]==1:
+                    gp.fit(np.asarray(x).reshape(1,-1),np.asarray(y))
+                else:
+                    gp.fit(np.asarray(x), np.asarray(y))
 
                 self.gps[a] = gp
 
@@ -136,7 +136,7 @@ class ContinuousState(object):
                 sample = reward
             else:
                 self.rl_logger.debug('\tPredicting with a GP. Using the gp prediction + reward as the sample ...')
-                sample = reward + self.discount_rate * max((np.asscalar(gp.predict([self.prev_state])[0])) for gp in self.gps.values())
+                sample = reward + self.discount_rate * max((np.asscalar(gp.predict([np.asarray(self.prev_state).reshape((1,-1))])[0])) for gp in self.gps.values())
 
             self.rl_logger.info('\tUpdating the Q values ...')
 
@@ -167,7 +167,7 @@ class ContinuousState(object):
                     self.rl_logger.info("\tChose with Q: %s", action)
 
                 for a, gp in self.gps.items():
-                    self.rl_logger.debug("\tApproximated Q values for (above State,%s) pair: %10.3f",a, np.asscalar(gp.predict(state)[0]))
+                    self.rl_logger.debug("\tApproximated Q values for (above State,%s) pair: %10.3f",a, np.asscalar(gp.predict(np.asarray(state).reshape((1,-1)))[0]))
 
         # decay epsilon
         if self.local_time_stamp % 10==0:

@@ -56,7 +56,7 @@ class ActionPicker(object):
     def restore_Q(self):
         self.q = {}
 
-    def update_policy(self, global_time_stamp, data):
+    def update_policy(self, global_time_stamp, data, success):
         #we do not consider states in calculating Q values here
         # to speed up computations
 
@@ -70,7 +70,8 @@ class ActionPicker(object):
             time_cost = data['time_cost']
             param_cost = data['param_cost']
             stride_cost = data['stride_cost']
-            reward = -(data['error_t'] + 0.05*stride_cost)
+            success_cost = 0 if success else -100
+            reward = -(data['error_t'] + 0.05*stride_cost) + success_cost
 
             print('\tActionPicker - Running action: %s'%a)
             if self.prev_action not in self.q:
