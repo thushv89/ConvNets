@@ -117,7 +117,7 @@ class ContinuousState(object):
                 x, y = zip(*value_dict.items())
 
                 format_x = np.asarray(x).flatten().reshape(-1,len(state))
-                self.rl_logger.debug("X: %s Y: %s"%format_x,y)
+                self.rl_logger.debug("X: %s"%format_x)
 
                 gp = GaussianProcessRegressor()
                 gp.fit(format_x, np.asarray(y))

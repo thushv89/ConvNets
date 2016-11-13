@@ -41,8 +41,8 @@ class ActionPicker(object):
             'add,C_K5x5x16_S2x2','add,C_K5x5x64_S2x2','add,C_K5x5x16_S1x1','add,C_K5x5x64_S1x1',
             'add,C_K3x3x16_S2x2','add,C_K3x3x64_S2x2','add,C_K3x3x16_S1x1','add,C_K3x3x64_S1x1',
             'add,C_K1x1x16_S2x2','add,C_K1x1x64_S2x2','add,C_K1x1x16_S1x1','add,C_K1x1x64_S1x1',
-            'add,P_K5x5_S3x3_avg','add,P_K5x5_S1x1_avg','add,P_K2x2_S2x2_avg','add,P_K2x2_S1x1_avg',
-            'add,P_K5x5_S3x3_max','add,P_K5x5_S1x1_max','add,P_K2x2_S2x2_max','add,P_K2x2_S1x1_max'
+            'add,P_K5x5_S2x2_avg','add,P_K5x5_S1x1_avg','add,P_K2x2_S2x2_avg','add,P_K2x2_S1x1_avg',
+            'add,P_K5x5_S2x2_max','add,P_K5x5_S1x1_max','add,P_K2x2_S2x2_max','add,P_K2x2_S1x1_max'
         ]
         self.prev_action = None
 
