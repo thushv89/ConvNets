@@ -116,9 +116,10 @@ class ContinuousState(object):
                     break
                 x, y = zip(*value_dict.items())
 
+                self.rl_logger.debug("X: %s Y: %s"%(x,y))
                 #gp = GaussianProcessRegressor(theta0=0.1, thetaL=0.001, thetaU=1, nugget=0.1)
                 gp = GaussianProcessRegressor()
-                gp.fit(np.asarray(x).reshape(-1,len(state)), np.asarray(y).reshape(-1,1))
+                gp.fit(np.asarray(x).reshape(-1,len(state)), np.asarray(y))
 
                 self.gps[a] = gp
 

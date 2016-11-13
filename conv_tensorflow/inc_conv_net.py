@@ -522,13 +522,16 @@ def execute_action(action):
             if rm_op is None and rm_idx is None:
                 return False
 
-            # if the layer we removed is not eh last convovolutional layer
+            # if the layer we removed is not the last convovolutional layer
             # if it's the last convo layer, next_rm_op will be the fulcon_out
             next_rm_op,last_conv_layer = -1,True
-            for rm_idx in range(rm_idx,len(iconv_ops)):
-                if 'conv' in iconv_ops[rm_idx]:
-                    next_rm_op = iconv_ops[rm_idx]
+            # to find the convolution layer next to the removed one
+            # iterate from the rm_idx till the end
+            for tmp_i in range(rm_idx,len(iconv_ops)):
+                if 'conv' in iconv_ops[tmp_i]:
+                    next_rm_op = iconv_ops[tmp_i]
                     last_conv_layer = False
+                    break
 
             if not last_conv_layer:
                 update_conv(next_rm_op,conv_depths[rm_op]['in'])
@@ -645,7 +648,7 @@ if __name__=='__main__':
     graph = tf.Graph()
 
     policy_learner = qlearner.ContinuousState(
-        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=30
+        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20
     )
     action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
     hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,
@@ -699,7 +702,6 @@ if __name__=='__main__':
         for _ in range(10):
             for batch_id in range(ceil(train_size//batch_size)-1):
 
-                time_stamp += 1
                 batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
                 batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
 
@@ -733,10 +735,10 @@ if __name__=='__main__':
                 time_log.append(end_time-start_time)
 
                 # for batch [1,2,3,...,500,10000,10001,...,10500,...]
-                if batch_id>0 and 0 < batch_id % (100*policy_interval) <= 500:
+                if time_stamp > 0 and 0 < time_stamp % (100*policy_interval) <= 500:
 
                     #for batch [500,10500,20500,30500,...]
-                    if batch_id % (100*policy_interval) == 500:
+                    if time_stamp % (100*policy_interval) == 500:
                         logger.info('Action Picker Finished ...')
                         predicted_actions = action_picker.get_best_actions(5)
                         logger.info('\t Got following best actions %s'%predicted_actions)
@@ -745,10 +747,10 @@ if __name__=='__main__':
                         action_picker.restore_Q()
 
                     #for batch [5,10,15,...]
-                    elif batch_id % 5 == 0:
+                    elif time_stamp % 5 == 0:
 
                         logger.info("====================== Executing action for time stamp %d ======================"%time_stamp)
-                        if batch_id!=5:
+                        if time_stamp != 5:
                             # first remove the previously added layer
                             rm_action = 'remove,'+action.split(',')[1]
                             logger.debug("Removing  with %s",rm_action)
@@ -777,7 +779,7 @@ if __name__=='__main__':
                         execute_action(action)
 
                 # for batch [100,200,300,400,...]
-                elif batch_id>0 and batch_id % policy_interval == 0:
+                elif time_stamp > 0 and time_stamp % policy_interval == 0:
 
                     logger.info('\n==================== Time Stamp: %d ====================='%time_stamp)
                     logger.debug('\tGlobal step: %d'%global_step.eval())
@@ -830,6 +832,8 @@ if __name__=='__main__':
                                 assert not np.isnan(pool_l)
 
                     logits = get_logits(tf_dataset)
+
+                time_stamp += 1
 
         # test batches
         test_accuracies = []
