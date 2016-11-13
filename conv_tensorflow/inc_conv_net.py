@@ -55,6 +55,8 @@ test_dataset, test_labels = None,None
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
 
+pool_hyperparameters = {'pool_size':10000,'hardness':0.5}
+
 iconv_ops = ['fulcon_out'] #ops will give the order of layers
 hyparams = {
     'fulcon_out':{'in':image_size*image_size*num_channels, 'out':num_labels, 'whd':[image_size,image_size,num_channels]}
@@ -177,7 +179,8 @@ def update_conv(conv_id,to_d):
 
     #find the convolutional layer before the addition
     prev_conv_id = None
-    for op in reversed(iconv_ops[:iconv_ops.index(conv_id)]):
+
+    for op in reversed(iconv_ops[:iconv_ops.index(conv_id)+1]):
         if 'conv' in op and conv_id!=op:
             prev_conv_id = op
             break
@@ -217,12 +220,13 @@ def add_conv_layer(w,stride,conv_id):
     iconv_ops.append(out_id)
 
     weight_shape = weights[conv_id].get_shape().as_list()
-    logger.warn('Zero sized Dimension detected')
+
     assert np.all(np.asarray(weight_shape)>0)
     if prev_conv_id is not None:
         assert weights[prev_conv_id].get_shape().as_list()[3] == weight_shape[2]
 
     assert weight_shape == hyparams[conv_id]['weights']
+
 def add_pool_layer(ksize,stride,type,pool_id):
     '''
     Specify the hyperparameters for a pooling layer. And update conv_ops
@@ -414,7 +418,9 @@ def get_stride_cost():
     for op in iconv_ops:
         if 'conv' in op or 'pool' in op:
             stride = hyparams[op]['stride']
-            total_stride += np.prod(stride)
+            stride_prod = np.prod(stride)
+            if stride_prod != 1:
+                total_stride += stride_prod
     return total_stride
 
 def accuracy(predictions, labels):
@@ -529,6 +535,7 @@ def execute_action(action):
                 conv_depths[next_rm_op]['in']=conv_depths[rm_op]['in']
                 logger.info("\tDepth of %s after update: %s"%(next_rm_op,conv_depths[next_rm_op]['in']))
 
+            # reduce layer count if removal successful
             layer_count -= 1
 
         elif op_info[0]=='pool':
@@ -538,7 +545,7 @@ def execute_action(action):
             rm_op = remove_pool_layer(kernel,stride,pool_type)
             if rm_op is None:
                 return False
-
+            # reduce layer count if removal successful
             layer_count -= 1
 
         logger.info("\tRemoved layer: %s"%action)
@@ -550,7 +557,7 @@ def execute_action(action):
         op_info = get_op_from_action(action)
 
         if op_info[0]=='conv':
-            conv_id = get_layer_id('conv_'+str(layer_count))
+            conv_id = get_layer_id('conv_'+str(time_stamp))
             layer_count += 1
             initial_conv_layer = np.all([True if 'conv' not in op else False for op in iconv_ops])
 
@@ -587,7 +594,7 @@ def execute_action(action):
             add_conv_layer(w,s,conv_id)
 
         elif op_info[0]=='pool':
-            pool_id = get_layer_id('pool_'+str(layer_count))
+            pool_id = get_layer_id('pool_'+str(time_stamp))
 
             k,s,pool_type = op_info[1],op_info[2],op_info[3]
 
@@ -638,10 +645,11 @@ if __name__=='__main__':
     graph = tf.Graph()
 
     policy_learner = qlearner.ContinuousState(
-        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20
+        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=30
     )
     action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
-    hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,size=10000,batch_size=batch_size,assert_test=assert_true)
+    hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,
+                     size=pool_hyperparameters['pool_size'],batch_size=batch_size,assert_test=assert_true)
 
     valid_accuracy_log = []
     time_log = []
@@ -712,11 +720,12 @@ if __name__=='__main__':
 
                 hard_fraction = 1.0 - float(accuracy(predictions, batch_labels))/100.0
 
-                '''logger.debug("Hard pool (pos,size) before adding %d points having %.1f hard examples:(%d,%d)"
+                if hard_fraction > pool_hyperparameters['hardness']:
+                    '''logger.debug("Hard pool (pos,size) before adding %d points having %.1f hard examples:(%d,%d)"
                              %(batch_labels.shape[0],hard_fraction,hard_pool.get_position(),hard_pool.get_size())
                              )'''
-                hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hard_fraction)
-                #logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
+                    hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hard_fraction)
+                    #logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
 
                 valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
                 valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
@@ -733,12 +742,14 @@ if __name__=='__main__':
                         logger.info('\t Got following best actions %s'%predicted_actions)
                         # update the policy action space
                         policy_learner.update_action_space(predicted_actions)
+                        action_picker.restore_Q()
 
                     #for batch [5,10,15,...]
                     elif batch_id % 5 == 0:
 
-                        logger.info("====================== Executin action for time stamp %d ======================"%time_stamp)
+                        logger.info("====================== Executing action for time stamp %d ======================"%time_stamp)
                         if batch_id!=5:
+                            # first remove the previously added layer
                             rm_action = 'remove,'+action.split(',')[1]
                             logger.debug("Removing  with %s",rm_action)
                             execute_action(rm_action)
@@ -747,15 +758,19 @@ if __name__=='__main__':
                         param_count = get_parameter_count()
                         stride_cost = get_stride_cost()
                         duration = np.sum(time_log[np.max([0,len(time_log)-5]):])
+
                         data = {
                             'error_t':100-mean_valid_accuracy,'time_cost':duration,
                             'param_cost':param_count,'num_layers':len(iconv_ops),
                             'stride_cost': stride_cost
                         }
+
                         logger.debug('Action Picker running for batch %d'%batch_id)
                         logger.debug('\tWith data (Error:%.3f,Time:%.3f,Params:%d,Layers:%d,Stride:%.3f'%
                                      (data['error_t'],data['time_cost'],data['param_cost'],data['num_layers'],data['stride_cost'])
                                      )
+
+                        # add the new layer
                         value_logger.info('%d,%s'%(time_stamp,data))
                         action = action_picker.update_policy(time_stamp,data)
                         logger.info('Executing action %s'%action)

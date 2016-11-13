@@ -30,7 +30,7 @@ class ActionPicker(object):
 
         self.local_time_stamp = 0
 
-        self.action_logger = logging.getLogger('Policy Logger')
+        self.action_logger = logging.getLogger('Action picker Logger')
         self.action_logger.setLevel(logging_level)
         console = logging.StreamHandler(sys.stdout)
         console.setFormatter(logging.Formatter(logging_format))
@@ -52,6 +52,9 @@ class ActionPicker(object):
         self.prev_action = restore_data['prev_action']
         self.q = restore_data['q']
         self.gps = restore_data['gps']
+
+    def restore_Q(self):
+        self.q = {}
 
     def update_policy(self, global_time_stamp, data):
         #we do not consider states in calculating Q values here

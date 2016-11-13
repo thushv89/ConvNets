@@ -9,7 +9,7 @@ import random
 import logging
 import sys
 
-logging_level = logging.INFO
+logging_level = logging.DEBUG
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
 
 
@@ -58,9 +58,9 @@ class ContinuousState(object):
 
     def update_policy(self, global_time_stamp, data,success=True):
 
-        if not success:
-            self.rl_logger.warn('\n\n\n')
-            self.rl_logger.warn("Previous action wasn't successful ...\n\n\n")
+        if not success and self.prev_action is not None:
+            self.rl_logger.warn('\n')
+            self.rl_logger.warn("Previous action %s wasn't successful ...\n"%self.prev_action)
 
         self.rl_logger.info('\n============== Policy Update for %d (Global: %d) ==============='%(self.local_time_stamp,global_time_stamp))
         # Errors (current and previous) used to calculate reward
@@ -118,18 +118,15 @@ class ContinuousState(object):
 
                 #gp = GaussianProcessRegressor(theta0=0.1, thetaL=0.001, thetaU=1, nugget=0.1)
                 gp = GaussianProcessRegressor()
+                gp.fit(np.asarray(x).reshape(-1,len(state)), np.asarray(y).reshape(-1,1))
 
-                if np.array(x).size == len(state):
-                    gp.fit(np.asarray(x).reshape(1,-1),np.array(y))
-                else:
-                    gp.fit(np.array(x), np.array(y))
                 self.gps[a] = gp
 
         if self.prev_state or self.prev_action:
 
-            reward = -(curr_err + 0.01*time_cost + 0.001*param_cost +
-                       2**(stride_cost//5) + 2**(data['num_layers']//2)) + success_cost
-
+            reward = -(curr_err + 0.01*time_cost + 1e-5*param_cost +
+                       2**(stride_cost//3) + 2**(data['num_layers']//2)) + success_cost
+            self.rl_logger.info("Reward for action: %s: %.3f"%(self.prev_action,reward))
             # sample = reward + self.discount_rate * max(self.q[state, a] for a in self.actions)
             # len(gps) == 0 in the first time move() is called
             if self.prev_action not in self.gps or len(self.q[self.prev_action]) < 3:
