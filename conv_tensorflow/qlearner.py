@@ -25,7 +25,7 @@ class ContinuousState(object):
         self.policy_intervel = params['policy_interval']
         self.q = {} #store Q values
         self.gps = {} #store gaussian curves
-
+        self.epsilon = params['epsilon']
         self.rl_logger = logging.getLogger('Policy Logger')
         self.rl_logger.setLevel(logging_level)
         console = logging.StreamHandler(sys.stdout)
@@ -116,10 +116,11 @@ class ContinuousState(object):
                     break
                 x, y = zip(*value_dict.items())
 
-                self.rl_logger.debug("X: %s Y: %s"%(x,y))
-                #gp = GaussianProcessRegressor(theta0=0.1, thetaL=0.001, thetaU=1, nugget=0.1)
+                format_x = np.asarray(x).flatten().reshape(-1,len(state))
+                self.rl_logger.debug("X: %s Y: %s"%format_x,y)
+
                 gp = GaussianProcessRegressor()
-                gp.fit(np.asarray(x).reshape(-1,len(state)), np.asarray(y))
+                gp.fit(format_x, np.asarray(y))
 
                 self.gps[a] = gp
 
@@ -158,7 +159,7 @@ class ContinuousState(object):
                 self.rl_logger.info("\tEvenly chose action: %s"%action)
             else:
                 # determine best action by sampling the GPs
-                if random.random() <= 0.1:
+                if random.random() <= self.epsilon:
                     action = self.actions[self.local_time_stamp % len(self.actions)]
                     self.rl_logger.info("\tExplore action: %s", action)
                 else:
@@ -167,6 +168,10 @@ class ContinuousState(object):
 
                 for a, gp in self.gps.items():
                     self.rl_logger.debug("\tApproximated Q values for (above State,%s) pair: %10.3f",a, np.asscalar(gp.predict(state)[0]))
+
+        # decay epsilon
+        if self.local_time_stamp % 10==0:
+            self.epsilon = max(self.epsilon*0.9,0.05)
 
         self.local_time_stamp += 1
         self.prev_action = action

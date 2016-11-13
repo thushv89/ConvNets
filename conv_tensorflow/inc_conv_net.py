@@ -648,7 +648,7 @@ if __name__=='__main__':
     graph = tf.Graph()
 
     policy_learner = qlearner.ContinuousState(
-        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20
+        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20,epsilon=0.5
     )
     action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
     hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,
@@ -738,7 +738,7 @@ if __name__=='__main__':
                 if time_stamp > 0 and 0 < time_stamp % (100*policy_interval) <= 500:
 
                     #for batch [500,10500,20500,30500,...]
-                    if time_stamp % (100*policy_interval) == 500:
+                    if time_stamp % (50*policy_interval) == 500:
                         logger.info('Action Picker Finished ...')
                         predicted_actions = action_picker.get_best_actions(5)
                         logger.info('\t Got following best actions %s'%predicted_actions)
