@@ -142,7 +142,6 @@ class ContinuousState(object):
 
             if self.prev_action not in self.q:
                 self.rl_logger.debug('\tPrevious action not found in Q values. Creating a new entry ...')
-                self.rl_logger.debug("Q: %s"%self.q)
                 self.q[self.prev_action]={self.prev_state: sample}
             else:
                 if self.prev_state in self.q[self.prev_action]:
@@ -169,6 +168,9 @@ class ContinuousState(object):
                 for a, gp in self.gps.items():
                     self.rl_logger.debug("\tApproximated Q values for (above State,%s) pair: %10.3f",a, np.asscalar(gp.predict(np.asarray(state).reshape((1,-1)))[0]))
 
+        if self.local_time_stamp % 10 == 0:
+            self.rl_logger.debug("Q: %s"%self.q)
+            
         # decay epsilon
         if self.local_time_stamp % 10==0:
             self.epsilon = max(self.epsilon*0.9,0.05)
