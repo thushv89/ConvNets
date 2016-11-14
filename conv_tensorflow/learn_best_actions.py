@@ -63,17 +63,24 @@ class ActionPicker(object):
         # to speed up computations
 
         a = self.actions[self.local_time_stamp%len(self.actions)]
+        error_fraction = float(data['error_t'])/100.0
 
         if self.prev_action is not None:
             # Errors (current and previous) used to calculate reward
             # err_t should be calculated on something the CNN hasn't seen yet
             # err_t-1 should be calculated on something the CNN has seen (e.g mean of last 10 batches)
 
-            time_cost = data['time_cost']
-            param_cost = data['param_cost']
+
+            # this error cost captures costs and rewards as follows
+            # e(t-1) -> e(t) = high rew / high cost / low rew / low cost
+            #   0.3  -> 0.5  = high cost
+            #   0.6  -> 0.8  = low cost
+            #   0.5  -> 0.3  = high reward
+            #   0.8  -> 0.6  = low reward
+            error_cost = (1.0 - ((error_fraction+self.prev_state[0])/2.0))*(error_fraction-self.prev_state[0])
             stride_cost = data['stride_cost']
             success_cost = 0 if success else -100
-            reward = -(data['error_t'] + 0.05*stride_cost) + success_cost
+            reward = -(10*error_cost + 1e-3*stride_cost) + success_cost
 
             print('\tActionPicker - Running action: %s'%a)
             if self.prev_action not in self.q:
@@ -83,14 +90,15 @@ class ActionPicker(object):
             print('\tActionPicker - Updated Q[%s]=%.3f'%(self.prev_action,self.q[self.prev_action]))
 
         self.prev_action = a
+        self.prev_state = [error_fraction]
         self.local_time_stamp += 1
 
         return a
 
     def get_best_actions(self,count):
-        sorted_actions = list(sorted(self.q))
-        sorted_actions.reverse()
-        return sorted(self.q)[0:count]
+        print('Q: %s'%self.q)
+        sorted_actions = list(sorted(self.q,reverse=True))
+        return sorted_actions[0:count]
 
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action

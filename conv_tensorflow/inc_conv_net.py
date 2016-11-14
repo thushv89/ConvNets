@@ -71,7 +71,7 @@ weights,biases = {},{}
 final_x = (image_size,image_size)
 
 interval_dict = {'policy_interval':100,'action_update_interval':5000,'action_test_interval':10,'test_interval':10000}
-research_parameters = {'init_weights_with_existing':True}
+research_parameters = {'init_weights_with_existing':True,'seperate_cp_best_actions':False}
 
 # it's not wise to include always changing values such as (layer_count) in the id
 def get_layer_id(layer_name):

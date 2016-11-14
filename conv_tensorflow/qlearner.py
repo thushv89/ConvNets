@@ -126,19 +126,20 @@ class ContinuousState(object):
 
         if self.prev_state or self.prev_action:
 
-            err_t = 2 * float(data['error_t'])/100.0
+            err_t = float(data['error_t'])/100.0
+            error_cost = (1.0 - ((err_t+self.prev_state[0])/2.0))*(err_t-self.prev_state[0])
             time_cost = float(data['time_cost'])/10.0
-            param_cost = float(data['param_cost'])/1000.0
-            stride_cost = float(data['stride_cost'])/5.0
-            layer_rank_cost = 2**(2-float(data['layer_rank']))
-            complexity_cost = min(float(2**data['complexity_cost'])/2**5,1.5)
+            param_cost = float(data['param_cost'])/10000.0
+            stride_cost = float(data['stride_cost'])/50.0
+            layer_rank_cost = 2**(1-float(data['layer_rank']))
+            complexity_cost = min(float(2**data['complexity_cost'])/2**8,0.5)
             success_cost = 0 if success else 10
 
-            self.rl_logger.info('Data for %s: E %.2f, T %.2f, P %.2f, S %.2f, Suc %.2f'%(self.prev_action,err_t,time_cost,param_cost,stride_cost,success_cost))
+            self.rl_logger.info('Data for %s: E %.2f, T %.2f, P %.2f, S %.2f, Rnk %.2f, Cpx %.2f Suc %.2f'%(self.prev_action,err_t,time_cost,param_cost,stride_cost,layer_rank_cost,complexity_cost,success_cost))
             if 'remove' in self.prev_action:
-                reward = -(err_t + time_cost + param_cost + stride_cost + complexity_cost + success_cost + layer_rank_cost)
+                reward = -(error_cost*10 + time_cost + param_cost + stride_cost + complexity_cost + success_cost + layer_rank_cost)
             else:
-                reward = -(err_t + time_cost + param_cost + stride_cost + complexity_cost + success_cost)
+                reward = -(error_cost*10 + time_cost + param_cost + stride_cost + complexity_cost + success_cost)
 
             self.rl_logger.info("Reward for action: %s: %.3f"%(self.prev_action,reward))
             # sample = reward + self.discount_rate * max(self.q[state, a] for a in self.actions)
