@@ -628,7 +628,7 @@ def execute_action(action):
             logger.info('\tRemoving convolution layer')
             # we will not remove all the convolutional layers
             # this will keep atleast one convolutional layer
-            if get_layer_count_with_type()['conv']!=1:
+            if get_layer_count_with_type()['conv']!=1 or time_stamp < 10000:
                 rm_op,rm_idx = remove_conv_layer(op_info[1],op_info[2])
             else:
                 return False
@@ -857,10 +857,25 @@ if __name__=='__main__':
                 time_log.append(end_time-start_time)
 
                 # for batch [1,2,3,...,500,10000,10001,...,10500,...]
-                if time_stamp > 0 and 0 < time_stamp % interval_dict['action_update_interval'] <= 500:
+                if 0 <= time_stamp % interval_dict['action_update_interval'] <= 500:
+
+                    #reset previous action
+                    if time_stamp % interval_dict['action_update_interval'] == 0:
+                        previous_action = None
+                        original_net_size = len(iconv_ops)
+
+                    # remove the layer added by the previous action
+                    if previous_action is not None and time_stamp % interval_dict['action_test_interval'] == 0:
+                        # first remove the previously added layer
+                        rm_action = 'remove,'+previous_action.split(',')[1]
+                        logger.debug("Removing  with %s",rm_action)
+                        execute_action(rm_action)
+                        logger.debug("Ops after removal %s"%iconv_ops)
+                        assert original_net_size == len(iconv_ops)
 
                     #for batch [500,10500,20500,30500,...]
-                    if time_stamp % interval_dict['action_update_interval'] == 500:
+                    if time_stamp > 0 and time_stamp % interval_dict['action_update_interval'] == 500:
+
                         logger.info('Action Picker Finished ...')
                         predicted_actions = action_picker.get_best_actions(5)
                         logger.info('\t Got following best actions %s'%predicted_actions)
@@ -868,16 +883,14 @@ if __name__=='__main__':
                         policy_learner.update_action_space(predicted_actions)
                         action_picker.reset_Q()
 
+                        assert original_net_size == len(iconv_ops)
+
                     #for batch [10,20,30,...]
                     elif time_stamp % interval_dict['action_test_interval'] == 0:
 
                         logger.info("====================== Executing action for time stamp %d ======================"%time_stamp)
                         # as long as it's not the first time of we run the action picker
-                        if time_stamp % interval_dict['action_update_interval'] != 0:
-                            # first remove the previously added layer
-                            rm_action = 'remove,'+action.split(',')[1]
-                            logger.debug("Removing  with %s",rm_action)
-                            execute_action(rm_action)
+                        # [20,30,...,500],[5020,5030,...]
 
                         mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-(interval_dict['action_test_interval']//2)]):])
                         param_count = get_parameter_count()
@@ -909,6 +922,7 @@ if __name__=='__main__':
                         logger.info('Executing action %s'%action)
                         previous_action_success = execute_action(action)
                         previous_action = action
+
                 # for batch [100,200,300,400,...]
                 elif time_stamp > 0 and time_stamp % policy_interval == 0:
 
