@@ -872,7 +872,8 @@ if __name__=='__main__':
                     elif time_stamp % interval_dict['action_test_interval'] == 0:
 
                         logger.info("====================== Executing action for time stamp %d ======================"%time_stamp)
-                        if time_stamp != interval_dict['action_test_interval']:
+                        # as long as it's not the first time of we run the action picker
+                        if time_stamp % interval_dict['action_update_interval'] != interval_dict['action_test_interval']:
                             # first remove the previously added layer
                             rm_action = 'remove,'+action.split(',')[1]
                             logger.debug("Removing  with %s",rm_action)
