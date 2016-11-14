@@ -61,9 +61,15 @@ iconv_ops = ['fulcon_out'] #ops will give the order of layers
 hyparams = {
     'fulcon_out':{'in':image_size*image_size*num_channels, 'out':num_labels, 'whd':[image_size,image_size,num_channels]}
 }
-conv_depths = {}
+
+conv_depths = {} # store the in and out depth of each convolutional layer
+conv_order  = {} # layer order (in terms of convolutional layer) in the full structure
+
 weights,biases = {},{}
 final_x = (image_size,image_size)
+
+interval_dict = {'policy_interval':100,'action_update_interval':5000,'action_test_interval':10,'test_interval':10000}
+research_parameters = {'init_weights_with_existing':True}
 
 # it's not wise to include always changing values such as (layer_count) in the id
 def get_layer_id(layer_name):
@@ -149,19 +155,19 @@ def update_conv(conv_id,to_d):
     conv_weights = hyparams[get_layer_id(conv_id)]['weights']
 
     logger.info("Need to update the layer %s in_depth from %d to %d"%(conv_id,from_d,to_d))
-
+    hyparams[conv_id]['weights'] =[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
     if to_d<from_d:
         logger.info("\tRequired to remove %d depth layers"%(from_d-to_d))
         # update hyperparameters
-        hyparams[get_layer_id(conv_id)]['weights'] =[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
         logger.debug('\tNew weights should be: %s'%hyparams[get_layer_id(conv_id)]['weights'])
         # update weights
-        weights[get_layer_id(conv_id)] = tf.slice(weights[get_layer_id(conv_id)],
+        weights[conv_id] = tf.slice(weights[conv_id],
                                                   [0,0,0,0],[conv_weights[0],conv_weights[1],to_d,conv_weights[3]]
                                                   )
         # no need to update biase
     elif to_d>from_d:
         logger.info("\tRequired to add %d depth layers"%(to_d-from_d))
+
         conv_new_weights = tf.Variable(tf.truncated_normal(
             [conv_weights[0],conv_weights[1],to_d-from_d,conv_weights[3]],
             stddev=2./(conv_weights[0]*conv_weights[1])
@@ -210,10 +216,103 @@ def add_conv_layer(w,stride,conv_id):
             break
 
     hyparams[conv_id]={'weights':w,'stride':stride,'padding':'SAME'}
-    weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
-    biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
 
-    tf.initialize_variables([weights[conv_id],biases[conv_id]]).run()
+    if research_parameters['init_weights_with_existing']:
+
+        curr_depth = 0
+        for k,v in conv_order.items():
+            if conv_id in v:
+                curr_depth = k
+        same_order_convs = []
+        for d_i in range(max(0,curr_depth-1),curr_depth+1):
+            same_order_convs.extend(conv_order[d_i])
+
+        best_match_conv_id = None
+        min_conv_dif = 1e10
+        for conv_op in same_order_convs:
+            if hyparams[conv_op]['weights'][0]==hyparams[conv_id]['weights'][0] and \
+                            hyparams[conv_op]['weights'][1]==hyparams[conv_id]['weights'][1] and conv_op != conv_id:
+                curr_diff = abs(conv_depths[conv_op]['in']-conv_depths[conv_id]['in']) + abs(conv_depths[conv_op]['out']-conv_depths[conv_id]['out'])
+                if curr_diff < min_conv_dif:
+                    best_match_conv_id = conv_op
+        logger.debug("Found best matching layer for %s: %s "%(conv_id,best_match_conv_id))
+
+        if best_match_conv_id is not None:
+
+            match_conv_shape = hyparams[best_match_conv_id]['weights']
+            tf_rand_noise = tf.random_normal(hyparams[conv_id]['weights'], mean=0.0, stddev=0.1, dtype=tf.float32, seed=tf.set_random_seed(123435), name='rand_noise')
+            if conv_depths[best_match_conv_id]['in']>= conv_depths[conv_id]['in']:
+                if conv_depths[best_match_conv_id]['out'] >= conv_depths[conv_id]['out']:
+                    # easiest combination pick the required amounts of in and out dimensions from best mactch
+                    logger.debug("Slicing weights from %s of size %s to initialize new weights of size %s for %s"%(best_match_conv_id,match_conv_shape,hyparams[conv_id]['weights'],conv_id))
+                    weights[conv_id] = tf.slice(weights[best_match_conv_id],[0,0,0,0],[match_conv_shape[0],match_conv_shape[1],conv_depths[conv_id]['in'],conv_depths[conv_id]['out']]) + tf_rand_noise
+                else:
+                    # have enough in dimension but out dimension is less weights
+                    logger.debug("Out dimension of %s require more weights"%conv_id)
+                    logger.debug("\tBest match: %s"%match_conv_shape)
+                    logger.debug("\tCurrent: %s"%hyparams[conv_id]['weights'])
+
+                    new_weights = tf.Variable(
+                        tf.truncated_normal(
+                            [match_conv_shape[0],match_conv_shape[1],conv_depths[conv_id]['in'],
+                             conv_depths[conv_id]['out']-conv_depths[best_match_conv_id]['out']],
+                            stddev=2./(w[0]*w[1])),name='w_'+conv_id
+                    )
+                    logger.debug("\tCreated new random weights of size: %s"%new_weights.get_shape().as_list())
+                    best_match_weight_slice = tf.slice(weights[best_match_conv_id],[0,0,0,0],[match_conv_shape[0],match_conv_shape[1],conv_depths[conv_id]['in'],match_conv_shape[3]])
+                    weights[conv_id] = tf.concat(3,[best_match_weight_slice,new_weights]) + tf_rand_noise
+                    logger.debug("\tSize of weights of %s: %s"%(conv_id,weights[conv_id].get_shape().as_list()))
+                    tf.initialize_variables([new_weights]).run()
+
+            else:
+                if conv_depths[best_match_conv_id]['out'] >= conv_depths[conv_id]['out']:
+                    # do not have enough in dimension but have out dimension weights
+                    logger.debug("In dimension of %s require more weights "%conv_id)
+                    logger.debug("\tBest match: %s"%match_conv_shape)
+                    logger.debug("\tCurrent: %s"%hyparams[conv_id]['weights'])
+                    new_weights = tf.Variable(
+                        tf.truncated_normal(
+                            [match_conv_shape[0],match_conv_shape[1],conv_depths[conv_id]['in']-conv_depths[best_match_conv_id]['in'],conv_depths[conv_id]['out']],
+                            stddev=2./(w[0]*w[1])),name='w_'+conv_id
+                    )
+                    logger.debug("\tCreated new random weights of size: %s"%new_weights.get_shape().as_list())
+                    best_match_weight_slice = tf.slice(weights[best_match_conv_id],[0,0,0,0],[match_conv_shape[0],match_conv_shape[1],match_conv_shape[2],conv_depths[conv_id]['out']])
+                    weights[conv_id] = tf.concat(2,[best_match_weight_slice,new_weights]) + tf_rand_noise
+                    logger.debug("\tSize of weights of %s: %s"%(conv_id,weights[conv_id].get_shape().as_list()))
+                    tf.initialize_variables([new_weights]).run()
+                else:
+                    # neither in or out dimensions have enough weights
+                    logger.debug("In dimension of %s require more weights "%conv_id)
+                    logger.debug("\tBest match: %s"%match_conv_shape)
+                    logger.debug("\tCurrent: %s"%hyparams[conv_id]['weights'])
+                    new_weights_in = tf.Variable(
+                        tf.truncated_normal(
+                            [match_conv_shape[0],match_conv_shape[1],conv_depths[conv_id]['in']-conv_depths[best_match_conv_id]['in'],conv_depths[best_match_conv_id]['out']],
+                            stddev=2./(w[0]*w[1])),name='w_'+conv_id
+                    )
+                    logger.debug("\tCreated new random weights (in_depth) of size: %s"%new_weights_in.get_shape().as_list())
+                    new_weights_out = tf.Variable(
+                        tf.truncated_normal(
+                            [match_conv_shape[0],match_conv_shape[1],conv_depths[conv_id]['in'],conv_depths[conv_id]['out']-conv_depths[best_match_conv_id]['out']],
+                            stddev=2./(w[0]*w[1])),name='w_'+conv_id
+                    )
+                    logger.debug("\tCreated new random weights (out_depth) of size: %s"%new_weights_out.get_shape().as_list())
+                    weights[conv_id] = tf.concat(2,[weights[best_match_conv_id],new_weights_in])
+                    weights[conv_id] = tf.concat(3,[weights[conv_id],new_weights_out]) + tf_rand_noise
+                    logger.debug("\tSize of weights of %s: %s"%(conv_id,weights[conv_id].get_shape().as_list()))
+
+                    tf.initialize_variables([new_weights_in,new_weights_out]).run()
+            #weights[conv_id] =
+
+            biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
+            tf.initialize_variables([biases[conv_id]]).run()
+
+    if not research_parameters['init_weights_with_existing'] or best_match_conv_id is None:
+        logger.debug('Did not detect any best maches for %s. Initializing random ...'%conv_id)
+        weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
+        biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
+
+        tf.initialize_variables([weights[conv_id],biases[conv_id]]).run()
 
     out_id = iconv_ops.pop(-1)
     iconv_ops.append(conv_id)
@@ -259,7 +358,7 @@ def remove_conv_layer(w,stride):
     for op in iconv_ops:
         if 'conv' in op:
             if hyparams[op]['weights'][:2]==w[:2] and hyparams[op]['stride']==stride:
-                logger.info("Removing (Convolution) layer %s"%op)
+                logger.info("Removing (Convolution) layer %s with weights %s"%(op,hyparams[op]['weights']))
                 iconv_ops.remove(op)
                 found_layer = True
                 break
@@ -499,6 +598,17 @@ def get_op_from_action(action):
 
     return op
 
+def get_layer_count_with_type():
+
+    conv_count,pool_count = 0,0
+    for op in iconv_ops:
+        if 'conv' in op:
+            conv_count += 1
+        elif 'pool' in op:
+            pool_count += 1
+
+    return {'conv':conv_count,'pool':pool_count}
+
 
 def execute_action(action):
     '''
@@ -514,10 +624,14 @@ def execute_action(action):
         logger.info("Removing layer %s",action)
         op_info = get_op_from_action(action)
         if op_info[0]=='conv':
-            #remove convolution layer
-            op_type,weights,stride = op_info
+            # remove convolution layer
             logger.info('\tRemoving convolution layer')
-            rm_op,rm_idx = remove_conv_layer(op_info[1],op_info[2])
+            # we will not remove all the convolutional layers
+            # this will keep atleast one convolutional layer
+            if get_layer_count_with_type()['conv']!=1:
+                rm_op,rm_idx = remove_conv_layer(op_info[1],op_info[2])
+            else:
+                return False
 
             if rm_op is None and rm_idx is None:
                 return False
@@ -560,8 +674,8 @@ def execute_action(action):
         op_info = get_op_from_action(action)
 
         if op_info[0]=='conv':
+
             conv_id = get_layer_id('conv_'+str(time_stamp))
-            layer_count += 1
             initial_conv_layer = np.all([True if 'conv' not in op else False for op in iconv_ops])
 
             # checking before adding the new layer if the input will be still valid <=0
@@ -594,8 +708,16 @@ def execute_action(action):
             s = op_info[2]
             logger.info('Adding Convolutional Layer %s'%conv_id)
             logger.debug('\tWith Weights:%s,Stride:%s'%(w,s))
+
+            # setting the conv layer order
+            if get_layer_count_with_type()['conv'] not in conv_order:
+                conv_order[get_layer_count_with_type()['conv']] = [conv_id]
+            else:
+                conv_order[get_layer_count_with_type()['conv']].append(conv_id)
+
             add_conv_layer(w,s,conv_id)
 
+            layer_count += 1
         elif op_info[0]=='pool':
             pool_id = get_layer_id('pool_'+str(time_stamp))
 
@@ -648,7 +770,7 @@ if __name__=='__main__':
     graph = tf.Graph()
 
     policy_learner = qlearner.ContinuousState(
-        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=20,epsilon=0.5
+        learning_rate=0.5,discount_rate=0.9,policy_interval=policy_interval,gp_interval=5,eta_1=10,eta_2=30,epsilon=0.5
     )
     action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
     hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,
@@ -658,7 +780,7 @@ if __name__=='__main__':
     time_log = []
     param_log = []
     previous_action_success = True
-
+    previous_action = None
     with tf.Session(graph=graph) as session:
 
         #global step is used to decay the learning rate
@@ -735,49 +857,57 @@ if __name__=='__main__':
                 time_log.append(end_time-start_time)
 
                 # for batch [1,2,3,...,500,10000,10001,...,10500,...]
-                if time_stamp > 0 and 0 < time_stamp % (100*policy_interval) <= 500:
+                if time_stamp > 0 and 0 < time_stamp % interval_dict['action_update_interval'] <= 500:
 
                     #for batch [500,10500,20500,30500,...]
-                    if time_stamp % (50*policy_interval) == 500:
+                    if time_stamp % interval_dict['action_update_interval'] == 500:
                         logger.info('Action Picker Finished ...')
                         predicted_actions = action_picker.get_best_actions(5)
                         logger.info('\t Got following best actions %s'%predicted_actions)
                         # update the policy action space
                         policy_learner.update_action_space(predicted_actions)
-                        action_picker.restore_Q()
+                        action_picker.reset_Q()
 
-                    #for batch [5,10,15,...]
-                    elif time_stamp % 5 == 0:
+                    #for batch [10,20,30,...]
+                    elif time_stamp % interval_dict['action_test_interval'] == 0:
 
                         logger.info("====================== Executing action for time stamp %d ======================"%time_stamp)
-                        if time_stamp != 5:
+                        if time_stamp != interval_dict['action_test_interval']:
                             # first remove the previously added layer
                             rm_action = 'remove,'+action.split(',')[1]
                             logger.debug("Removing  with %s",rm_action)
                             execute_action(rm_action)
 
-                        mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-5]):])
+                        mean_valid_accuracy = np.mean(valid_accuracy_log[np.max([0,len(valid_accuracy_log)-(interval_dict['action_test_interval']//2)]):])
                         param_count = get_parameter_count()
-                        stride_cost = get_stride_cost()
-                        duration = np.sum(time_log[np.max([0,len(time_log)-5]):])
+                        duration = np.sum(time_log[np.max([0,len(time_log)-(interval_dict['action_test_interval']//2)]):])
+
+                        if previous_action is not None:
+                            prev_op_info = get_op_from_action(previous_action)
+
+                            param_cost = prev_op_info[1][0]*prev_op_info[1][1]*prev_op_info[1][3]
+                            stride_cost = (prev_op_info[2][1]-1)*(prev_op_info[2][2]-1)
+                            logger.debug('\tWith data (Error:%.3f,Time:%.3f,Params:%d,Stride:%.3f'%
+                                         (data['error_t'],data['time_cost'],param_cost,stride_cost)
+                            )
+                        else:
+                            param_cost = None
+                            stride_cost = None
 
                         data = {
                             'error_t':100-mean_valid_accuracy,'time_cost':duration,
-                            'param_cost':param_count,'num_layers':len(iconv_ops),
-                            'stride_cost': stride_cost
+                            'param_cost': param_cost,
+                            'stride_cost': stride_cost,
                         }
 
                         logger.debug('Action Picker running for batch %d'%batch_id)
-                        logger.debug('\tWith data (Error:%.3f,Time:%.3f,Params:%d,Layers:%d,Stride:%.3f'%
-                                     (data['error_t'],data['time_cost'],data['param_cost'],data['num_layers'],data['stride_cost'])
-                                     )
 
                         # add the new layer
                         value_logger.info('%d,%s'%(time_stamp,data))
                         action = action_picker.update_policy(time_stamp,data,previous_action_success)
                         logger.info('Executing action %s'%action)
                         previous_action_success = execute_action(action)
-
+                        previous_action = action
                 # for batch [100,200,300,400,...]
                 elif time_stamp > 0 and time_stamp % policy_interval == 0:
 
@@ -792,23 +922,47 @@ if __name__=='__main__':
                           (time_stamp,np.max([0,len(valid_accuracy_log)-(policy_interval//2)]),len(valid_accuracy_log), mean_valid_accuracy)
                           )
 
+                    layer_type_count = get_layer_count_with_type()
                     param_count = get_parameter_count()
-                    stride_cost = get_stride_cost()
                     logger.debug('\t%d Parameter count: %d'%(time_stamp,param_count))
                     duration = np.sum(time_log[np.max([0,len(time_log)-(policy_interval//2)]):])
                     logger.debug('\t%d Time taken (Latter half)[%d:%d]: %.3f'%
                           (time_stamp,np.max([0,len(time_log)-(policy_interval//2)]),len(time_log),duration)
                     )
 
+                    if previous_action is not None:
+                        if previous_action != 'finetune':
+                            prev_op_info = get_op_from_action(previous_action)
+                            param_cost = prev_op_info[1][0]*prev_op_info[1][1]*prev_op_info[1][3]
+                            stride_cost = (prev_op_info[2][1]-1)*(prev_op_info[2][2]-1)
+                            if 'P_' in previous_action:
+                                complex_cost = get_layer_count_with_type()['pool']
+                            elif 'C_' in previous_action:
+                                complex_cost = get_layer_count_with_type()['conv']
+
+                            if 'remove' in previous_action:
+                                param_cost *= 0.
+                                stride_cost *= 0.
+                        else:
+                            param_cost = 0.
+                            stride_cost = 0.
+                            complex_cost = 0.
+
+                        logger.info('%d Data for this episode: Error:%.3f, Time:%.3f, Param Cost:%d, Stride:%d'%
+                                (time_stamp,data['error_t'],data['time_cost'],param_cost,stride_cost)
+                                )
+                    else:
+                        param_cost,stride_cost,complex_cost = None,None,None
+
                     data = {
                         'error_t':100-mean_valid_accuracy,'time_cost':duration,
-                        'param_cost':param_count,'num_layers':len(iconv_ops),
-                        'stride_cost': stride_cost
+                        'param_cost': param_cost, 'num_layers':layer_count,'complexity_cost':complex_cost,
+                        'stride_cost': stride_cost,'all_params':param_count,
+                        'conv_layer_count':layer_type_count['conv'],'pool_layer_count':layer_type_count['pool']
                     }
-                    logger.info('%d Data for this episode: Error:%.3f, Time:%.3f, Param Count:%d, Layers:%d, Stride:%d'%
-                                (time_stamp,data['error_t'],data['time_cost'],data['param_cost'],data['num_layers'],data['stride_cost'])
-                                )
+
                     value_logger.info('%d,%s'%(time_stamp,data))
+
                     logger.info('=============================================================\n')
                     action = policy_learner.update_policy(time_stamp,data,previous_action_success)
                     logger.info('\tReceived action %s'%action)
@@ -831,21 +985,27 @@ if __name__=='__main__':
                             if assert_true:
                                 assert not np.isnan(pool_l)
 
+                        previous_action_success = True
+
+                    previous_action = action
                     logits = get_logits(tf_dataset)
 
                 time_stamp += 1
 
-        # test batches
-        test_accuracies = []
-        for batch_id in range(ceil(test_size//batch_size)):
-            batch_test_data = test_dataset[(batch_id)*batch_size:(batch_id+1)*batch_size, :, :, :]
-            batch_test_labels = test_labels[(batch_id)*batch_size:(batch_id+1)*batch_size, :]
+                if time_stamp>0 and time_stamp % 10000 == 0:
+                    # test batches
+                    test_accuracies = []
+                    for batch_id in range(ceil(test_size//batch_size)):
+                        batch_test_data = test_dataset[(batch_id)*batch_size:(batch_id+1)*batch_size, :, :, :]
+                        batch_test_labels = test_labels[(batch_id)*batch_size:(batch_id+1)*batch_size, :]
 
-            test_feed_dict = {tf_test_dataset:batch_test_data,tf_test_labels:batch_test_labels}
-            test_predictions = session.run([pred_test],feed_dict=test_feed_dict)
-            test_accuracies.append(accuracy(valid_predictions[0],batch_valid_labels))
+                        test_feed_dict = {tf_test_dataset:batch_test_data,tf_test_labels:batch_test_labels}
+                        test_predictions = session.run([pred_test],feed_dict=test_feed_dict)
+                        test_accuracies.append(accuracy(valid_predictions[0],batch_valid_labels))
 
-        logger.info("Test Accuracy: %.1f"%np.mean(test_accuracies))
+                    logger.info("==============================================")
+                    logger.info("Test Accuracy: %.1f"%np.mean(test_accuracies))
+                    logger.info("==============================================\n")
 
         '''if batch_id == 101:
             print('\n======================== Adding a convolutional layer ==========================')

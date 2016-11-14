@@ -34,20 +34,24 @@ class ContinuousState(object):
         self.rl_logger.addHandler(console)
 
         self.local_time_stamp = 0
-        self.actions = None
+        self.actions = []
 
         self.prev_action = None
         self.prev_state = None
+        self.finetune_action = None
 
     def update_action_space(self,actions):
 
-        self.actions = []
-        for a in actions:
-            a_op = a.split(',')[1]
-            self.actions.append(a)
-            self.actions.append('remove,'+a_op)
+        if len(self.actions)==0:
+            self.actions.append('finetune')
 
-        self.actions.append('finetune')
+        for a in actions:
+            if a not in self.actions:
+                a_op = a.split(',')[1]
+                self.actions.append(a)
+                self.actions.append('remove,'+a_op)
+
+        self.finetune_action = self.actions[0]
 
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
@@ -66,11 +70,11 @@ class ContinuousState(object):
         # Errors (current and previous) used to calculate reward
         # err_t should be calculated on something the CNN hasn't seen yet
         # err_t-1 should be calculated on something the CNN has seen (e.g mean of last 10 batches)
-        err_t = data['error_t']
-        time_cost = data['time_cost']
-        param_cost = data['param_cost']
-        stride_cost = data['stride_cost']
-        success_cost = 0 if success else -100
+
+        err_state = float(data['error_t'])/100.0
+        conv_state = float(data['conv_layer_count'])/10.0
+        pool_state = float(data['pool_layer_count'])/10.0
+        param_state = float(data['all_params'])/100000.0
 
         # architecture_similarity is calculated as follows.
         # say you have two architectures
@@ -93,14 +97,11 @@ class ContinuousState(object):
         # [F_1024, F_512, F_10]
         # TODO: Convert to Vector
 
-        state = (data['error_t'], data['num_layers'],data['param_cost'])
-
-        curr_err = err_t
+        state = (err_state,conv_state,pool_state,param_state)
 
         if self.local_time_stamp <= self.eta_1:
-            # TODO: Evenly collect Q values for each action
-            # We will have a predefined set of actions
-            action = self.actions[-1]
+            # If enough time has not been spend collecting data, finetune
+            action = self.finetune_action
             self.rl_logger.info('\tNot enough data running action:%s'%action)
         # since we have a continuous state space, we need a regression technique to get the
         # Q-value for prev state and action for a discrete state space, this can be done by
@@ -117,17 +118,24 @@ class ContinuousState(object):
                 x, y = zip(*value_dict.items())
 
                 gp = GaussianProcessRegressor()
-                if np.asarray(x).shape[0]==1:
-                    gp.fit(np.asarray(x).reshape(1,-1),np.asarray(y))
-                else:
-                    gp.fit(np.asarray(x), np.asarray(y))
+                # we do not worry about x having only 1 input instance because we won't fit a curve unless there are more than
+                # a given number of inputs
+                gp.fit(np.asarray(x), np.asarray(y))
 
                 self.gps[a] = gp
 
         if self.prev_state or self.prev_action:
 
-            reward = -(curr_err + 0.01*time_cost + 1e-5*param_cost +
-                       2**(stride_cost//3) + 2**(data['num_layers']//2)) + success_cost
+            err_t = 2 * float(data['error_t'])/100.0
+            time_cost = float(data['time_cost'])/10.0
+            param_cost = float(data['param_cost'])/1000.0
+            stride_cost = float(data['stride_cost'])/5.0
+            complexity_cost = min(float(2**data['complexity_cost'])/2**5,1.5)
+            success_cost = 0 if success else 10
+
+            self.rl_logger.info('Data for %s: E %.2f, T %.2f, P %.2f, S %.2f, Suc %.2f'%(self.prev_action,err_t,time_cost,param_cost,stride_cost,success_cost))
+            reward = -(err_t + time_cost + param_cost + stride_cost + complexity_cost + success_cost)
+
             self.rl_logger.info("Reward for action: %s: %.3f"%(self.prev_action,reward))
             # sample = reward + self.discount_rate * max(self.q[state, a] for a in self.actions)
             # len(gps) == 0 in the first time move() is called
@@ -136,7 +144,7 @@ class ContinuousState(object):
                 sample = reward
             else:
                 self.rl_logger.debug('\tPredicting with a GP. Using the gp prediction + reward as the sample ...')
-                sample = reward + self.discount_rate * max((np.asscalar(gp.predict([np.asarray(self.prev_state).reshape((1,-1))])[0])) for gp in self.gps.values())
+                sample = reward + self.discount_rate * max((np.asscalar(gp.predict(np.asarray(self.prev_state).reshape((1,-1)))[0])) for gp in self.gps.values())
 
             self.rl_logger.info('\tUpdating the Q values ...')
 
@@ -162,15 +170,12 @@ class ContinuousState(object):
                     action = self.actions[self.local_time_stamp % len(self.actions)]
                     self.rl_logger.info("\tExplore action: %s", action)
                 else:
-                    action = max((np.asscalar(gp.predict(state)[0]), action) for action, gp in self.gps.items())[1]
+                    action = max((np.asscalar(gp.predict(np.asarray(state).reshape((1,-1)))[0]), action) for action, gp in self.gps.items())[1]
                     self.rl_logger.info("\tChose with Q: %s", action)
 
                 for a, gp in self.gps.items():
                     self.rl_logger.debug("\tApproximated Q values for (above State,%s) pair: %10.3f",a, np.asscalar(gp.predict(np.asarray(state).reshape((1,-1)))[0]))
 
-        if self.local_time_stamp % 10 == 0:
-            self.rl_logger.debug("Q: %s"%self.q)
-            
         # decay epsilon
         if self.local_time_stamp % 10==0:
             self.epsilon = max(self.epsilon*0.9,0.05)

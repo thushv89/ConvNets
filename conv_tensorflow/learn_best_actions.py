@@ -53,7 +53,7 @@ class ActionPicker(object):
         self.q = restore_data['q']
         self.gps = restore_data['gps']
 
-    def restore_Q(self):
+    def reset_Q(self):
         self.q = {}
 
     def update_policy(self, global_time_stamp, data, success):
