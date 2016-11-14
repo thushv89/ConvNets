@@ -344,7 +344,7 @@ def add_pool_layer(ksize,stride,type,pool_id):
     iconv_ops.append(out_id)
 
 
-def remove_conv_layer(w,stride):
+def remove_conv_layer(w,stride,delete_specific=True):
     '''
     Removes the first layer (furthest to fulcon_out) having the given w and stride
     We only compare the width and height of w and the full stride
@@ -357,14 +357,16 @@ def remove_conv_layer(w,stride):
     rm_idx = 0
 
     found_layer = False
-    for op in iconv_ops:
+    mod_op_array = iconv_ops if not delete_specific else reversed(iconv_ops)
+    for op in mod_op_array:
         if 'conv' in op:
             if hyparams[op]['weights'][:2]==w[:2] and hyparams[op]['stride']==stride:
                 logger.info("Removing (Convolution) layer %s with weights %s"%(op,hyparams[op]['weights']))
+                rm_idx = iconv_ops.index(op)
                 iconv_ops.remove(op)
                 found_layer = True
                 break
-        rm_idx += 1
+
     iconv_ops.append(out_id)
 
     if found_layer:
@@ -372,7 +374,7 @@ def remove_conv_layer(w,stride):
     else:
         return None,None
 
-def remove_pool_layer(kernel,stride,pool_type):
+def remove_pool_layer(kernel,stride,pool_type,delete_specific=True):
     '''
     Removes the first layer (furthest to fulcon_out) having the given w and stride
     We compare the full kernel and stride
@@ -384,7 +386,9 @@ def remove_pool_layer(kernel,stride,pool_type):
 
     found_layer = False
     out_id = iconv_ops.pop(-1)
-    for op in iconv_ops:
+
+    mod_op_array = iconv_ops if not delete_specific else reversed(iconv_ops)
+    for op in mod_op_array:
         if 'pool' in op:
             if hyparams[op]['kernel']==kernel and hyparams[op]['stride']==stride and hyparams[op]['type']==pool_type:
                 logger.info("Removing (Pool) layer %s"%op)
@@ -451,6 +455,8 @@ def get_logits(dataset):
         print('Reshaping X of size %s',shape)
         x = tf.reshape(x, [shape[0],hyparams[get_layer_id('fulcon_out')]['no_layer_in']])
         print('After reshaping X %s',x.get_shape().as_list())
+        # reset the fulcon layer to proper dimensions (no other layers)
+        update_fulcon_out(image_size,image_size,num_channels)
         return tf.matmul(x, weights[get_layer_id('fulcon_out')]) + biases[get_layer_id('fulcon_out')]
 
 def calc_loss(logits,labels):
