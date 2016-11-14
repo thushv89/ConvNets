@@ -59,7 +59,9 @@ pool_hyperparameters = {'pool_size':10000,'hardness':0.5}
 
 iconv_ops = ['fulcon_out'] #ops will give the order of layers
 hyparams = {
-    'fulcon_out':{'in':image_size*image_size*num_channels, 'out':num_labels, 'whd':[image_size,image_size,num_channels]}
+    'fulcon_out':{'in':image_size*image_size*num_channels, 'out':num_labels,
+                  'whd':[image_size,image_size,num_channels], 'no_layer_in':image_size*image_size*num_channels
+                  }
 }
 
 conv_depths = {} # store the in and out depth of each convolutional layer
@@ -447,7 +449,7 @@ def get_logits(dataset):
         # havent added an convolution layers
         shape = x.get_shape().as_list()
         print('Reshaping X of size %s',shape)
-        x = tf.reshape(x, [shape[0],hyparams[get_layer_id('fulcon_out')]['in']])
+        x = tf.reshape(x, [shape[0],hyparams[get_layer_id('fulcon_out')]['no_layer_in']])
         print('After reshaping X %s',x.get_shape().as_list())
         return tf.matmul(x, weights[get_layer_id('fulcon_out')]) + biases[get_layer_id('fulcon_out')]
 
