@@ -874,7 +874,8 @@ if __name__=='__main__':
                         original_net_size = len(iconv_ops)
 
                     # remove the layer added by the previous action
-                    if previous_action is not None and time_stamp % interval_dict['action_test_interval'] == 0:
+                    if previous_action is not None and previous_action_success and \
+                                            time_stamp % interval_dict['action_test_interval'] == 0:
                         # first remove the previously added layer
                         rm_action = 'remove,'+previous_action.split(',')[1]
                         logger.debug("Removing  with %s",rm_action)
@@ -890,7 +891,7 @@ if __name__=='__main__':
                         logger.info('\t Got following best actions %s'%predicted_actions)
                         # update the policy action space
                         policy_learner.update_action_space(predicted_actions)
-                        action_picker.reset_Q()
+                        action_picker.reset_all()
 
                         assert original_net_size == len(iconv_ops)
 
@@ -923,7 +924,7 @@ if __name__=='__main__':
                             'stride_cost': stride_cost,
                         }
 
-                        logger.debug('Action Picker running for batch %d'%batch_id)
+                        logger.debug('Action Picker running for time stamp %d'%time_stamp)
 
                         # add the new layer
                         value_logger.info('%d,%s'%(time_stamp,data))
