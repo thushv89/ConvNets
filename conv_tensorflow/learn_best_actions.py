@@ -8,6 +8,7 @@ import json
 import random
 import logging
 import sys
+from math import ceil,floor
 
 logging_level = logging.INFO
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
@@ -37,13 +38,16 @@ class ActionPicker(object):
         console.setLevel(logging_level)
         self.action_logger.addHandler(console)
 
-        self.actions = [
+        self.conv_actions = [
             'add,C_K5x5x16_S2x2','add,C_K5x5x64_S2x2','add,C_K5x5x16_S1x1','add,C_K5x5x64_S1x1',
             'add,C_K3x3x16_S2x2','add,C_K3x3x64_S2x2','add,C_K3x3x16_S1x1','add,C_K3x3x64_S1x1',
-            'add,C_K1x1x16_S2x2','add,C_K1x1x64_S2x2','add,C_K1x1x16_S1x1','add,C_K1x1x64_S1x1',
-            'add,P_K5x5_S2x2_avg','add,P_K5x5_S1x1_avg','add,P_K2x2_S2x2_avg','add,P_K2x2_S1x1_avg',
-            'add,P_K5x5_S2x2_max','add,P_K5x5_S1x1_max','add,P_K2x2_S2x2_max','add,P_K2x2_S1x1_max'
+            'add,C_K1x1x16_S2x2','add,C_K1x1x64_S2x2','add,C_K1x1x16_S1x1','add,C_K1x1x64_S1x1'
         ]
+        self.pool_actions = ['add,P_K5x5_S2x2_avg','add,P_K5x5_S1x1_avg','add,P_K2x2_S2x2_avg','add,P_K2x2_S1x1_avg',
+            'add,P_K5x5_S2x2_max','add,P_K5x5_S1x1_max','add,P_K2x2_S2x2_max','add,P_K2x2_S1x1_max']
+        self.actions = []
+        self.actions.extend(self.conv_actions)
+        self.actions.extend(self.pool_actions)
         self.prev_action = None
 
     def restore_policy(self,**restore_data):
@@ -95,10 +99,26 @@ class ActionPicker(object):
 
         return a
 
-    def get_best_actions(self,count):
-        print('Q: %s'%self.q)
-        sorted_actions = list(sorted(self.q,reverse=True))
-        return sorted_actions[0:count]
+    def get_best_actions(self,count,separate_cp = True):
+        if separate_cp:
+            conv_dict,pool_dict = {},{}
+            for k,v in self.q.items():
+                if 'C_' in k:
+                    conv_dict[k] = v
+                elif 'P_' in k:
+                    pool_dict[k] = v
+                else:
+                    raise NotImplementedError
+            sorted_conv_actions = list(sorted(self.conv_actions,reverse=True))
+            sorted_pool_actions = list(sorted(self.pool_actions,reverse=True))
+
+            sorted_actions = []
+            sorted_actions.extend(sorted_conv_actions[0:ceil(float(count)/2.0)])
+            sorted_actions.extend(sorted_pool_actions[0:floor(float(count)/2.)])
+            return sorted_actions
+        else:
+            sorted_actions = list(sorted(self.q,reverse=True))
+            return sorted_actions[0:count]
 
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action

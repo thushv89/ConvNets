@@ -71,7 +71,7 @@ weights,biases = {},{}
 final_x = (image_size,image_size)
 
 interval_dict = {'policy_interval':100,'action_update_interval':5000,'action_test_interval':10,'test_interval':10000}
-research_parameters = {'init_weights_with_existing':True,'seperate_cp_best_actions':False}
+research_parameters = {'init_weights_with_existing':True,'seperate_cp_best_actions':True,'freeze_threshold':1000}
 
 # it's not wise to include always changing values such as (layer_count) in the id
 def get_layer_id(layer_name):
@@ -201,7 +201,7 @@ def update_conv(conv_id,to_d):
     assert new_shape == hyparams[conv_id]['weights']
 
 
-def add_conv_layer(w,stride,conv_id):
+def add_conv_layer(w,stride,conv_id,init_random):
     '''
     Specify the tensor variables and hyperparameters for a convolutional neuron layer. And update conv_ops list
     :param w: Weights of the receptive field
@@ -607,6 +607,9 @@ def get_op_from_action(action):
 
     return op
 
+def get_time_stamp_for_layer(layer_id):
+    return int(layer_id.split('_')[1])
+
 def get_layer_count_with_type():
 
     conv_count,pool_count = 0,0
@@ -619,17 +622,34 @@ def get_layer_count_with_type():
     return {'conv':conv_count,'pool':pool_count}
 
 
-def execute_action(action):
+def execute_action(action,policy):
     '''
     Execute an action and output if it was successful. Include 3 main actions
     Add,Type_Hyperparameters => Add a layer of given type with the given hyperparameters
     Remove,Type_Hyperparameters => Removes a layer furthest from output layer having the given hyperparameters
     Finetune => Finetune the network with a pool of data
     :param action: action as a string
+    :param policy: if executing action to learn policy or picking action
     :return: Whether successful or not
     '''
     global layer_count
+
+    if action == 'train_with_batch':
+        return True
+    
     if 'remove' in action:
+
+        # remove_last to remove the last layer (one before fulcon)
+        # regardless of type weights or stride of the layer
+        if action == 'remove_last':
+            len_before_remove = len(iconv_ops)
+            rm_op = iconv_ops[-2]
+            logger.debug("Removing last layer %s"%rm_op)
+            iconv_ops.remove(rm_op)
+            assert len_before_remove -1 == len(iconv_ops)
+            layer_count -= 1
+            return True
+
         logger.info("Removing layer %s",action)
         op_info = get_op_from_action(action)
         if op_info[0]=='conv':
@@ -642,7 +662,8 @@ def execute_action(action):
             else:
                 return False
 
-            if rm_op is None and rm_idx is None:
+            if (rm_op is None and rm_idx is None) or \
+                            get_time_stamp_for_layer(rm_op) < time_stamp - research_parameters['freeze_threshold']:
                 return False
 
             # if the layer we removed is not the last convovolutional layer
@@ -724,7 +745,11 @@ def execute_action(action):
             else:
                 conv_order[get_layer_count_with_type()['conv']].append(conv_id)
 
-            add_conv_layer(w,s,conv_id)
+            if not policy:
+                init_weights_random = True
+            else:
+                init_weights_random = False if research_parameters['init_weights_with_existing'] else True
+            add_conv_layer(w,s,conv_id,init_weights_random)
 
             layer_count += 1
         elif op_info[0]=='pool':
@@ -841,13 +866,13 @@ if __name__=='__main__':
                 batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
 
 
-                start_time = time.clock()
+                batch_start_time = time.clock()
                 feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
                 _, l, l_vec, (_,updated_lr), predictions,_ = session.run(
                         [logits,loss,loss_vector,optimize,pred,inc_gstep], feed_dict=feed_dict
                 )
 
-                end_time = time.clock()
+                batch_end_time = time.clock()
 
                 assert not np.isnan(l)
 
@@ -863,7 +888,7 @@ if __name__=='__main__':
                 valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
                 valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
                 valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
-                time_log.append(end_time-start_time)
+                time_log.append(batch_end_time-batch_start_time)
 
                 # for batch [1,2,3,...,500,10000,10001,...,10500,...]
                 if 0 <= time_stamp % interval_dict['action_update_interval'] <= 500:
@@ -877,9 +902,9 @@ if __name__=='__main__':
                     if previous_action is not None and previous_action_success and \
                                             time_stamp % interval_dict['action_test_interval'] == 0:
                         # first remove the previously added layer
-                        rm_action = 'remove,'+previous_action.split(',')[1]
+                        rm_action = 'remove_last'
                         logger.debug("Removing  with %s",rm_action)
-                        execute_action(rm_action)
+                        execute_action(rm_action,policy=False)
                         logger.debug("Ops after removal %s"%iconv_ops)
                         assert original_net_size == len(iconv_ops)
 
@@ -887,7 +912,7 @@ if __name__=='__main__':
                     if time_stamp > 0 and time_stamp % interval_dict['action_update_interval'] == 500:
 
                         logger.info('Action Picker Finished ...')
-                        predicted_actions = action_picker.get_best_actions(5)
+                        predicted_actions = action_picker.get_best_actions(5,research_parameters['seperate_cp_best_actions'])
                         logger.info('\t Got following best actions %s'%predicted_actions)
                         # update the policy action space
                         policy_learner.update_action_space(predicted_actions)
@@ -930,7 +955,7 @@ if __name__=='__main__':
                         value_logger.info('%d,%s'%(time_stamp,data))
                         action = action_picker.update_policy(time_stamp,data,previous_action_success)
                         logger.info('Executing action %s'%action)
-                        previous_action_success = execute_action(action)
+                        previous_action_success = execute_action(action,policy=False)
                         previous_action = action
 
                 # for batch [100,200,300,400,...]
@@ -972,7 +997,9 @@ if __name__=='__main__':
                             param_cost = 0.
                             stride_cost = 0.
                             complex_cost = 0.
-
+                            # was chosen depending on the propotion between
+                            # data processed within policy interval and the_data in the finetune pool
+                            duration = (pool_end_time - pool_start_time)/10.0
                         logger.info('%d Data for this episode: Error:%.3f, Time:%.3f, Param Cost:%d, Stride:%d'%
                                 (time_stamp,data['error_t'],data['time_cost'],param_cost,stride_cost)
                                 )
@@ -993,8 +1020,10 @@ if __name__=='__main__':
                     logger.info('\tReceived action %s'%action)
 
                     if action != 'finetune':
-                        previous_action_success = execute_action(action)
+                        previous_action_success = execute_action(action,policy=True)
                     else:
+
+                        pool_start_time = time.clock()
                         p_data = hard_pool.get_pool_data()
 
                         logger.debug("Finetuning with pool of size %d"%hard_pool.get_size())
@@ -1009,7 +1038,7 @@ if __name__=='__main__':
 
                             if assert_true:
                                 assert not np.isnan(pool_l)
-
+                        pool_end_time = time.clock()
                         previous_action_success = True
 
                     previous_action = action

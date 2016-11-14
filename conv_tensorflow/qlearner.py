@@ -44,6 +44,7 @@ class ContinuousState(object):
 
         if len(self.actions)==0:
             self.actions.append('finetune')
+            self.actions.append('train_with_batch')
 
         for a in actions:
             if a not in self.actions:
@@ -137,9 +138,9 @@ class ContinuousState(object):
 
             self.rl_logger.info('Data for %s: E %.2f, T %.2f, P %.2f, S %.2f, Rnk %.2f, Cpx %.2f Suc %.2f'%(self.prev_action,err_t,time_cost,param_cost,stride_cost,layer_rank_cost,complexity_cost,success_cost))
             if 'remove' in self.prev_action:
-                reward = -(error_cost*10 + time_cost + param_cost + stride_cost + complexity_cost + success_cost + layer_rank_cost)
+                reward = -(error_cost*20.0 + time_cost + param_cost + stride_cost + complexity_cost + success_cost + layer_rank_cost)
             else:
-                reward = -(error_cost*10 + time_cost + param_cost + stride_cost + complexity_cost + success_cost)
+                reward = -(error_cost*20.0 + time_cost + param_cost + stride_cost + complexity_cost + success_cost)
 
             self.rl_logger.info("Reward for action: %s: %.3f"%(self.prev_action,reward))
             # sample = reward + self.discount_rate * max(self.q[state, a] for a in self.actions)
