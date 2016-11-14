@@ -453,11 +453,12 @@ def get_logits(dataset):
         # havent added an convolution layers
         shape = x.get_shape().as_list()
         print('Reshaping X of size %s',shape)
-        x = tf.reshape(x, [shape[0],hyparams[get_layer_id('fulcon_out')]['no_layer_in']])
+        x = tf.reshape(x, [shape[0],hyparams['fulcon_out']['no_layer_in']])
         print('After reshaping X %s',x.get_shape().as_list())
         # reset the fulcon layer to proper dimensions (no other layers)
         update_fulcon_out(image_size,image_size,num_channels)
-        return tf.matmul(x, weights[get_layer_id('fulcon_out')]) + biases[get_layer_id('fulcon_out')]
+        hyparams['fulcon_out']['whd']=[image_size,image_size,num_channels]
+        return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out']
 
 def calc_loss(logits,labels):
     # Training computation.
@@ -979,7 +980,7 @@ if __name__=='__main__':
 
                     data = {
                         'error_t':100-mean_valid_accuracy,'time_cost':duration,
-                        'param_cost': param_cost, 'num_layers':layer_count,'complexity_cost':complex_cost,
+                        'param_cost': param_cost, 'layer_rank':layer_count,'complexity_cost':complex_cost,
                         'stride_cost': stride_cost,'all_params':param_count,
                         'conv_layer_count':layer_type_count['conv'],'pool_layer_count':layer_type_count['pool']
                     }

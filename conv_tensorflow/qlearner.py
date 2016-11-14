@@ -130,7 +130,7 @@ class ContinuousState(object):
             time_cost = float(data['time_cost'])/10.0
             param_cost = float(data['param_cost'])/1000.0
             stride_cost = float(data['stride_cost'])/5.0
-            layer_rank_cost = 2**(2-float(data['layer_count']))
+            layer_rank_cost = 2**(2-float(data['layer_rank']))
             complexity_cost = min(float(2**data['complexity_cost'])/2**5,1.5)
             success_cost = 0 if success else 10
 
