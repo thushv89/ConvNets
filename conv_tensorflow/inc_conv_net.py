@@ -807,12 +807,11 @@ if __name__=='__main__':
     logger.addHandler(console)
 
     # Value logger will log info used to calculate policies
-    value_logger = logging.getLogger('value_logger')
+    value_logger = logging.getLogger('state_action_logger')
     value_logger.setLevel(logging.INFO)
-    value_console = logging.StreamHandler(sys.stdout)
-    value_console.setFormatter(logging.Formatter('%(message)s'))
-    value_console.setLevel(logging.INFO)
-    value_logger.addHandler(value_console)
+    value_fileHandler = logging.FileHandler('state_action_log.log', mode='w')
+    value_fileHandler.setFormatter(logging.Formatter('%(message)s'))
+    value_logger.addHandler(value_fileHandler)
 
     # Value logger will log info used to calculate policies
     test_logger = logging.getLogger('test_logger')
@@ -994,7 +993,7 @@ if __name__=='__main__':
                         logger.debug('Action Picker running for time stamp %d'%time_stamp)
 
                         # add the new layer
-                        value_logger.info('%d,%s'%(time_stamp,data))
+                        value_logger.info('%d,%s,%s'%(time_stamp,data,previous_action))
                         action = action_picker.update_policy(time_stamp,data,previous_action_success)
                         logger.info('Executing action %s'%action)
                         previous_action_success = execute_action(action,policy=False)
@@ -1057,7 +1056,7 @@ if __name__=='__main__':
                         'conv_layer_count':layer_type_count['conv'],'pool_layer_count':layer_type_count['pool']
                     }
 
-                    value_logger.info('%d,%s'%(time_stamp,data))
+                    value_logger.info('%d,%s,%s'%(time_stamp,data,previous_action))
 
                     logger.info('=============================================================\n')
                     action = policy_learner.update_policy(time_stamp,data,previous_action_success)
