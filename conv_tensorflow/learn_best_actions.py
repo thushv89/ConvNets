@@ -84,7 +84,7 @@ class ActionPicker(object):
             error_cost = (1.0 - ((error_fraction+self.prev_state[0])/2.0))*(error_fraction-self.prev_state[0])
             stride_cost = data['stride_cost']
             success_cost = 0 if success else -100
-            reward = -(10*error_cost + 1e-3*stride_cost) + success_cost
+            reward = -(10*error_cost + 1e-1*stride_cost) + success_cost
 
             print('\tActionPicker - Running action: %s'%a)
             if self.prev_action not in self.q:

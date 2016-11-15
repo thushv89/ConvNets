@@ -55,7 +55,7 @@ test_dataset, test_labels = None,None
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
 
-pool_hyperparameters = {'pool_size':10000,'hardness':0.5}
+pool_hyperparameters = {'pool_size':10000,'hardness':0.5,'valid_pool_size':1600}
 
 iconv_ops = ['fulcon_out'] #ops will give the order of layers
 hyparams = {
@@ -70,8 +70,8 @@ conv_order  = {} # layer order (in terms of convolutional layer) in the full str
 weights,biases = {},{}
 final_x = (image_size,image_size)
 
-interval_dict = {'policy_interval':100,'action_update_interval':5000,'action_test_interval':10,'test_interval':10000}
-research_parameters = {'init_weights_with_existing':True,'seperate_cp_best_actions':True,'freeze_threshold':1000}
+interval_dict = {'policy_interval':100,'action_update_interval':5000,'action_test_interval':10,'test_interval':500}
+research_parameters = {'init_weights_with_existing':True,'seperate_cp_best_actions':True,'freeze_threshold':3000,'use_valid_pool':True}
 
 # it's not wise to include always changing values such as (layer_count) in the id
 def get_layer_id(layer_name):
@@ -352,7 +352,7 @@ def remove_conv_layer(w,stride,delete_specific=True):
     are not used after a certain threshold, they will be removed
     :return: id of the removed layer
     '''
-    global weights
+    global weights,time_stamp
     out_id = iconv_ops.pop(-1)
     rm_idx = 0
 
@@ -361,7 +361,12 @@ def remove_conv_layer(w,stride,delete_specific=True):
     for op in mod_op_array:
         if 'conv' in op:
             if hyparams[op]['weights'][:2]==w[:2] and hyparams[op]['stride']==stride:
-                logger.info("Removing (Convolution) layer %s with weights %s"%(op,hyparams[op]['weights']))
+                logger.info("Found (Convolution) layer for removal %s with weights %s"%(op,hyparams[op]['weights']))
+                logger.debug("\tChecking if the layer is suitable for removal...")
+                if get_time_stamp_for_layer(op) < time_stamp - research_parameters['freeze_threshold']:
+                    logger.debug("\t\t Layer found is frozen, skipping removal ...")
+                    continue
+                # if we found a suitable layer continue removal
                 rm_idx = iconv_ops.index(op)
                 iconv_ops.remove(op)
                 found_layer = True
@@ -373,6 +378,19 @@ def remove_conv_layer(w,stride,delete_specific=True):
         return op,rm_idx
     else:
         return None,None
+
+def get_conv_layer_with_hyparameters(w,stride,get_specific=True):
+
+    global weights
+
+    mod_op_array = iconv_ops if not get_specific else reversed(iconv_ops)
+    for op in mod_op_array:
+        if 'conv' in op:
+            if hyparams[op]['weights'][:2]==w[:2] and hyparams[op]['stride']==stride:
+                logger.info("Removing (Convolution) layer %s with weights %s"%(op,hyparams[op]['weights']))
+                return op
+    return None
+
 
 def remove_pool_layer(kernel,stride,pool_type,delete_specific=True):
     '''
@@ -636,7 +654,7 @@ def execute_action(action,policy):
 
     if action == 'train_with_batch':
         return True
-    
+
     if 'remove' in action:
 
         # remove_last to remove the last layer (one before fulcon)
@@ -662,8 +680,7 @@ def execute_action(action,policy):
             else:
                 return False
 
-            if (rm_op is None and rm_idx is None) or \
-                            get_time_stamp_for_layer(rm_op) < time_stamp - research_parameters['freeze_threshold']:
+            if rm_op is None and rm_idx is None:
                 return False
 
             # if the layer we removed is not the last convovolutional layer
@@ -797,6 +814,13 @@ if __name__=='__main__':
     value_console.setLevel(logging.INFO)
     value_logger.addHandler(value_console)
 
+    # Value logger will log info used to calculate policies
+    test_logger = logging.getLogger('test_logger')
+    test_logger.setLevel(logging.INFO)
+    fileHandler = logging.FileHandler('test_log', mode='w')
+    fileHandler.setFormatter(logging.Formatter('%(message)s'))
+    test_logger.addHandler(fileHandler)
+
     load_data.load_and_save_data_cifar10()
     (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels) = load_data.reformat_data_cifar10()
     train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
@@ -809,12 +833,16 @@ if __name__=='__main__':
     action_picker = learn_best_actions.ActionPicker(learning_rate=0.5,discount_rate=0.9)
     hard_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,
                      size=pool_hyperparameters['pool_size'],batch_size=batch_size,assert_test=assert_true)
+    valid_pool = Pool(image_size=image_size,num_channels=num_channels,num_labels=num_labels,
+                     size=pool_hyperparameters['valid_pool_size'],batch_size=batch_size,assert_test=assert_true)
 
     valid_accuracy_log = []
     time_log = []
     param_log = []
     previous_action_success = True
     previous_action = None
+    previous_pool_duration = None
+
     with tf.Session(graph=graph) as session:
 
         #global step is used to decay the learning rate
@@ -865,6 +893,9 @@ if __name__=='__main__':
                 batch_valid_data = train_dataset[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :, :, :]
                 batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
 
+                if research_parameters['use_valid_pool']:
+                    if np.random.np.random.random_sample()<=0.05 or np.random.random_sample()>=0.95:
+                        valid_pool.add_all_from_ndarray(batch_valid_data,batch_valid_labels)
 
                 batch_start_time = time.clock()
                 feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
@@ -885,9 +916,20 @@ if __name__=='__main__':
                     hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hard_fraction)
                     #logger.debug("\tHard pool (pos,size) after (%s,%s):"%(hard_pool.get_position(),hard_pool.get_size()))
 
-                valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
-                valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
-                valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
+                if not research_parameters['use_valid_pool']:
+                    valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
+                    valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
+                    valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
+                else:
+                    vpool_data = valid_pool.get_pool_data()
+                    for vpool_batchid in range(valid_pool.get_size()//batch_size):
+                        vpool_batch_data = vpool_data['pool_dataset'][pbatch_id*batch_size:(pbatch_id+1)*batch_size,:,:,:]
+                        vpool_batch_labels = vpool_data['pool_labels'][pbatch_id*batch_size:(pbatch_id+1)*batch_size,:]
+
+                        feed_pool_dict = {tf_valid_dataset : vpool_batch_data, tf_valid_labels : vpool_batch_labels}
+                        vpool_predictions = session.run([pred_valid], feed_dict=feed_pool_dict)
+                        valid_accuracy_log.append(accuracy(vpool_predictions[0],vpool_batch_labels))
+
                 time_log.append(batch_end_time-batch_start_time)
 
                 # for batch [1,2,3,...,500,10000,10001,...,10500,...]
@@ -981,7 +1023,7 @@ if __name__=='__main__':
                     )
 
                     if previous_action is not None:
-                        if previous_action != 'finetune':
+                        if 'P_' in previous_action or 'C_' in previous_action:
                             prev_op_info = get_op_from_action(previous_action)
                             param_cost = prev_op_info[1][0]*prev_op_info[1][1]*prev_op_info[1][3]
                             stride_cost = (prev_op_info[2][1]-1)*(prev_op_info[2][2]-1)
@@ -993,13 +1035,15 @@ if __name__=='__main__':
                             if 'remove' in previous_action:
                                 param_cost *= 0.
                                 stride_cost *= 0.
+                        # actions remove_last, finetune, train_with_batch
                         else:
                             param_cost = 0.
                             stride_cost = 0.
                             complex_cost = 0.
                             # was chosen depending on the propotion between
                             # data processed within policy interval and the_data in the finetune pool
-                            duration = (pool_end_time - pool_start_time)/10.0
+                            if previous_action == 'finetune':
+                                duration = previous_pool_duration/6.0
                         logger.info('%d Data for this episode: Error:%.3f, Time:%.3f, Param Cost:%d, Stride:%d'%
                                 (time_stamp,data['error_t'],data['time_cost'],param_cost,stride_cost)
                                 )
@@ -1039,14 +1083,13 @@ if __name__=='__main__':
                             if assert_true:
                                 assert not np.isnan(pool_l)
                         pool_end_time = time.clock()
+                        previous_pool_duration = pool_end_time-pool_start_time
                         previous_action_success = True
 
                     previous_action = action
                     logits = get_logits(tf_dataset)
 
-                time_stamp += 1
-
-                if time_stamp>0 and time_stamp % 10000 == 0:
+                if time_stamp>0 and time_stamp % interval_dict['test_interval'] == 0:
                     # test batches
                     test_accuracies = []
                     for batch_id in range(ceil(test_size//batch_size)):
@@ -1060,6 +1103,8 @@ if __name__=='__main__':
                     logger.info("==============================================")
                     logger.info("Test Accuracy: %.1f"%np.mean(test_accuracies))
                     logger.info("==============================================\n")
+                    test_logger.info("%d,%.3f"%(time_stamp,np.mean(test_accuracies)))
+                time_stamp += 1
 
         '''if batch_id == 101:
             print('\n======================== Adding a convolutional layer ==========================')

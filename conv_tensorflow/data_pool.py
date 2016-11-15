@@ -17,14 +17,38 @@ class Pool(object):
         self.batch_size = params['batch_size']
         self.filled_size = 0
 
-    def add_all(self,data,labels):
+    def add_all_from_ndarray(self,data,labels):
         '''
         Add all the data to the pool
         :param data:
         :param labels:
         :return:
         '''
-        raise NotImplementedError
+        add_size = data.shape[0]
+
+        if self.position + add_size <= self.size -1:
+            self.dataset[self.position:self.position+add_size,:,:,:] = data
+            self.labels[self.position:self.position+add_size,:,:,:] = labels
+        else:
+            overflow = (self.position + add_size) % (self.size-1)
+            end_chunk_size = self.size - (self.position + 1)
+
+            assert overflow + end_chunk_size == add_size
+            # Adding till the end
+            self.dataset[self.position:,:,:,:] = data[:end_chunk_size+1,:,:,:]
+            self.labels[self.position:,:] = labels[:end_chunk_size+1,:]
+
+            # Starting from the beginning for the remaining
+            self.dataset[:overflow,:,:,:] = data[end_chunk_size:,:,:,:]
+            self.labels[:overflow,:] = labels[end_chunk_size:,:]
+
+        if self.assert_test:
+            assert np.all(self.dataset[self.position,:,:,:].flatten()== data[0,:,:,:].flatten())
+
+        if self.filled_size != self.size:
+            self.filled_size = min(self.position+add_size+1,self.size)
+
+        self.position = (self.position+add_size)%self.size
 
     def add_hard_examples(self,data,labels,loss,fraction):
         '''
