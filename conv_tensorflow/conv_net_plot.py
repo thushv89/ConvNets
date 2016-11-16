@@ -57,24 +57,26 @@ accuracy_drops_cap = 10
 #lowering this makes the CNN impossible to learn
 weight_init_factor = 1
 
-include_l2_loss = True
-beta = 1e-3
+include_l2_loss = False
+beta = 1e-2 #(usually plain cost <2)
 
 #making bias small seems to be helpful (pref 0)
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
-conv_ops = ['conv_1','pool_1','conv_2','pool_1','conv_3','pool_3','fulcon_out']
+conv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_1','loc_res_norm','conv_3','pool_3','loc_res_norm','fulcon_hidden_1','fulcon_out']
 
 #number of feature maps for each convolution layer
-depth_conv = {'conv_1':64,'conv_2':64,'conv_3':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
+depth_conv = {'conv_1':128,'conv_2':64,'conv_3':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
 incept_orders = {'incept_1':['ipool_2x2','iconv_1x1','iconv_3x3','iconv_5x5']}
+
+maxout,maxout_bank_size = True,4
 
 #weights (conv): [width,height,in_depth,out_depth]
 #kernel (pool): [_,width,height,_]
 conv_1_hyparams = {'weights':[5,5,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
-conv_2_hyparams = {'weights':[5,5,depth_conv['conv_1'],depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
-conv_3_hyparams = {'weights':[5,5,depth_conv['conv_2'],depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_2_hyparams = {'weights':[5,5,int(depth_conv['conv_1']/maxout_bank_size),depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_3_hyparams = {'weights':[5,5,int(depth_conv['conv_2']/maxout_bank_size),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
 pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,1,1,1],'padding':'SAME'}
 pool_3_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
@@ -89,11 +91,13 @@ incept_1_hyparams = {
 # fully connected layer hyperparameters
 hidden_1_hyparams = {'in':0,'out':1024}
 hidden_2_hyparams = {'in':1024,'out':512}
-out_hyparams = {'in':0,'out':10}
+out_hyparams = {'in':1024,'out':10}
 
 hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,
            'incept_1': incept_1_hyparams,'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_3':pool_3_hyparams,
            'fulcon_hidden_1':hidden_1_hyparams,'fulcon_hidden_2': hidden_2_hyparams, 'fulcon_out':out_hyparams}
+
+
 #=====================================================================================================================#
 
 train_dataset, train_labels = None,None
@@ -208,7 +212,7 @@ def create_fulcon_layers(fan_in):
                 biases[op] = tf.Variable(tf.constant(np.random.random()*0.001,shape=[hyparams[op]['out']]))
 
 
-def get_logits(dataset):
+def get_logits(dataset,is_train):
 
     # Variables.
     x = dataset
@@ -218,7 +222,19 @@ def get_logits(dataset):
             print('\tCovolving data (%s)'%op)
             x = tf.nn.conv2d(x, weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding'])
 
-            x = tf.nn.relu(x + biases[op])
+            if maxout:
+                tf_maxout_x = None
+                for max_i in range(depth_conv[op]//maxout_bank_size):
+                    tmp_x = tf.reduce_max(x[:,:,:,max_i*maxout_bank_size:(max_i+1)*maxout_bank_size], reduction_indices=[3], keep_dims=True, name=None)
+                    if tf_maxout_x is None:
+                        tf_maxout_x = tf.identity(tmp_x)
+                    else:
+                        tf_maxout_x = tf.concat(3,[tf_maxout_x,tmp_x])
+
+                x = tf_maxout_x
+                print('\t\tX after maxout :%s'%(tf_maxout_x.get_shape().as_list()))
+            else:
+                x = tf.nn.relu(x + biases[op])
             print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
         if 'pool' in op:
             print('\tPooling data')
@@ -226,7 +242,7 @@ def get_logits(dataset):
             print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
         if op=='loc_res_norm':
             print('\tLocal Response Normalization')
-            x = tf.nn.local_response_normalization(x, depth_radius=9, bias=None, alpha=1e-2, beta=0.75)
+            x = tf.nn.local_response_normalization(x, depth_radius=3, bias=None, alpha=1e-2, beta=0.75)
         if 'incept' in op:
             print('\tInception for data ...')
 
@@ -327,7 +343,7 @@ def get_logits(dataset):
         if 'fulcon_hidden' not in op:
             continue
         else:
-            if use_dropout:
+            if is_train and use_dropout:
                 x = tf.nn.dropout(tf.nn.relu(tf.matmul(x,weights[op])+biases[op]),keep_prob=1.-dropout_rate,seed=tf.set_random_seed(12321))
             else:
                 x = tf.nn.relu(tf.matmul(x,weights[op])+biases[op])
@@ -363,7 +379,7 @@ def predict_with_logits(logits):
     return prediction
 
 def predict_with_dataset(dataset):
-    prediction = tf.nn.softmax(get_logits(dataset))
+    prediction = tf.nn.softmax(get_logits(dataset,False))
     return prediction
 
 if __name__=='__main__':
@@ -377,9 +393,9 @@ if __name__=='__main__':
     graph = tf.Graph()
 
     # Value logger will log info used to calculate policies
-    test_logger = logging.getLogger('test_logger_cnn_3')
+    test_logger = logging.getLogger('test_logger_cnn_maxout')
     test_logger.setLevel(logging.INFO)
-    fileHandler = logging.FileHandler('test_log_cnn_3.log', mode='w')
+    fileHandler = logging.FileHandler('test_log_cnn_maxout', mode='w')
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     test_logger.addHandler(fileHandler)
 
@@ -397,14 +413,14 @@ if __name__=='__main__':
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
         previous_test_accuracies = []
-        for data_percentage in range(1,11):
+        for data_percentage in range(10,11):
 
             global_step = tf.Variable(0, trainable=False)
             print('Starting again with %d Data...'%int(train_labels.shape[0]*float(data_percentage)/10.0))
             create_subsample_layers()
 
             print('================ Training ==================\n')
-            logits = get_logits(tf_dataset)
+            logits = get_logits(tf_dataset,True)
             loss = calc_loss(logits,tf_labels)
             pred = predict_with_logits(logits)
             optimize = optimize_func(loss,global_step)
