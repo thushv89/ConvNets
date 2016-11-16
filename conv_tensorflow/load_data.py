@@ -97,9 +97,9 @@ def reformat_data_cifar10():
         valid_dataset, valid_labels = save['valid_dataset'],save['valid_labels']
         test_dataset, test_labels = save['test_dataset'],save['test_labels']
 
-        train_dataset = train_dataset.reshape((-1,image_size,image_size,num_channels)).astype(np.float32)
-        valid_dataset = valid_dataset.reshape((-1,image_size,image_size,num_channels)).astype(np.float32)
-        test_dataset = test_dataset.reshape((-1,image_size,image_size,num_channels)).astype(np.float32)
+        train_dataset = train_dataset.reshape((-1,image_size,image_size,num_channels),order='F').astype(np.float32)
+        valid_dataset = valid_dataset.reshape((-1,image_size,image_size,num_channels),order='F').astype(np.float32)
+        test_dataset = test_dataset.reshape((-1,image_size,image_size,num_channels),order='F').astype(np.float32)
 
         print('\tFinal shape (train):%s',train_dataset.shape)
         print('\tFinal shape (valid):%s',valid_dataset.shape)
