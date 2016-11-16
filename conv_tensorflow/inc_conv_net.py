@@ -71,7 +71,10 @@ weights,biases = {},{}
 final_x = (image_size,image_size)
 
 interval_dict = {'policy_interval':100,'action_update_interval':5000,'action_test_interval':10,'test_interval':500}
-research_parameters = {'init_weights_with_existing':True,'seperate_cp_best_actions':True,'freeze_threshold':3000,'use_valid_pool':True}
+research_parameters = {
+    'init_weights_with_existing':True,'seperate_cp_best_actions':True,
+    'freeze_threshold':3000,'use_valid_pool':True,'fixed_fulcon':False
+}
 
 # it's not wise to include always changing values such as (layer_count) in the id
 def get_layer_id(layer_name):
@@ -494,7 +497,7 @@ def calc_loss_vector(logits,labels):
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=500,decay_rate=0.99)
+        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1000,decay_rate=0.99)
     else:
         learning_rate = start_lr
 
