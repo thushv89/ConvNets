@@ -57,20 +57,20 @@ accuracy_drops_cap = 10
 #lowering this makes the CNN impossible to learn
 weight_init_factor = 1
 
-include_l2_loss = False
-beta = 1e-2 #(usually plain cost <2)
+include_l2_loss = True
+beta = 5e-4 #(usually plain cost <2)
 
 #making bias small seems to be helpful (pref 0)
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
-conv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_1','loc_res_norm','conv_3','pool_3','loc_res_norm','fulcon_hidden_1','fulcon_out']
+conv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_1','loc_res_norm','conv_3','pool_3','fulcon_out']
 
 #number of feature maps for each convolution layer
-depth_conv = {'conv_1':128,'conv_2':64,'conv_3':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
+depth_conv = {'conv_1':64,'conv_2':64,'conv_3':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
 incept_orders = {'incept_1':['ipool_2x2','iconv_1x1','iconv_3x3','iconv_5x5']}
 
-maxout,maxout_bank_size = True,4
+maxout,maxout_bank_size = False,1
 
 #weights (conv): [width,height,in_depth,out_depth]
 #kernel (pool): [_,width,height,_]
@@ -111,7 +111,7 @@ weights,biases = {},{}
 
 valid_size,train_size,test_size = 0,0,0
 
-def reformat_data_cifar10():
+def reformat_data_cifar10(filename):
 
     global train_dataset,train_labels,valid_dataset,valid_labels,test_dataset,test_labels
     global image_size,num_labels,num_channels
@@ -122,7 +122,7 @@ def reformat_data_cifar10():
     num_channels = 3 # rgb
 
     print("Reformatting data ...")
-    cifar10_file = '..'+os.sep+'data'+os.sep+'cifar_train.pickle'
+    cifar10_file = '..'+os.sep+'data'+os.sep+filename
     with open(cifar10_file,'rb') as f:
         save = pickle.load(f)
         train_dataset, train_labels = save['train_dataset'],save['train_labels']
@@ -389,13 +389,13 @@ if __name__=='__main__':
     #load_data_notMNIST()
 
     #reshape_data_notMNIST()
-    reformat_data_cifar10()
+    reformat_data_cifar10('cifar-10-whitened.pickle')
     graph = tf.Graph()
 
     # Value logger will log info used to calculate policies
-    test_logger = logging.getLogger('test_logger_cnn_maxout')
+    test_logger = logging.getLogger('test_logger_cnn_3_whitened')
     test_logger.setLevel(logging.INFO)
-    fileHandler = logging.FileHandler('test_log_cnn_maxout', mode='w')
+    fileHandler = logging.FileHandler('test_log_cnn_3_whitened', mode='w')
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     test_logger.addHandler(fileHandler)
 
@@ -413,7 +413,7 @@ if __name__=='__main__':
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
         previous_test_accuracies = []
-        for data_percentage in range(10,11):
+        for data_percentage in range(1,11):
 
             global_step = tf.Variable(0, trainable=False)
             print('Starting again with %d Data...'%int(train_labels.shape[0]*float(data_percentage)/10.0))
