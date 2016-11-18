@@ -5,8 +5,11 @@ import tensorflow as tf
 from six.moves import cPickle as pickle
 from six.moves import range
 import numpy as np
-import os
+import sys
 import logging
+import getopt
+import os
+import load_data
 
 '''=========================================================================
 Batch size: 16
@@ -26,6 +29,8 @@ Inception CNN
 'conv_1','pool_1','conv_2','pool_1','incept_1','pool_2','fulcon_hidden_1','fulcon_out'
 =========================================================================='''
 
+data_filename = ''
+log_suffix = ''
 datatype = 'cifar-10'
 if datatype=='cifar-10':
     image_size = 32
@@ -111,43 +116,6 @@ weights,biases = {},{}
 
 valid_size,train_size,test_size = 0,0,0
 
-def reformat_data_cifar10(filename):
-
-    global train_dataset,train_labels,valid_dataset,valid_labels,test_dataset,test_labels
-    global image_size,num_labels,num_channels
-    global train_size,valid_size,test_size
-
-    image_size = 32
-    num_labels = 10
-    num_channels = 3 # rgb
-
-    print("Reformatting data ...")
-    cifar10_file = '..'+os.sep+'data'+os.sep+filename
-    with open(cifar10_file,'rb') as f:
-        save = pickle.load(f)
-        train_dataset, train_labels = save['train_dataset'],save['train_labels']
-        valid_dataset, valid_labels = save['valid_dataset'],save['valid_labels']
-        test_dataset, test_labels = save['test_dataset'],save['test_labels']
-
-        train_dataset = train_dataset.reshape((-1,image_size,image_size,num_channels)).astype(np.float32)
-        valid_dataset = valid_dataset.reshape((-1,image_size,image_size,num_channels)).astype(np.float32)
-        train_dataset = np.append(train_dataset,valid_dataset,axis=0)
-        del valid_dataset
-        test_dataset = test_dataset.reshape((-1,image_size,image_size,num_channels)).astype(np.float32)
-
-        print('\tFinal shape (train):%s',train_dataset.shape)
-        print('\tFinal shape (test):%s',test_dataset.shape)
-
-        train_labels = (np.arange(num_labels) == train_labels[:,None]).astype(np.float32)
-        valid_labels = (np.arange(num_labels) == valid_labels[:,None]).astype(np.float32)
-        train_labels = np.append(train_labels,valid_labels,axis=0)
-        del valid_labels
-        test_labels = (np.arange(num_labels) == test_labels[:,None]).astype(np.float32)
-
-        print('\tFinal shape (train) labels:%s',train_labels.shape)
-        print('\tFinal shape (test) labels:%s',test_labels.shape)
-
-        train_size,test_size = train_dataset.shape[0],test_dataset.shape[0]
 
 def accuracy(predictions, labels):
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
@@ -382,20 +350,35 @@ def predict_with_dataset(dataset):
     prediction = tf.nn.softmax(get_logits(dataset,False))
     return prediction
 
+
 if __name__=='__main__':
     global tf_train_dataset,tf_train_labels,tf_valid_dataset,tf_test_dataset
     global train_size,valid_size,test_size
+    global log_suffix,data_filename
 
-    #load_data_notMNIST()
 
-    #reshape_data_notMNIST()
-    reformat_data_cifar10('cifar-10-whitened.pickle')
+    try:
+        opts,args = getopt.getopt(
+            sys.argv[1:],"",['data=',"log_suffix="])
+    except getopt.GetoptError as err:
+        print('<filename>.py --restore_model=<filename> --restore_pools=<filename> --restore_logs=<filename> --train=<0or1> --persist_window=<int> --bump_window=<int>')
+
+
+    if len(opts)!=0:
+        for opt,arg in opts:
+            if opt == '--data':
+                data_filename = arg
+            if opt == '--log_suffix':
+                log_suffix = arg
+
+    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)=load_data.reformat_data_cifar10(data_filename)
+    train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
     graph = tf.Graph()
 
     # Value logger will log info used to calculate policies
-    test_logger = logging.getLogger('test_logger_cnn_3_whitened')
+    test_logger = logging.getLogger('test_logger'+log_suffix)
     test_logger.setLevel(logging.INFO)
-    fileHandler = logging.FileHandler('test_log_cnn_3_whitened', mode='w')
+    fileHandler = logging.FileHandler('test_logger'+log_suffix, mode='w')
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     test_logger.addHandler(fileHandler)
 
@@ -473,6 +456,7 @@ if __name__=='__main__':
                         else:
                             ts_acc_arr = np.append(ts_acc_arr,test_predictions[0],axis=0)
 
+                    
                     test_accuracy = accuracy(ts_acc_arr, test_labels)
                     print('Test accuracy: (Now) %.1f%% (Max) %.1f%%' %(test_accuracy,max_test_accuracy))
 

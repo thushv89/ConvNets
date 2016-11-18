@@ -56,29 +56,24 @@ def load_and_save_data_cifar10(filename,**params):
     print('\tDectected pixel depth: %d'%pixel_depth)
     print('\tZero mean and Unit variance')
 
-    train_dataset[:,:1024] = np.subtract(train_dataset[:,:1024],np.mean(train_dataset[:,:1024],axis=1).reshape((-1,1)))/pixel_depth
-    train_dataset[:,1024:2048] = np.subtract(train_dataset[:,1024:2048],np.mean(train_dataset[:,1024:2048],axis=1).reshape((-1,1)))/pixel_depth
-    train_dataset[:,2048:] = np.subtract(train_dataset[:,2048:3072],np.mean(train_dataset[:,2048:3072],axis=1).reshape((-1,1)))/pixel_depth
+    train_dataset = (train_dataset-np.mean(train_dataset,axis=1).reshape(-1,1))/np.std(train_dataset,axis=1).reshape(-1,1)
 
-    valid_dataset[:,:1024] = np.subtract(valid_dataset[:,:1024],np.mean(valid_dataset[:,:1024],axis=1).reshape((-1,1)))/pixel_depth
-    valid_dataset[:,1024:2048] = np.subtract(valid_dataset[:,1024:2048],np.mean(valid_dataset[:,1024:2048],axis=1).reshape((-1,1)))/pixel_depth
-    valid_dataset[:,2048:] = np.subtract(valid_dataset[:,2048:],np.mean(valid_dataset[:,2048:],axis=1).reshape((-1,1)))/pixel_depth
+    valid_dataset = (valid_dataset-np.mean(valid_dataset,axis=1).reshape(-1,1))/np.std(valid_dataset,axis=1).reshape(-1,1)
 
-    test_dataset[:,:1024] = np.subtract(test_dataset[:,:1024],np.mean(test_dataset[:,:1024],axis=1).reshape((-1,1)))/pixel_depth
-    test_dataset[:,1024:2048] = np.subtract(test_dataset[:,1024:2048],np.mean(test_dataset[:,1024:2048],axis=1).reshape((-1,1)))/pixel_depth
-    test_dataset[:,2048:] = np.subtract(test_dataset[:,2048:],np.mean(test_dataset[:,2048:],axis=1).reshape((-1,1)))/pixel_depth
+    test_dataset = (test_dataset-np.mean(test_dataset,axis=1).reshape(-1,1))/np.std(test_dataset,axis=1).reshape(-1,1)
+
 
     print('\tTrain Mean/Variance:%.2f,%.2f'%(
-        np.mean(np.mean(train_dataset[:,:1024],axis=1),axis=0),
-        np.mean(np.std(train_dataset[:,:1024],axis=1),axis=0)**2)
+        np.mean(np.mean(train_dataset,axis=1),axis=0),
+        np.mean(np.std(train_dataset,axis=1),axis=0)**2)
           )
     print('\tValid Mean/Variance:%.2f,%.2f'%(
-        np.mean(np.mean(valid_dataset[:,:1024],axis=1),axis=0),
-        np.mean(np.std(valid_dataset[:,:1024],axis=1),axis=0)**2)
+        np.mean(np.mean(valid_dataset,axis=1),axis=0),
+        np.mean(np.std(valid_dataset,axis=1),axis=0)**2)
           )
     print('\tTest Mean/Variance:%.2f,%.2f'%(
-        np.mean(np.mean(test_dataset[:,:1024],axis=1),axis=0),
-        np.mean(np.std(test_dataset[:,:1024],axis=1),axis=0)**2)
+        np.mean(np.mean(test_dataset,axis=1),axis=0),
+        np.mean(np.std(test_dataset,axis=1),axis=0)**2)
           )
     print('Successfully whitened data ...\n')
 
@@ -86,14 +81,17 @@ def load_and_save_data_cifar10(filename,**params):
         datasets = [train_dataset,valid_dataset,test_dataset]
 
         for d_i,dataset in enumerate(datasets):
-            red = zca_whiten(dataset[:,:1024])
-            whiten_dataset = red.reshape(-1,1024)
-            green = zca_whiten(dataset[:,1024:2048])
-            whiten_dataset = np.append(whiten_dataset,green.reshape(-1,1024),axis=1)
-            blue = zca_whiten(dataset[:,2048:3072])
-            whiten_dataset = np.append(whiten_dataset,blue.reshape(-1,1024),axis=1)
-            print("Whiten data shape: ",whiten_dataset.shape)
+            if params['separate_rgb']:
+                red = zca_whiten(dataset[:,:1024])
+                whiten_dataset = red.reshape(-1,1024)
+                green = zca_whiten(dataset[:,1024:2048])
+                whiten_dataset = np.append(whiten_dataset,green.reshape(-1,1024),axis=1)
+                blue = zca_whiten(dataset[:,2048:3072])
+                whiten_dataset = np.append(whiten_dataset,blue.reshape(-1,1024),axis=1)
+            else:
+                whiten_dataset = zca_whiten(dataset)
 
+            print("Whiten data shape: ",whiten_dataset.shape)
             if d_i==0:
                 train_dataset = whiten_dataset
             elif d_i == 1:
@@ -113,50 +111,59 @@ def load_and_save_data_cifar10(filename,**params):
             pickle.dump(cifar_data, f, pickle.HIGHEST_PROTOCOL)
     except Exception as e:
         print('Unable to save cifar_data:', e)
+        print(e)
 
-def zca_whiten(x):
+def zca_whiten(x,gcn=False,variance_cut=False):
     print('ZCA Whitening')
-    print(np.max(np.mean(x[1,:].flatten())))
-    print(np.min(np.mean(x[1,:].flatten())))
-    assert np.all(np.abs(np.mean(np.mean(x[1,:].flatten())))<0.01)
-    assert np.all(np.std(np.mean(x[1,:].flatten()))<1.1)
-    print('Data is already zero mean unit variance')
+    print('\tMax, Min data:',np.max(x[1,:].flatten()),',',np.min(x[1,:].flatten()))
+    print('\tMax, Min mean of data:',np.max(np.mean(x[1,:].flatten())),',',np.min(np.mean(x[1,:].flatten())))
 
-    x = x.T
-    x_perm = np.random.permutation(x.shape[1])
-    x_sample = x[:,np.r_[x_perm[:5000]]]
-    print(x_sample.shape)
-    cov_x = np.cov(x_sample)
-    print("Cov min: %s"%np.min(cov_x))
-    print("Cov max: %s"%np.max(cov_x))
+    assert np.all(np.abs(np.mean(np.mean(x[1,:].flatten())))<0.05)
+    #assert np.all(np.std(np.mean(x[1,:].flatten()))<1.1)
+    print('\tData is already zero')
 
-    eig_vals,eig_vecs = np.linalg.eigh(cov_x)
-    print('Eig val shape: %s'%eig_vals.shape)
-    print('Eig vec shape: %s,%s'%(eig_vecs.shape[0],eig_vecs.shape[1]))
+    original_x = np.asarray(x)
+    x = x.T #features x samples (3072 X 10000)
 
-    var_total,stop_idx = 0,0
-    for e_val in eig_vals[::-1]:
-        var_total += np.asarray(e_val/np.sum(eig_vals))
-        stop_idx += 1
-        if var_total>0.99:
-            break
-    print("Taking only %s eigen vectors"%stop_idx)
+    if gcn:
+        x = x/np.std(x,axis=0)
+        print('\tMin, Max data:',np.max(x[1,:].flatten()),',',np.min(x[1,:].flatten()))
+        print('\tMin max variance of x: ',np.max(np.std(x,axis=0)),', ',np.min(np.std(x,axis=0)))
+        assert np.std(x[:,1])<1.1 and np.std(x[:,1]) > 0.9
+        print('\tData is unit variance')
 
-    eig_vecs = eig_vecs[:,-stop_idx:] #e.g. 1024x400
-    eig_vals = eig_vals[-stop_idx:]
+    #x_perm = np.random.permutation(x.shape[1])
+    #x_sample = x[:,np.r_[x_perm[:min(10000,x.shape[1])]]]
+    #print(x_sample.shape)
+    sigma = np.dot(x,x.T)/x.shape[1]
+    print("\tCov min: %s"%np.min(sigma))
+    print("\tCov max: %s"%np.max(sigma))
 
-    assert np.all(eig_vals>0.0)
+    # since cov matrix is symmetrice SVD is numerically more stable
+    U,S,V = np.linalg.svd(sigma)
+    print('\tEig val shape: %s'%S.shape)
+    print('\tEig vec shape: %s,%s'%(U.shape[0],U.shape[1]))
 
-    x_rot = np.dot(eig_vecs.T,x)
-    #unit covariance
-    x_rot_norm = x_rot/np.reshape(np.sqrt(eig_vals+1e-6),(-1,1))
-    assert np.abs(x_rot[0,1]/np.asscalar(np.sqrt(eig_vals[0]+1e-6)) - x_rot_norm[0,1])<1e3
+    if variance_cut:
+        var_total,stop_idx = 0,0
+        for e_val in S[::-1]:
+            var_total += np.asarray(e_val/np.sum(S))
+            stop_idx += 1
+            if var_total>0.99:
+                break
+        print("\tTaking only %s eigen vectors"%stop_idx)
 
-    zca_x = np.dot(eig_vecs,x_rot_norm)
+        U = U[:,-stop_idx:] #e.g. 1024x400
+        S = S[-stop_idx:]
 
-    print('ZCA whitened data shape:',zca_x.shape)
+    assert np.all(S>0.0)
 
-    return zca_x.T
+    # unit covariance
+    zcaMat = np.dot(np.dot(U, np.diag(1.0/np.sqrt(S+5e-2))),U.T)
+    zcaOut = np.dot(zcaMat,x).T
+    print('ZCA whitened data shape:',zcaOut.shape)
+
+    return 0.5 *zcaOut + original_x * 0.5
 
 def reformat_data_cifar10(filename,**params):
 
