@@ -362,12 +362,16 @@ def predict_with_dataset(dataset):
     prediction = tf.nn.softmax(get_logits(dataset,False))
     return prediction
 
-def train_conv_net(dataset_type,datasets,hyparams):
+def get_conv_net_structure():
+    return conv_ops,hyparams
+
+def train_conv_net(session,dataset_type,datasets,hyparams):
     global image_size,num_labels,num_channels
-    global train_dataset,train_labels,valid_dataset,valid_labels,test_dataset,test_labels
     global train_size,valid_size,test_size
     global batch_size,num_epochs,start_lr,decay_learning_rate,dropout_rate,in_dropout_rate,use_dropout,early_stopping,accuracy_drops_cap,include_l2_loss,beta
     global total_iterations
+
+    total_iterations = 0
 
     # hyperparameters
     if dataset_type=='cifar-10':
@@ -406,100 +410,101 @@ def train_conv_net(dataset_type,datasets,hyparams):
 
     train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
 
-    graph = tf.Graph()
+    # if hyperparameters change, graph must be reset
 
     test_accuracies = []
 
-    with tf.Session(graph=graph) as session:
+    # Input data.
+    print('Input data defined...\n')
+    tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
+    tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-        # Input data.
-        print('Input data defined...\n')
-        tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-        tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+    tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
+    tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-        tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
-        tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+    decay_step = train_size//batch_size
+    global_step = tf.Variable(0, trainable=False)
+    start_lr = tf.Variable(start_lr)
+    create_subsample_layers()
 
-        decay_step = train_size//batch_size
-        global_step = tf.Variable(0, trainable=False)
-        start_lr = tf.Variable(start_lr)
-        create_subsample_layers()
+    print('================ Training ==================\n')
+    logits = get_logits(tf_dataset,True)
+    loss = calc_loss(logits,tf_labels)
+    pred = predict_with_logits(logits)
+    optimize = optimize_func(loss,global_step,decay_step)
+    inc_gstep = inc_global_step(global_step)
+    print('==============================================\n')
 
-        print('================ Training ==================\n')
-        logits = get_logits(tf_dataset,True)
-        loss = calc_loss(logits,tf_labels)
-        pred = predict_with_logits(logits)
-        optimize = optimize_func(loss,global_step,decay_step)
-        inc_gstep = inc_global_step(global_step)
-        print('==============================================\n')
+    print('================ Testing ==================\n')
+    test_pred = predict_with_dataset(tf_test_dataset)
+    print('==============================================\n')
 
-        print('================ Testing ==================\n')
-        test_pred = predict_with_dataset(tf_test_dataset)
-        print('==============================================\n')
+    tf.initialize_all_variables().run()
 
-        tf.initialize_all_variables().run()
-        print('Initialized...')
-        print('\tBatch size:',batch_size)
-        print('\tDepths: ',depth_conv)
-        print('\tNum Epochs: ',num_epochs)
-        print('\tDecay Learning Rate: ',decay_learning_rate,', ',hyparams['start_lr'])
-        print('\tDropout: ',use_dropout,', ',dropout_rate)
-        print('\tEarly Stopping: ',early_stopping)
-        print('\tInclude L2, Beta: ',include_l2_loss,', ',beta)
-        print('\tDecay step %d'%decay_step)
-        print('==================================================\n')
+    print('Initialized...')
+    print('\tBatch size:',batch_size)
+    print('\tDepths: ',depth_conv)
+    print('\tNum Epochs: ',num_epochs)
+    print('\tDecay Learning Rate: ',decay_learning_rate,', ',hyparams['start_lr'])
+    print('\tDropout: ',use_dropout,', ',dropout_rate)
+    print('\tEarly Stopping: ',early_stopping)
+    print('\tInclude L2, Beta: ',include_l2_loss,', ',beta)
+    print('\tDecay step %d'%decay_step)
+    print('==================================================\n')
 
-        accuracy_drop = 0 # used for early stopping
-        max_test_accuracy = 0
+    accuracy_drop = 0 # used for early stopping
+    max_test_accuracy = 0
 
-        for epoch in range(num_epochs):
-            for iteration in range(ceil(float(train_size)/batch_size)):
-                offset = iteration * batch_size
-                assert offset < train_size
-                batch_data = train_dataset[offset:min(offset + batch_size,train_size), :, :, :]
-                batch_labels = train_labels[offset:min(offset + batch_size,train_size), :]
+    for epoch in range(num_epochs):
+        for iteration in range(floor(float(train_size)/batch_size)):
+            offset = iteration * batch_size
+            assert offset < train_size
+            batch_data = train_dataset[offset:offset + batch_size, :, :, :]
+            batch_labels = train_labels[offset:offset + batch_size, :]
 
-                feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-                _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
+            feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
+            _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
 
-                if total_iterations % 50 == 0:
-                    print('Global step: %d'%global_step.eval())
-                    print('Minibatch loss at epoch,iteration %d,%d: %f' % (epoch,iteration, l))
-                    print('Learning rate: %.5f'%updated_lr)
-                    print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
+            if total_iterations % 50 == 0:
+                print('Global step: %d'%global_step.eval())
+                print('Minibatch loss at epoch,iteration %d,%d: %f' % (epoch,iteration, l))
+                print('Learning rate: %.5f'%updated_lr)
+                print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
 
-                    ts_acc_arr = None
-                    for batch_id in range(ceil(float(test_size)/batch_size)):
-                        batch_test_data = test_dataset[batch_id*batch_size:min((batch_id+1)*batch_size,test_size),:,:,:]
-                        batch_test_labels = test_labels[batch_id*batch_size:min((batch_id+1)*batch_size,test_size),:]
+                ts_acc_arr = None
+                for batch_id in range(floor(float(test_size)/batch_size)):
+                    batch_test_data = test_dataset[batch_id*batch_size:(batch_id+1)*batch_size,:,:,:]
+                    batch_test_labels = test_labels[batch_id*batch_size:(batch_id+1)*batch_size,:]
 
-                        feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
-                        test_predictions = session.run([test_pred],feed_dict=feed_test_dict)
+                    feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
+                    test_predictions = session.run([test_pred],feed_dict=feed_test_dict)
 
-                        if ts_acc_arr is None:
-                            ts_acc_arr = np.asarray(test_predictions[0],dtype=np.float32)
-                        else:
-                            ts_acc_arr = np.append(ts_acc_arr,test_predictions[0],axis=0)
-
-                    test_accuracy = accuracy(ts_acc_arr, test_labels)
-                    print('Test accuracy: (Now) %.1f%% (Max) %.1f%%' %(test_accuracy,max_test_accuracy))
-
-                    if test_accuracy > max_test_accuracy:
-                        max_test_accuracy = test_accuracy
-                        accuracy_drop = 0
+                    if ts_acc_arr is None:
+                        ts_acc_arr = np.asarray(test_predictions[0],dtype=np.float32)
                     else:
-                        accuracy_drop += 1
+                        ts_acc_arr = np.append(ts_acc_arr,test_predictions[0],axis=0)
 
-                    if epoch>10 and accuracy_drop>accuracy_drops_cap:
-                        print("Test accuracy saturated...")
-                        break
+                test_accuracy = accuracy(ts_acc_arr, test_labels)
+                print('Test accuracy: (Now) %.1f%% (Max) %.1f%%' %(test_accuracy,max_test_accuracy))
 
-                total_iterations += 1
+                if test_accuracy > max_test_accuracy:
+                    max_test_accuracy = test_accuracy
+                    accuracy_drop = 0
+                else:
+                    accuracy_drop += 1
+
+                if epoch>10 and accuracy_drop>accuracy_drops_cap:
+                    print("Test accuracy saturated...")
+                    return max_test_accuracy
+                    break
+
+            total_iterations += 1
+
 
     return max_test_accuracy
 
 if __name__=='__main__':
-    global tf_train_dataset,tf_train_labels,tf_valid_dataset,tf_test_dataset
+
     global train_size,valid_size,test_size
     global log_suffix,data_filename
     global total_iterations
