@@ -408,7 +408,6 @@ def train_conv_net(dataset_type,datasets,hyparams):
 
     graph = tf.Graph()
 
-
     test_accuracies = []
 
     with tf.Session(graph=graph) as session:
