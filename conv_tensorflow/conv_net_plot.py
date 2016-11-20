@@ -344,7 +344,7 @@ def optimize_func(loss,global_step,decay_step):
     # Optimizer.
     if decay_learning_rate:
         learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=decay_step,decay_rate=0.95)
-        learning_rate = tf.maximum(learning_rate,tf.constant(start_lr*0.05))
+        learning_rate = tf.maximum(learning_rate,start_lr*0.05)
     else:
         learning_rate = start_lr
 
@@ -428,7 +428,7 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
     tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
     tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-    decay_step = train_size//batch_size
+    decay_step = train_size*10//batch_size
     global_step = tf.Variable(0, trainable=False)
     start_lr = tf.Variable(start_lr)
     create_subsample_layers()

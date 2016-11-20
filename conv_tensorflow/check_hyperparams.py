@@ -13,15 +13,21 @@ if __name__=='__main__':
     num_epochs = 20
     batch_size = [16]
     start_learning_rates = [0.1]
-    decay_learning_rate = [False,True]
+    decay_learning_rate = [True,False]
     include_l2loss = [False,True]
     betas = [1e-3,1e-5,1e-7]
     in_dropouts = [0.1,0.2,0.5]
-    dropouts = 0.2
+    dropouts = [0.2]
     use_dropouts = [False,True]
     accuracy_drop_cap = 10
     use_early_stop = True
     check_early_stop = 8
+
+    best_batch_size = batch_size[0]
+    best_start_lr = start_learning_rates[0]
+    best_decay_lr = decay_learning_rate[0]
+    best_l2loss = include_l2loss[0]
+    best_beta = betas[0]
 
     try:
         opts,args = getopt.getopt(
@@ -120,3 +126,32 @@ if __name__=='__main__':
                 hyperparam_logger.info('Accuracies for different Decay LRs: %s'%res_decay_lr)
                 hyperparam_logger.info('Decay lr: %s'%best_decay_lr)
 
+            res_include_l2loss = {}
+            if len(include_l2loss)>1:
+                for bool in include_l2loss:
+                    if not bool:
+                        hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
+                                       'use_decay_lr':best_decay_lr,'dropout_rate':dropouts,'in_dropout_rate':in_dropouts[0],
+                                       'use_dropout':use_dropouts[0],'accuracy_drop_cap':accuracy_drop_cap,'include_l2loss':bool,'beta':betas[0],
+                                       'use_early_stop':use_early_stop,'check_early_stop_from':check_early_stop}
+
+                        max_test_accuracy = conv_net_plot.train_conv_net(session,'cifar-10',datasets,hyperparams)
+                        res_include_l2loss[bool] = max_test_accuracy
+                    else:
+                        res_beta = {}
+                        for b in betas:
+                            hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
+                                           'use_decay_lr':best_decay_lr,'dropout_rate':dropouts,'in_dropout_rate':in_dropouts[0],
+                                           'use_dropout':use_dropouts[0],'accuracy_drop_cap':accuracy_drop_cap,'include_l2loss':bool,'beta':b,
+                                           'use_early_stop':use_early_stop,'check_early_stop_from':check_early_stop}
+
+                            max_test_accuracy = conv_net_plot.train_conv_net(session,'cifar-10',datasets,hyperparams)
+                            res_beta[b] = max_test_accuracy
+                            best_beta = max(res_beta.items(),key=operator.itemgetter(1))[0]
+                            hyperparam_logger.info('Accuracies for different Betas: %s'%res_beta)
+                            hyperparam_logger.info('Beta: %s'%best_beta)
+                        res_include_l2loss[bool] = res_beta[best_beta]
+
+                best_l2loss = max(res_include_l2loss.items(),key=operator.itemgetter(1))[0]
+                hyperparam_logger.info('Accuracies for different IncludeL2Loss: %s'%res_include_l2loss)
+                hyperparam_logger.info('Beta: %s'%best_l2loss)
