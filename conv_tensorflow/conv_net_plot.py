@@ -123,6 +123,7 @@ valid_size,train_size,test_size = 0,0,0
 
 
 def accuracy(predictions, labels):
+    assert predictions.shape[0]==labels.shape[0]
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
 
@@ -398,18 +399,23 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
 
     early_stopping = hyparams['use_early_stop']
     accuracy_drops_cap = hyparams['accuracy_drop_cap']
+    check_early_stop_from = hyparams['check_early_stop_from']
 
     include_l2_loss = hyparams['include_l2loss']
     #1e-4 : 1e-5 for 2 conv layers
     #1e-7 : 1e-8 for 3 conv layers
     beta = hyparams['beta']
 
+
     train_dataset,train_labels = datasets['train_dataset'],datasets['train_labels']
     valid_dataset,valid_labels = datasets['valid_dataset'],datasets['valid_labels']
     test_dataset,test_labels = datasets['test_dataset'],datasets['test_labels']
 
     train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
-
+    print('Dataset sizes')
+    print('\tTrain: %d'%train_size)
+    print('\tValid: %d'%valid_size)
+    print('\tTest: %d'%test_size)
     # if hyperparameters change, graph must be reset
 
     test_accuracies = []
@@ -472,9 +478,10 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
                 print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
 
                 ts_acc_arr = None
-                for batch_id in range(floor(float(test_size)/batch_size)):
-                    batch_test_data = test_dataset[batch_id*batch_size:(batch_id+1)*batch_size,:,:,:]
-                    batch_test_labels = test_labels[batch_id*batch_size:(batch_id+1)*batch_size,:]
+                for test_batch_id in range(floor(float(test_size)/batch_size)):
+
+                    batch_test_data = test_dataset[test_batch_id*batch_size:(test_batch_id+1)*batch_size,:,:,:]
+                    batch_test_labels = test_labels[test_batch_id*batch_size:(test_batch_id+1)*batch_size,:]
 
                     feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
                     test_predictions = session.run([test_pred],feed_dict=feed_test_dict)
@@ -484,7 +491,12 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
                     else:
                         ts_acc_arr = np.append(ts_acc_arr,test_predictions[0],axis=0)
 
-                test_accuracy = accuracy(ts_acc_arr, test_labels)
+                    assert test_predictions[0].shape[0]==batch_test_labels.shape[0]
+
+                #print('test pred size %s'%ts_acc_arr.shape[0])
+                #print('test predictions: ',np.argmax(ts_acc_arr,axis=1))
+                #print('test label: ',np.argmax(test_labels,axis=1))
+                test_accuracy = accuracy(ts_acc_arr, test_labels[:ts_acc_arr.shape[0],:])
                 print('Test accuracy: (Now) %.1f%% (Max) %.1f%%' %(test_accuracy,max_test_accuracy))
 
                 if test_accuracy > max_test_accuracy:
@@ -493,7 +505,7 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
                 else:
                     accuracy_drop += 1
 
-                if epoch>10 and accuracy_drop>accuracy_drops_cap:
+                if epoch>check_early_stop_from and accuracy_drop>accuracy_drops_cap:
                     print("Test accuracy saturated...")
                     return max_test_accuracy
                     break
