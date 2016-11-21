@@ -74,7 +74,7 @@ beta = 5e-8
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
-conv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_1','loc_res_norm','conv_3','pool_3','loc_res_norm','fulcon_out']
+conv_ops = ['conv_1','pool_1','loc_res_norm','fulcon_out']
 
 #number of feature maps for each convolution layer
 depth_conv = {'conv_1':64,'conv_2':64,'conv_3':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
@@ -387,6 +387,7 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
     batch_size = hyparams['batch_size']
 
     num_epochs = hyparams['num_epochs']
+    decay_step = hyparams['decay_step']
 
     start_lr = hyparams['start_lr']
     decay_learning_rate = hyparams['use_decay_lr']
@@ -428,7 +429,6 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
     tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
     tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-    decay_step = train_size*10//batch_size
     global_step = tf.Variable(0, trainable=False)
     start_lr = tf.Variable(start_lr)
     create_subsample_layers()
@@ -469,13 +469,189 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
             batch_labels = train_labels[offset:offset + batch_size, :]
 
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-            _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
+            _, l, (_,updated_lr), predictions = session.run([logits,loss,optimize,pred], feed_dict=feed_dict)
 
             if total_iterations % 50 == 0:
-                print('Global step: %d'%global_step.eval())
                 print('Minibatch loss at epoch,iteration %d,%d: %f' % (epoch,iteration, l))
                 print('Learning rate: %.5f'%updated_lr)
                 print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
+
+            total_iterations += 1
+
+        ts_acc_arr = None
+        for test_batch_id in range(floor(float(test_size)/batch_size)):
+
+            batch_test_data = test_dataset[test_batch_id*batch_size:(test_batch_id+1)*batch_size,:,:,:]
+            batch_test_labels = test_labels[test_batch_id*batch_size:(test_batch_id+1)*batch_size,:]
+
+            feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
+            test_predictions = session.run([test_pred],feed_dict=feed_test_dict)
+
+            if ts_acc_arr is None:
+                ts_acc_arr = np.asarray(test_predictions[0],dtype=np.float32)
+            else:
+                ts_acc_arr = np.append(ts_acc_arr,test_predictions[0],axis=0)
+
+            assert test_predictions[0].shape[0]==batch_test_labels.shape[0]
+
+        test_accuracy = accuracy(ts_acc_arr, test_labels[:ts_acc_arr.shape[0],:])
+        print('Test accuracy for epoch %d: (Now) %.1f%% (Max) %.1f%%' %(epoch,test_accuracy,max_test_accuracy))
+        _ = session.run([inc_gstep])
+        print('Global step: %d'%global_step.eval())
+
+        if test_accuracy > max_test_accuracy:
+            max_test_accuracy = test_accuracy
+            accuracy_drop = 0
+        else:
+            accuracy_drop += 1
+
+        if epoch>check_early_stop_from and accuracy_drop>accuracy_drops_cap:
+            print("Test accuracy saturated...")
+            return max_test_accuracy
+            break
+
+
+    return max_test_accuracy
+
+if __name__=='__main__':
+
+    global train_size,valid_size,test_size
+    global log_suffix,data_filename
+    global total_iterations
+
+    total_iterations = 0
+
+    dataset_type = 'cifar-10'
+    # hyperparameters
+    if dataset_type=='cifar-10':
+        image_size = 32
+        num_labels = 10
+        num_channels = 3 # rgb
+    elif dataset_type=='notMNIST':
+        image_size = 28
+        num_labels = 10
+        num_channels = 1 # grayscale
+
+    batch_size = 16
+
+    num_epochs = 250
+    decay_step = 10
+
+    start_lr = 0.1
+    decay_learning_rate = True
+
+    #dropout seems to be making it impossible to learn
+    #maybe only works for large nets
+    dropout_rate = 0.1
+    in_dropout_rate = 0.1
+    use_dropout = True
+
+    early_stopping = True
+    accuracy_drops_cap = 10
+    check_early_stop_from = 10
+
+    include_l2_loss = True
+    beta = 1e-3
+
+    try:
+        opts,args = getopt.getopt(
+            sys.argv[1:],"",['data=',"log_suffix="])
+    except getopt.GetoptError as err:
+        print('<filename>.py --data= --log_suffix=')
+
+    if len(opts)!=0:
+        for opt,arg in opts:
+            if opt == '--data':
+                data_filename = arg
+            if opt == '--log_suffix':
+                log_suffix = arg
+
+    (full_train_dataset,full_train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)=load_data.reformat_data_cifar10(data_filename)
+    graph = tf.Graph()
+
+    # Value logger will log info used to calculate policies
+    test_logger = logging.getLogger('test_logger_'+log_suffix)
+    test_logger.setLevel(logging.INFO)
+    fileHandler = logging.FileHandler('test_logger_'+log_suffix, mode='w')
+    fileHandler.setFormatter(logging.Formatter('%(message)s'))
+    test_logger.addHandler(fileHandler)
+
+    test_accuracies = []
+
+    with tf.Session(graph=graph) as session:
+        #tf.global_variables_initializer().run()
+        # Input data.
+
+        print('Input data defined...\n')
+        tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
+        tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+
+        tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
+        tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+
+        for data_percentage in range(1,11):
+
+            train_dataset = full_train_dataset[:(full_train_dataset.shape[0]*data_percentage*0.1),:,:,:]
+            train_labels = full_train_labels[:(full_train_dataset.shape[0]*data_percentage*0.1),:]
+
+            train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
+
+            # Input data.
+            print('Running with %d data points...\n'%train_size)
+            tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
+            tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+
+            tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
+            tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+
+            global_step = tf.Variable(0, trainable=False)
+            #start_lr = tf.Variable(start_lr)
+            create_subsample_layers()
+
+            print('================ Training ==================\n')
+            logits = get_logits(tf_dataset,True)
+            loss = calc_loss(logits,tf_labels)
+            pred = predict_with_logits(logits)
+            optimize = optimize_func(loss,global_step,decay_step)
+            inc_gstep = inc_global_step(global_step)
+            print('==============================================\n')
+
+            print('================ Testing ==================\n')
+            test_pred = predict_with_dataset(tf_test_dataset)
+            print('==============================================\n')
+
+            tf.initialize_all_variables().run()
+
+            print('Initialized...')
+            print('\tBatch size:',batch_size)
+            print('\tDepths: ',depth_conv)
+            print('\tNum Epochs: ',num_epochs)
+            print('\tDecay Learning Rate: ',decay_learning_rate,', ',start_lr)
+            print('\tDropout: ',use_dropout,', ',dropout_rate)
+            print('\tEarly Stopping: ',early_stopping)
+            print('\tInclude L2, Beta: ',include_l2_loss,', ',beta)
+            print('\tDecay step %d'%decay_step)
+            print('==================================================\n')
+
+            accuracy_drop = 0 # used for early stopping
+            max_test_accuracy = 0
+
+            for epoch in range(num_epochs):
+                for iteration in range(floor(float(train_size)/batch_size)):
+                    offset = iteration * batch_size
+                    assert offset < train_size
+                    batch_data = train_dataset[offset:offset + batch_size, :, :, :]
+                    batch_labels = train_labels[offset:offset + batch_size, :]
+
+                    feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
+                    _, l, (_,updated_lr), predictions = session.run([logits,loss,optimize,pred], feed_dict=feed_dict)
+
+                    if total_iterations % 50 == 0:
+                        print('Minibatch loss at epoch,iteration %d,%d: %f' % (epoch,iteration, l))
+                        print('Learning rate: %.5f'%updated_lr)
+                        print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
+
+                    total_iterations += 1
 
                 ts_acc_arr = None
                 for test_batch_id in range(floor(float(test_size)/batch_size)):
@@ -493,11 +669,10 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
 
                     assert test_predictions[0].shape[0]==batch_test_labels.shape[0]
 
-                #print('test pred size %s'%ts_acc_arr.shape[0])
-                #print('test predictions: ',np.argmax(ts_acc_arr,axis=1))
-                #print('test label: ',np.argmax(test_labels,axis=1))
                 test_accuracy = accuracy(ts_acc_arr, test_labels[:ts_acc_arr.shape[0],:])
-                print('Test accuracy: (Now) %.1f%% (Max) %.1f%%' %(test_accuracy,max_test_accuracy))
+                print('Test accuracy for epoch %d: (Now) %.1f%% (Max) %.1f%%' %(epoch,test_accuracy,max_test_accuracy))
+                _ = session.run([inc_gstep])
+                print('Global step: %d'%global_step.eval())
 
                 if test_accuracy > max_test_accuracy:
                     max_test_accuracy = test_accuracy
@@ -507,137 +682,8 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
 
                 if epoch>check_early_stop_from and accuracy_drop>accuracy_drops_cap:
                     print("Test accuracy saturated...")
-                    return max_test_accuracy
+                    test_logger.info("%.1f,%.3f"%(data_percentage,max_test_accuracy))
                     break
-
-            total_iterations += 1
-
-
-    return max_test_accuracy
-
-if __name__=='__main__':
-
-    global train_size,valid_size,test_size
-    global log_suffix,data_filename
-    global total_iterations
-
-    try:
-        opts,args = getopt.getopt(
-            sys.argv[1:],"",['data=',"log_suffix="])
-    except getopt.GetoptError as err:
-        print('<filename>.py --restore_model=<filename> --restore_pools=<filename> --restore_logs=<filename> --train=<0or1> --persist_window=<int> --bump_window=<int>')
-
-
-    if len(opts)!=0:
-        for opt,arg in opts:
-            if opt == '--data':
-                data_filename = arg
-            if opt == '--log_suffix':
-                log_suffix = arg
-
-    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)=load_data.reformat_data_cifar10(data_filename)
-    graph = tf.Graph()
-
-    # Value logger will log info used to calculate policies
-    test_logger = logging.getLogger('test_logger'+log_suffix)
-    test_logger.setLevel(logging.INFO)
-    fileHandler = logging.FileHandler('test_logger'+log_suffix, mode='w')
-    fileHandler.setFormatter(logging.Formatter('%(message)s'))
-    test_logger.addHandler(fileHandler)
-
-    test_accuracies = []
-
-    with tf.Session(graph=graph) as session:
-        #tf.global_variables_initializer().run()
-        # Input data.
-
-        print('Input data defined...\n')
-        tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-        tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
-
-        tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
-        tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
-
-        for data_percentage in range(10,11):
-
-            train_size,valid_size,test_size =int(train_size*float(data_percentage)/10.0),int(valid_size*float(data_percentage)/10.0),int(test_size*float(data_percentage)/10.0)
-
-            decay_step = int(train_labels.shape[0]*(float(data_percentage)/10))//batch_size
-            global_step = tf.Variable(0, trainable=False)
-            print('\n\nStarting again with %d Data...'%int(train_labels.shape[0]*float(data_percentage)/10.0))
-            print('\tWith a decay step of %d'%decay_step)
-            create_subsample_layers()
-
-            print('================ Training ==================\n')
-            logits = get_logits(tf_dataset,True)
-            loss = calc_loss(logits,tf_labels)
-            pred = predict_with_logits(logits)
-            optimize = optimize_func(loss,global_step,decay_step)
-            inc_gstep = inc_global_step(global_step)
-            print('==============================================\n')
-
-            print('================ Testing ==================\n')
-            test_pred = predict_with_dataset(tf_test_dataset)
-            print('==============================================\n')
-
-            tf.initialize_all_variables().run()
-            print('Initialized...')
-            print('Batch size:',batch_size)
-            print('Depths: ',depth_conv)
-            print('Num Epochs: ',num_epochs)
-            print('Decay Learning Rate: ',decay_learning_rate,', ',start_lr)
-            print('Dropout: ',use_dropout,', ',dropout_rate)
-            print('Early Stopping: ',early_stopping)
-            print('Include L2, Beta: ',include_l2_loss,', ',beta)
-            print('==================================================\n')
-
-            accuracy_drop = 0 # used for early stopping
-            max_test_accuracy = 0
-            for epoch in range(num_epochs):
-                for iteration in range(ceil(float(train_size)/batch_size)):
-                    offset = iteration * batch_size
-                    assert offset < int(train_size*float(data_percentage)/10.0)
-                    batch_data = train_dataset[offset:min(offset + batch_size,train_size), :, :, :]
-                    batch_labels = train_labels[offset:min(offset + batch_size,train_size), :]
-
-                    feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-                    _, l, (_,updated_lr), predictions,_ = session.run([logits,loss,optimize,pred,inc_gstep], feed_dict=feed_dict)
-
-                    if total_iterations % 50 == 0:
-                        print('Global step: %d'%global_step.eval())
-                        print('Minibatch loss at epoch,iteration %d,%d: %f' % (epoch,iteration, l))
-                        print('Learning rate: %.5f'%updated_lr)
-                        print('Minibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
-
-                        ts_acc_arr = None
-                        for batch_id in range(test_size//batch_size):
-                            batch_test_data = test_dataset[batch_id*batch_size:(batch_id+1)*batch_size,:,:,:]
-                            batch_test_labels = test_labels[batch_id*batch_size:(batch_id+1)*batch_size,:]
-
-                            feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
-                            test_predictions = session.run([test_pred],feed_dict=feed_test_dict)
-
-                            if ts_acc_arr is None:
-                                ts_acc_arr = np.asarray(test_predictions[0],dtype=np.float32)
-                            else:
-                                ts_acc_arr = np.append(ts_acc_arr,test_predictions[0],axis=0)
-
-
-                        test_accuracy = accuracy(ts_acc_arr, test_labels)
-                        print('Test accuracy: (Now) %.1f%% (Max) %.1f%%' %(test_accuracy,max_test_accuracy))
-
-                        if test_accuracy > max_test_accuracy:
-                            max_test_accuracy = test_accuracy
-                            accuracy_drop = 0
-                        else:
-                            accuracy_drop += 1
-
-                        if epoch>10 and accuracy_drop>50:
-                            print("Test accuracy saturated for %d..."%data_percentage)
-                            test_logger.info("%d,%.2f"%(data_percentage,max_test_accuracy))
-                            break
-
-                        total_iterations += 1
 
 
 
