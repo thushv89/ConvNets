@@ -74,7 +74,7 @@ beta = 5e-8
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
-conv_ops = ['conv_1','pool_1','loc_res_norm','fulcon_out']
+conv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_2','loc_res_norm','conv_2','pool_1','loc_res_norm','conv_2','pool_2','loc_res_norm','conv_3','pool_3','loc_res_norm','fulcon_out']
 
 #number of feature maps for each convolution layer
 depth_conv = {'conv_1':64,'conv_2':64,'conv_3':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
@@ -543,12 +543,12 @@ if __name__=='__main__':
     #dropout seems to be making it impossible to learn
     #maybe only works for large nets
     dropout_rate = 0.1
-    in_dropout_rate = 0.1
+    in_dropout_rate = 0.2
     use_dropout = True
 
     early_stopping = True
     accuracy_drops_cap = 10
-    check_early_stop_from = 10
+    check_early_stop_from = 100
 
     include_l2_loss = True
     beta = 1e-3
@@ -589,15 +589,25 @@ if __name__=='__main__':
         tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-        for data_percentage in range(1,11):
+        data_percentages = list(np.arange(0.001,0.010,0.001))
+        data_percentages.extend(list(np.arange(0.01,0.10,0.01)))
+        data_percentages.extend(list(np.arange(0.1,1.1,0.1)))
+        for data_percentage in data_percentages:
 
-            train_dataset = full_train_dataset[:(full_train_dataset.shape[0]*data_percentage*0.1),:,:,:]
-            train_labels = full_train_labels[:(full_train_dataset.shape[0]*data_percentage*0.1),:]
+            if data_percentage < 0.01:
+                check_early_stop_from = 100
+            elif 0.01 <= data_percentage < 0.1:
+                check_early_stop_from = 50
+            elif 0.1 <= data_percentage < 1.1:
+                check_early_stop_from = 25
+
+            train_dataset = full_train_dataset[:(full_train_dataset.shape[0]*data_percentage),:,:,:]
+            train_labels = full_train_labels[:(full_train_dataset.shape[0]*data_percentage),:]
 
             train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
 
             # Input data.
-            print('Running with %d data points...\n'%train_size)
+            print('Running with %d data points and early stop after %d...\n'%(train_size,check_early_stop_from))
             tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
             tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
@@ -682,7 +692,7 @@ if __name__=='__main__':
 
                 if epoch>check_early_stop_from and accuracy_drop>accuracy_drops_cap:
                     print("Test accuracy saturated...")
-                    test_logger.info("%.1f,%.3f"%(data_percentage,max_test_accuracy))
+                    test_logger.info("%.3f,%.3f"%(data_percentage,max_test_accuracy))
                     break
 
 
