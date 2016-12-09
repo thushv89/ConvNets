@@ -55,10 +55,13 @@ test_dataset, test_labels = None,None
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
 
+incrementally_add_layers = False
+if incrementally_add_layers:
+    iconv_ops = ['conv_1','pool_1','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
+else:
+    iconv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
 
-iconv_ops = ['conv_1','pool_1','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
-
-depth_conv = {'conv_1':128,'conv_2':96,'conv_3':64,'conv_balance':128}
+depth_conv = {'conv_1':64,'conv_2':96,'conv_3':128,'conv_balance':128}
 
 final_2d_output = (4,4)
 current_final_2d_output = (0,0)
@@ -66,10 +69,16 @@ current_final_2d_output = (0,0)
 conv_1_hyparams = {'weights':[5,5,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
 conv_2_hyparams = {'weights':[5,5,int(depth_conv['conv_1']),depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
 conv_3_hyparams = {'weights':[5,5,int(depth_conv['conv_2']),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
-conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_1']),128],'stride':[1,1,1,1],'padding':'SAME'}
+if incrementally_add_layers:
+    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_1']),128],'stride':[1,1,1,1],'padding':'SAME'}
+else:
+    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_3']),128],'stride':[1,1,1,1],'padding':'SAME'}
 pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
-pool_balance_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,4,4,1],'padding':'SAME'}
+if incrementally_add_layers:
+    pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,4,4,1],'padding':'SAME'}
+else:
+    pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,1,1,1],'padding':'SAME'}
 out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_balance'],'out':10}
 
 hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,'conv_balance':conv_balance_hyparams,
@@ -126,7 +135,7 @@ def init_iconvnet():
     ))
 
 def append_new_layer_id(layer_id):
-    iconv_ops
+    global iconv_ops
     out_id = iconv_ops.pop(-1)
     pool_balance_id = iconv_ops.pop(-1)
     conv_balance_id = iconv_ops.pop(-1)
@@ -143,7 +152,7 @@ def update_balance_layer(new_in_depth):
     :return:
     '''
     balance_layer_id = 'conv_balance'
-    current_in_depth = hyparams[balance_layer_id]['weights'][3]
+    current_in_depth = hyparams[balance_layer_id]['weights'][2]
     conv_weights = hyparams[balance_layer_id]['weights']
 
     logger.info("Need to update the layer %s in_depth from %d to %d"%(balance_layer_id,current_in_depth,new_in_depth))
@@ -207,13 +216,15 @@ def add_conv_layer(w,stride,conv_id,init_random):
     for op in reversed(iconv_ops[:iconv_ops.index(conv_id)]):
         if 'conv' in op:
             prev_conv_op = op
+            break
 
     assert prev_conv_op != conv_id
+
     if hyparams[prev_conv_op]['weights'][3]!=hyparams[conv_id]['weights'][3]:
         print('Out Weights of (Previous) %s (%d) and (New) %s (%d) do not match'%(prev_conv_op,hyparams[prev_conv_op]['weights'][3],conv_id,hyparams[conv_id]['weights'][3]))
         update_balance_layer(hyparams[conv_id]['weights'][3])
 
-    if stride[0]>1 or stride[1]>1:
+    if stride[1]>1 or stride[2]>1:
         raise NotImplementedError
 
     assert np.all(np.asarray(weight_shape)>0)
@@ -231,10 +242,11 @@ def add_pool_layer(ksize,stride,type,pool_id):
 
     append_new_layer_id(pool_id)
 
-    if stride[0]>1 or stride[1]>1:
-        print('Before changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][0],hyparams['pool_balance']['stride'][1]))
-        hyparams['pool_balance']['stride']=(hyparams['pool_balance']['stride'][0]-(stride[0]-1),hyparams['pool_balance']['stride'][1]-(stride[1]-1))
-        print('After changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][0],hyparams['pool_balance']['stride'][1]))
+    if stride[1]>1 or stride[2]>1:
+        print('Before changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][1],hyparams['pool_balance']['stride'][2]))
+        hyparams['pool_balance']['stride'][1] = np.max([1,hyparams['pool_balance']['stride'][1]-stride[1]])
+        hyparams['pool_balance']['stride'][2] = np.max([1,hyparams['pool_balance']['stride'][2]-stride[2]])
+        print('After changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][1],hyparams['pool_balance']['stride'][2]))
 
 
 def get_logits(dataset):
@@ -256,6 +268,7 @@ def get_logits(dataset):
             logger.debug('\t\t Relu with x(%s) and b(%s)'%(x.get_shape().as_list(),biases[op].get_shape().as_list()))
             x = tf.nn.relu(x + biases[op])
             logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+
         if 'pool' in op:
             logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
 
@@ -301,7 +314,7 @@ def calc_loss_vector(logits,labels):
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1000,decay_rate=0.99)
+        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.99)
     else:
         learning_rate = start_lr
 
@@ -389,17 +402,19 @@ if __name__=='__main__':
 
         for epoch in range(100):
 
-            if epoch==5:
+            if epoch==5 and incrementally_add_layers:
                 conv_id = 'conv_2'
-                add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],'conv_2',True)
+                add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],conv_id,True)
                 pool_id = 'pool_2'
                 add_pool_layer(hyparams[pool_id]['kernel'],hyparams[pool_id]['stride'],hyparams[pool_id]['type'],pool_id)
+                get_logits(tf_dataset)
 
-            elif epoch == 10:
+            elif epoch == 10 and incrementally_add_layers:
                 conv_id = 'conv_3'
-                add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],'conv_2',True)
+                add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],conv_id,True)
                 pool_id = 'pool_2'
                 add_pool_layer(hyparams[pool_id]['kernel'],hyparams[pool_id]['stride'],hyparams[pool_id]['type'],pool_id)
+                get_logits(tf_dataset)
 
             for batch_id in range(ceil(train_size//batch_size)-1):
 
@@ -416,6 +431,9 @@ if __name__=='__main__':
                 train_accuracy_log.append(accuracy(predictions, batch_labels))
                 train_loss_log.append(l)
 
+            _ = session.run([inc_gstep])
+
+            logger.info('\tGlobal Step %d' %global_step.eval())
             logger.info('\tMean loss at epoch %d: %.5f' % (epoch, np.mean(train_loss_log)))
             logger.debug('\tLearning rate: %.3f'%updated_lr)
             logger.info('\tMinibatch accuracy: %.2f%%\n' % np.mean(train_accuracy_log))
@@ -454,4 +472,3 @@ if __name__=='__main__':
                 valid_accuracy_log = []
                 test_accuracy_log = []
 
-            session.run([inc_gstep])
