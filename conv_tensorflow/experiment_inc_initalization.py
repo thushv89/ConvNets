@@ -33,7 +33,7 @@ batch_size = 16 # number of datapoints in a single batch
 
 num_iterations = 3 #
 
-start_lr = 0.1
+start_lr = 0.01
 decay_learning_rate = True
 
 #dropout seems to be making it impossible to learn
@@ -444,13 +444,13 @@ if __name__=='__main__':
 
             if epoch > 0 and epoch % summary_frequency == 0:
 
-                logger.info('\n==================== Epoch: %d ====================='%time_stamp)
+                logger.info('\n==================== Epoch: %d ====================='%epoch)
                 logger.debug('\tGlobal step: %d'%global_step.eval())
                 logger.debug('\tCurrent Ops: %s'%iconv_ops)
                 mean_valid_accuracy = np.mean(valid_accuracy_log)
                 mean_test_accuracy = np.mean(test_accuracy_log)
                 logger.debug('\tMean Valid accuracy: %.2f%%' %mean_valid_accuracy)
-                logger.debug('\tMean Test accuracy: %.2f%%' %mean_test_accuracy)
+                logger.debug('\tMean Test accuracy: %.2f%%\n' %mean_test_accuracy)
                 valid_accuracy_log = []
                 test_accuracy_log = []
 
