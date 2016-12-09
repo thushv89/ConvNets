@@ -74,10 +74,10 @@ beta = 5e-8
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
-conv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_2','loc_res_norm','conv_2','pool_1','loc_res_norm','conv_2','pool_2','loc_res_norm','conv_3','pool_3','loc_res_norm','fulcon_out']
+conv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_2','loc_res_norm','conv_3','pool_1','loc_res_norm','conv_4','pool_2','loc_res_norm','conv_5','pool_3','loc_res_norm','fulcon_out']
 
 #number of feature maps for each convolution layer
-depth_conv = {'conv_1':64,'conv_2':64,'conv_3':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
+depth_conv = {'conv_1':128,'conv_2':96,'conv_3':64,'conv_4':64,'conv_5':64,'iconv_1x1':16,'iconv_3x3':16,'iconv_5x5':16}
 incept_orders = {'incept_1':['ipool_2x2','iconv_1x1','iconv_3x3','iconv_5x5']}
 
 maxout,maxout_bank_size = False,1
@@ -87,6 +87,8 @@ maxout,maxout_bank_size = False,1
 conv_1_hyparams = {'weights':[5,5,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
 conv_2_hyparams = {'weights':[5,5,int(depth_conv['conv_1']/maxout_bank_size),depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
 conv_3_hyparams = {'weights':[5,5,int(depth_conv['conv_2']/maxout_bank_size),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_4_hyparams = {'weights':[3,3,int(depth_conv['conv_3']/maxout_bank_size),depth_conv['conv_4']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_5_hyparams = {'weights':[3,3,int(depth_conv['conv_4']/maxout_bank_size),depth_conv['conv_5']],'stride':[1,1,1,1],'padding':'SAME'}
 pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,1,1,1],'padding':'SAME'}
 pool_3_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
@@ -103,7 +105,7 @@ hidden_1_hyparams = {'in':0,'out':1024}
 hidden_2_hyparams = {'in':1024,'out':512}
 out_hyparams = {'in':1024,'out':10}
 
-hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,
+hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,'conv_4':conv_4_hyparams,'conv_5':conv_5_hyparams,
            'incept_1': incept_1_hyparams,'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_3':pool_3_hyparams,
            'fulcon_hidden_1':hidden_1_hyparams,'fulcon_hidden_2': hidden_2_hyparams, 'fulcon_out':out_hyparams}
 
@@ -143,10 +145,10 @@ def create_subsample_layers():
             print('\t\tBias:%d'%hyparams[op]['weights'][3])
             weights[op]=tf.Variable(
                 tf.truncated_normal(hyparams[op]['weights'],
-                                    stddev=2./min(10,hyparams[op]['weights'][0]*hyparams[op]['weights'][1])
+                                    stddev=2./min(5,hyparams[op]['weights'][0])
                                     )
             )
-            biases[op] = tf.Variable(tf.constant(np.random.random()*0.05,shape=[hyparams[op]['weights'][3]]))
+            biases[op] = tf.Variable(tf.constant(np.random.random()*0.001,shape=[hyparams[op]['weights'][3]]))
         if 'incept' in op:
             print('\n\tDefining the weights and biases for the Incept Module')
             inc_hyparams = hyparams[op]
@@ -158,8 +160,7 @@ def create_subsample_layers():
                     print('\t\t\tBias:%d'%inc_hyparams[k]['weights'][3])
                     weights[w_key] = tf.Variable(
                         tf.truncated_normal(inc_hyparams[k]['weights'],
-                                            stddev=2./min(10,inc_hyparams[k]['weights'][0] *
-                                                       inc_hyparams[k]['weights'][1])
+                                            stddev=2./min(5,inc_hyparams[k]['weights'][0])
                                             )
                     )
                     biases[w_key] = tf.Variable(tf.constant(np.random.random()*0.0,shape=[inc_hyparams[k]['weights'][3]]))
@@ -537,7 +538,7 @@ if __name__=='__main__':
     num_epochs = 250
     decay_step = 10
 
-    start_lr = 0.1
+    start_lr = 0.2
     decay_learning_rate = True
 
     #dropout seems to be making it impossible to learn
@@ -589,7 +590,8 @@ if __name__=='__main__':
         tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-        data_percentages = list(np.arange(0.001,0.010,0.001))
+        data_percentages = []
+        data_percentages.extend(list(np.arange(0.001,0.010,0.001)))
         data_percentages.extend(list(np.arange(0.01,0.10,0.01)))
         data_percentages.extend(list(np.arange(0.1,1.1,0.1)))
         for data_percentage in data_percentages:

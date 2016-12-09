@@ -17,19 +17,23 @@ Beta = 1e-5
 
 if __name__=='__main__':
 
-    decay_steps = [1,5,10]
+    '''
+    Make sure you have the (possibly) working hyperparameters
+    for the ones you have not found the best
+    '''
+    decay_steps = [10]
     num_epochs = 50
-    batch_size = [16,64,128]
-    start_learning_rates = [0.1,0.01,0.001]
-    decay_learning_rate = [False,True]
-    include_l2loss = [False,True]
-    betas = [1e-3,1e-5,1e-7]
-    in_dropouts = [0.1,0.2,0.5]
+    batch_size = [16]
+    start_learning_rates = [0.2,0.1,0.01]
+    decay_learning_rate = [True]
+    include_l2loss = [True]
+    betas = [1e-3,1e-1,1e-2]
+    in_dropouts = [0.2,0.1,0.5]
     dropouts = [0.2]
-    use_dropouts = [False,True]
-    accuracy_drop_cap = 3
+    use_dropouts = [True]
+    accuracy_drop_cap = 5
     use_early_stop = True
-    check_early_stop = 5
+    check_early_stop = 25
 
     best_batch_size = batch_size[0]
     best_start_lr = start_learning_rates[0]
@@ -121,7 +125,7 @@ if __name__=='__main__':
             res_include_l2loss = {}
             res_beta = {}
             print("Testing include_l2loss ...")
-            if len(include_l2loss)>1:
+            if len(include_l2loss)>1 or (len(include_l2loss)==1 and include_l2loss[0]):
                 for bool in include_l2loss:
                     if not bool:
                         hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
@@ -132,19 +136,20 @@ if __name__=='__main__':
                         max_test_accuracy = conv_net_plot.train_conv_net(session,'cifar-10',datasets,hyperparams)
                         res_include_l2loss[bool] = max_test_accuracy
                     else:
-                        for b in betas:
-                            hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
-                                           'use_decay_lr':best_decay_lr,'dropout_rate':dropouts[0],'in_dropout_rate':in_dropouts[0],
-                                           'use_dropout':use_dropouts[0],'accuracy_drop_cap':accuracy_drop_cap,'include_l2loss':bool,'beta':b,
-                                           'use_early_stop':use_early_stop,'check_early_stop_from':check_early_stop,'decay_step':decay_steps[0]}
+                        if len(betas)>1:
+                            for b in betas:
+                                hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
+                                               'use_decay_lr':best_decay_lr,'dropout_rate':dropouts[0],'in_dropout_rate':in_dropouts[0],
+                                               'use_dropout':use_dropouts[0],'accuracy_drop_cap':accuracy_drop_cap,'include_l2loss':bool,'beta':b,
+                                               'use_early_stop':use_early_stop,'check_early_stop_from':check_early_stop,'decay_step':decay_steps[0]}
 
-                            max_test_accuracy = conv_net_plot.train_conv_net(session,'cifar-10',datasets,hyperparams)
-                            res_beta[b] = max_test_accuracy
+                                max_test_accuracy = conv_net_plot.train_conv_net(session,'cifar-10',datasets,hyperparams)
+                                res_beta[b] = max_test_accuracy
 
-                        best_beta = max(res_beta.items(),key=operator.itemgetter(1))[0]
-                        hyperparam_logger.info('Accuracies for different Betas: %s'%res_beta)
-                        hyperparam_logger.info('Beta: %s'%best_beta)
-                        res_include_l2loss[bool] = res_beta[best_beta]
+                            best_beta = max(res_beta.items(),key=operator.itemgetter(1))[0]
+                            hyperparam_logger.info('Accuracies for different Betas: %s'%res_beta)
+                            hyperparam_logger.info('Beta: %s'%best_beta)
+                            res_include_l2loss[bool] = res_beta[best_beta]
 
                 best_l2loss = max(res_include_l2loss.items(),key=operator.itemgetter(1))[0]
                 hyperparam_logger.info('Accuracies for different IncludeL2Loss: %s'%res_include_l2loss)
@@ -185,7 +190,7 @@ if __name__=='__main__':
             res_use_dropout = {}
             res_in_dropouts = {}
             print("Testing Dropout...")
-            if len(use_dropouts)>1:
+            if len(use_dropouts)>1 or (len(use_dropouts)==1 and use_dropouts[0]):
                 for bool in use_dropouts:
                     if not bool:
                         hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
@@ -197,16 +202,17 @@ if __name__=='__main__':
                         res_use_dropout[bool] = max_test_accuracy
 
                     else:
-                        for in_drop in in_dropouts:
-                            hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
-                                       'use_decay_lr':best_decay_lr,'dropout_rate':dropouts[0],'in_dropout_rate':in_drop,
-                                       'use_dropout':bool,'accuracy_drop_cap':accuracy_drop_cap,'include_l2loss': best_l2loss,
-                                       'beta':best_beta, 'use_early_stop':use_early_stop,'check_early_stop_from':check_early_stop,'decay_step':decay_steps[0]}
+                        if len(in_dropouts)>1:
+                            for in_drop in in_dropouts:
+                                hyperparams = {'batch_size':best_batch_size,'start_lr':best_start_lr,'num_epochs':num_epochs,
+                                           'use_decay_lr':best_decay_lr,'dropout_rate':dropouts[0],'in_dropout_rate':in_drop,
+                                           'use_dropout':bool,'accuracy_drop_cap':accuracy_drop_cap,'include_l2loss': best_l2loss,
+                                           'beta':best_beta, 'use_early_stop':use_early_stop,'check_early_stop_from':check_early_stop,'decay_step':decay_steps[0]}
 
-                            max_test_accuracy = conv_net_plot.train_conv_net(session,'cifar-10',datasets,hyperparams)
-                            res_in_dropouts[in_drop] = max_test_accuracy
+                                max_test_accuracy = conv_net_plot.train_conv_net(session,'cifar-10',datasets,hyperparams)
+                                res_in_dropouts[in_drop] = max_test_accuracy
 
-                        best_in_dropout = max(res_in_dropouts.items(),key=operator.itemgetter(1))[0]
-                        hyperparam_logger.info('Accuracies for different In Dropouts: %s'%res_in_dropouts)
-                        hyperparam_logger.info('In dropout: %s'%best_in_dropout)
-                        res_use_dropout[bool] = res_in_dropouts[best_in_dropout]
+                            best_in_dropout = max(res_in_dropouts.items(),key=operator.itemgetter(1))[0]
+                            hyperparam_logger.info('Accuracies for different In Dropouts: %s'%res_in_dropouts)
+                            hyperparam_logger.info('In dropout: %s'%best_in_dropout)
+                            res_use_dropout[bool] = res_in_dropouts[best_in_dropout]
