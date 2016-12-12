@@ -13,7 +13,7 @@ def load_and_save_data_imagenet():
     valid_directory = "/home/tgan4199/imagenet/ILSVRC2015/Data/CLS-LOC/val/"
     valid_annotation_directory = "/home/tgan4199/imagenet/ILSVRC2015/Annotations/CLS-LOC/val/"
     data_info_directory = "/home/tgan4199/imagenet/ILSVRC2015/ImageSets/"
-    train_subdirectories = [x[0] for x in os.walk(train_directory)]
+
     # get all the directories in there
     class_distribution = [50,50,25]
     resized_dimension = 224
@@ -78,6 +78,7 @@ def load_and_save_data_imagenet():
     people_synsets = np.random.permutation(people_synsets)
     selected_people_synsets = list(people_synsets[:class_distribution[2]])
 
+    train_subdirectories = [x[0] for x in os.walk(train_directory)]
     print('Summary of selected synsets ...')
     print('\tNatural: %s'%natural_synsets[:5])
     print('\tArtificial: %s'%artificial_synsets[:5])
@@ -86,7 +87,7 @@ def load_and_save_data_imagenet():
     for subdir in train_subdirectories:
         file_count = len([file for file in os.listdir(subdir) if file.endswith('.JPEG')])
         train_size += file_count
-    print('Found %d training samples...\n'%train_size)
+    print('Found %d training samples in %d subdirectories...\n'%(train_size,len(train_subdirectories)))
     assert train_size>0
     print('Creating train dataset ...')
     pixel_depth = -1
