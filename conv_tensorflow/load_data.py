@@ -5,6 +5,46 @@ from six.moves import range
 import numpy as np
 import os
 
+def load_and_save_data_imagenet(f):
+    train_directory = "~/imagenet/ILSVRC2015/Data/CLS-LOC/train/"
+    train_subdirectories = [x[0] in for x in os.walk(train_directory)]
+    # get all the directories in there
+    class_distribution = [50,50,25]
+
+    natural_synsets = []
+    f = open('natural_classes.txt', 'r')
+    for line in f:
+        if not line[0]=='#' and line[0]=='-':
+            natural_synsets.append(line[1:])
+    natural_synsets = np.random.permutation(natural_synsets)
+    selected_natural_synsets = list(natural_synsets[:class_distribution[0]])
+
+    artificial_synsets = []
+    f = open('artificial_classes.txt', 'r')
+    for line in f:
+        if not line[0]=='#' and line[0]=='-':
+            artificial_synsets.append(line[1:])
+    artificial_synsets = np.random.permutation(artificial_synsets)
+    selected_artificial_synsets = list(artificial_synsets[:class_distribution[1]])
+
+    people_synsets = []
+    f = open('people_classes.txt', 'r')
+    for line in f:
+        if not line[0]=='#' and line[0]=='-':
+            people_synsets.append(line[1:])
+    people_synsets = np.random.permutation(people_synsets)
+    selected_people_synsets = list(people_synsets[:class_distribution[2]])
+
+    for subdir in train_subdirectories:
+        head,tail = os.path.split(subdir)
+        if tail not in selected_natural_synsets or \
+                        tail not in selected_artificial_synsets or \
+                        tail not in selected_people_synsets:
+            continue
+        for file in os.listdir(subdir):
+            if file.endswith(".jpg"):
+
+
 def load_and_save_data_cifar10(filename,**params):
 
     valid_size_required = 10000

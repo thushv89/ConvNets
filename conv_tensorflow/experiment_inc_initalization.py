@@ -1,5 +1,11 @@
 __author__ = 'Thushan Ganegedara'
 
+'''==================================================================
+#   This is an experiment to check if incrementally adding layers   #
+#   help to reach higher accuracy quicker than starting with all    #
+#   the layers at once.                                             #
+=================================================================='''
+
 import tensorflow as tf
 from six.moves import cPickle as pickle
 from six.moves import range
@@ -13,6 +19,7 @@ import time
 import qlearner
 import learn_best_actions
 from data_pool import Pool
+import getopt
 
 logger = None
 logging_level = logging.DEBUG
@@ -31,20 +38,20 @@ elif datatype=='notMNIST':
 
 batch_size = 16 # number of datapoints in a single batch
 
-num_iterations = 3 #
 
-start_lr = 0.01
+start_lr = 0.001
 decay_learning_rate = True
 
 #dropout seems to be making it impossible to learn
 #maybe only works for large nets
 dropout_rate = 0.25
-use_dropout = True
+use_dropout = False
 
-include_l2_loss = True
+include_l2_loss = False
 #keep beta small (0.2 is too much >0.002 seems to be fine)
-beta = 1e-3
+beta = 1e-1
 
+use_local_res_norm = True
 summary_frequency = 5
 assert_true = True
 
@@ -55,11 +62,18 @@ test_dataset, test_labels = None,None
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
 
-incrementally_add_layers = False
+incrementally_add_layers = True
+
 if incrementally_add_layers:
-    iconv_ops = ['conv_1','pool_1','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
+    if use_local_res_norm:
+        iconv_ops = ['conv_1','pool_1','loc_res_norm','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
+    else:
+        iconv_ops = ['conv_1','pool_1','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
 else:
-    iconv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
+    if use_local_res_norm:
+        iconv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_2','loc_res_norm','conv_3','pool_2','loc_res_norm','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
+    else:
+        iconv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
 
 depth_conv = {'conv_1':64,'conv_2':96,'conv_3':128,'conv_balance':128}
 
@@ -70,9 +84,9 @@ conv_1_hyparams = {'weights':[5,5,num_channels,depth_conv['conv_1']],'stride':[1
 conv_2_hyparams = {'weights':[5,5,int(depth_conv['conv_1']),depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
 conv_3_hyparams = {'weights':[5,5,int(depth_conv['conv_2']),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
 if incrementally_add_layers:
-    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_1']),128],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_1']),depth_conv['conv_balance']],'stride':[1,1,1,1],'padding':'SAME'}
 else:
-    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_3']),128],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_3']),depth_conv['conv_balance']],'stride':[1,1,1,1],'padding':'SAME'}
 pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 if incrementally_add_layers:
@@ -81,7 +95,7 @@ else:
     pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,1,1,1],'padding':'SAME'}
 out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_balance'],'out':10}
 
-hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,'conv_balance':conv_balance_hyparams,
+hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams, 'conv_balance':conv_balance_hyparams,
            'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_balance':pool_balance_hyparams,
            'fulcon_out':out_hyparams}
 
@@ -113,10 +127,10 @@ def init_iconvnet():
                 print('\t\tBias:%d'%hyparams[op]['weights'][3])
                 weights[op]=tf.Variable(
                     tf.truncated_normal(hyparams[op]['weights'],
-                                        stddev=2./min(10,hyparams[op]['weights'][0])
+                                        stddev=2./(hyparams[op]['weights'][0]*hyparams[op]['weights'][1])
                                         )
                 )
-                biases[op] = tf.Variable(tf.constant(np.random.random()*0.0001,shape=[hyparams[op]['weights'][3]]))
+                biases[op] = tf.Variable(tf.constant(np.random.random()*1e-6,shape=[hyparams[op]['weights'][3]]))
 
     # Fully connected classifier
     weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
@@ -241,6 +255,8 @@ def add_pool_layer(ksize,stride,type,pool_id):
     hyparams[pool_id] = {'type':type,'kernel':ksize,'stride':stride,'padding':'SAME'}
 
     append_new_layer_id(pool_id)
+    if use_local_res_norm:
+        append_new_layer_id('loc_res_norm')
 
     if stride[1]>1 or stride[2]>1:
         print('Before changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][1],hyparams['pool_balance']['stride'][2]))
@@ -274,6 +290,10 @@ def get_logits(dataset):
 
             x = tf.nn.max_pool(x,ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
             logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+
+        if op=='loc_res_norm':
+            print('\tLocal Response Normalization')
+            x = tf.nn.local_response_normalization(x, depth_radius=3, bias=None, alpha=1e-2, beta=0.75)
 
         if 'fulcon' in op:
             break
@@ -314,12 +334,20 @@ def calc_loss_vector(logits,labels):
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.99)
+        learning_rate = tf.maximum(tf.constant(start_lr*0.1),tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.99))
     else:
         learning_rate = start_lr
 
     optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
     return optimizer,learning_rate
+
+def clip_weights_with_threshold(max_threshold):
+    global weights
+    for op,w in weights.items():
+        if 'conv' in op:
+            weights[op] = tf.clip_by_value(weights[op], -max_threshold, max_threshold, name=None)
+        elif 'fulcon' in op:
+            weights[op] = tf.clip_by_value(weights[op], -max_threshold, max_threshold, name=None)
 
 def optimize_with_fixed_lr_func(loss,learning_rate):
     optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
@@ -337,8 +365,31 @@ def predict_with_dataset(dataset):
     prediction = tf.nn.softmax(get_logits(dataset))
     return prediction
 
+def get_weight_stats():
+    global weights
+    stats=dict()
+    for op,w in weights.items():
+        if 'conv' in op:
+            w_nd = w.eval()
+            stats[op]= {'min':np.min(w_nd),'max':np.max(w_nd),'mean':np.mean(w_nd),'stddev':np.std(w_nd)}
+
+    return stats
+
 if __name__=='__main__':
     global logger
+
+    try:
+        opts,args = getopt.getopt(
+            sys.argv[1:],"",['data=',"log_suffix="])
+    except getopt.GetoptError as err:
+        print('<filename>.py --data= --log_suffix=')
+
+    if len(opts)!=0:
+        for opt,arg in opts:
+            if opt == '--data':
+                data_filename = arg
+            if opt == '--log_suffix':
+                log_suffix = arg
 
     logger = logging.getLogger('main_logger')
     logger.setLevel(logging_level)
@@ -350,12 +401,12 @@ if __name__=='__main__':
     # Value logger will log info used to calculate policies
     test_logger = logging.getLogger('test_logger')
     test_logger.setLevel(logging.INFO)
-    fileHandler = logging.FileHandler('test_log', mode='w')
+    fileHandler = logging.FileHandler('test_log'+log_suffix+'.log', mode='w')
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     test_logger.addHandler(fileHandler)
 
 
-    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels) = load_data.reformat_data_cifar10('cifar-10-zca.pickle')
+    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels) = load_data.reformat_data_cifar10(data_filename)
     train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
 
     graph = tf.Graph()
@@ -400,7 +451,7 @@ if __name__=='__main__':
 
         tf.initialize_all_variables().run()
 
-        for epoch in range(100):
+        for epoch in range(51):
 
             if epoch==5 and incrementally_add_layers:
                 conv_id = 'conv_2'
@@ -427,6 +478,8 @@ if __name__=='__main__':
                         [logits,loss,loss_vector,optimize,pred], feed_dict=feed_dict
                 )
 
+                #print(l)
+                #print(get_weight_stats())
                 assert not np.isnan(l)
                 train_accuracy_log.append(accuracy(predictions, batch_labels))
                 train_loss_log.append(l)
@@ -435,32 +488,29 @@ if __name__=='__main__':
 
             logger.info('\tGlobal Step %d' %global_step.eval())
             logger.info('\tMean loss at epoch %d: %.5f' % (epoch, np.mean(train_loss_log)))
-            logger.debug('\tLearning rate: %.3f'%updated_lr)
+            logger.debug('\tLearning rate: %.5f'%updated_lr)
             logger.info('\tMinibatch accuracy: %.2f%%\n' % np.mean(train_accuracy_log))
             train_accuracy_log = []
             train_loss_log = []
 
-            for valid_batch_id in range(ceil(valid_size//batch_size)-1):
-
-                # validation batch
-                batch_valid_data = valid_dataset[(valid_batch_id)*batch_size:(valid_batch_id+1)*batch_size, :, :, :]
-                batch_valid_labels = valid_labels[(valid_batch_id)*batch_size:(valid_batch_id+1)*batch_size, :]
-
-                valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
-                valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
-                valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
-
-            for test_batch_id in range(ceil(test_size//batch_size)-1):
-
-                # validation batch
-                batch_test_data = test_dataset[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :, :, :]
-                batch_test_labels = test_labels[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :]
-
-                test_feed_dict = {tf_test_dataset:batch_test_data,tf_test_labels:batch_test_labels}
-                test_predictions = session.run([pred_test],feed_dict=test_feed_dict)
-                test_accuracy_log.append(accuracy(test_predictions[0],batch_test_labels))
-
             if epoch > 0 and epoch % summary_frequency == 0:
+                for valid_batch_id in range(ceil(valid_size//batch_size)-1):
+                    # validation batch
+                    batch_valid_data = valid_dataset[(valid_batch_id)*batch_size:(valid_batch_id+1)*batch_size, :, :, :]
+                    batch_valid_labels = valid_labels[(valid_batch_id)*batch_size:(valid_batch_id+1)*batch_size, :]
+
+                    valid_feed_dict = {tf_valid_dataset:batch_valid_data,tf_valid_labels:batch_valid_labels}
+                    valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
+                    valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
+
+                for test_batch_id in range(ceil(test_size//batch_size)-1):
+                    # test batch
+                    batch_test_data = test_dataset[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :, :, :]
+                    batch_test_labels = test_labels[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :]
+
+                    test_feed_dict = {tf_test_dataset:batch_test_data,tf_test_labels:batch_test_labels}
+                    test_predictions = session.run([pred_test],feed_dict=test_feed_dict)
+                    test_accuracy_log.append(accuracy(test_predictions[0],batch_test_labels))
 
                 logger.info('\n==================== Epoch: %d ====================='%epoch)
                 logger.debug('\tGlobal step: %d'%global_step.eval())
@@ -471,4 +521,6 @@ if __name__=='__main__':
                 logger.debug('\tMean Test accuracy: %.2f%%\n' %mean_test_accuracy)
                 valid_accuracy_log = []
                 test_accuracy_log = []
+
+                test_logger.info('%d,%.2f,%.2f',epoch,mean_valid_accuracy,mean_test_accuracy)
 
