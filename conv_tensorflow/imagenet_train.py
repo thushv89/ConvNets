@@ -8,6 +8,7 @@ import tensorflow as tf
 import logging
 import operator
 import numpy as np
+from six.moves import cPickle as pickle
 
 if __name__=='__main__':
 
@@ -35,14 +36,27 @@ if __name__=='__main__':
 
     valid_dataset_fname,valid_label_fname = 'imagenet_small_valid_dataset','imagenet_small_valid_labels'
 
-    train_size = 127000
 
     data_percentages = []
     #data_percentages.extend(list(np.arange(0.001,0.010,0.001)))
     #data_percentages.extend(list(np.arange(0.01,0.10,0.01)))
     #data_percentages.extend(list(np.arange(0.1,1.1,0.1)))
     data_percentages.append(0.1)
-    valid_dataset,valid_labels = load_data.reformat_data_imagenet_with_memmap((valid_dataset_fname,valid_label_fname))
+
+    col_count = 224**2 * 3
+    with open(data_save_directory+'dataset_sizes.pickle','rb') as f:
+        dataset_sizes = pickle.load(f)
+
+    train_size,valid_size = dataset_sizes[train_dataset_filename],dataset_sizes[valid_dataset_fname]
+
+    fp1 = np.memmap(train_dataset_filename,dtype=np.float32,mode='r',
+                                    offset=np.dtype('float32').itemsize*0,shape=(valid_size,col_count))
+    fp2 = np.memmap(train_label_filename,dtype=np.float32,mode='r',
+                    offset=np.dtype('float32').itemsize*0,shape=(valid_size,0))
+    vdataset = fp1[:,:]
+    vlabels = fp2[:,0]
+    valid_dataset,valid_labels = load_data.reformat_data_imagenet_with_memmap_array(vdataset,vlabels)
+
     print('Valid data processed ...')
 
     batch_size = 16
@@ -91,19 +105,19 @@ if __name__=='__main__':
 
                     start_memmap,end_memmap,dataset_sizes = load_data.get_next_memmap_indices(train_dataset_filename,chunk_size)
 
-                    col_count = 224**2 * 3
+
                     # Loading data from memmap
                     #reading from same memmap
 
                     print('Processing files %s,%s'%(train_dataset_filename,train_label_filename))
                     print('\tOffset: %d%d'%(start_memmap,end_memmap))
                     fp1 = np.memmap(train_dataset_filename,dtype=np.float32,mode='r',
-                                    offset=np.dtype('float32').itemsize*col_count*start_memmap[1],shape=(end_memmap[1]-start_memmap[1],224,224,3))
+                                    offset=np.dtype('float32').itemsize*col_count*start_memmap[1],shape=(end_memmap[1]-start_memmap[1],col_count))
 
                     fp2 = np.memmap(train_label_filename,dtype=np.float32,mode='r',
-                                    offset=np.dtype('float32').itemsize*col_count*start_memmap[1],shape=(end_memmap[1]-start_memmap[1],224,224,3))
+                                    offset=np.dtype('float32').itemsize*col_count*start_memmap[1],shape=(end_memmap[1]-start_memmap[1],0))
 
-                    train_dataset = fp1[:,:,:,:]
+                    train_dataset = fp1[:,:]
                     train_labels = fp2[:,0]
                     filled_size += train_dataset.shape[0]
                     print('\tCurrent size of train data: %d'%filled_size)

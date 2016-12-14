@@ -403,13 +403,9 @@ def load_and_save_data_imagenet_with_memmap():
         train_label_index = -1
 
         for file in train_filenames:
-
-            if train_offset == int(len(train_filenames)*0.25):
-                print('\t25%% complete')
-            if train_offset == int(len(train_filenames)*0.5):
-                print('\t50%% complete')
-            if train_offset == int(len(train_filenames)*0.75):
-                print('\t75%% complete')
+            print('Processing file %s (%d)'%(file,train_offset))
+            if train_offset % int(len(train_filenames)*0.05)==0:
+                print('\t%d%% complete'%(train_offset//int(len(train_filenames)*0.05))/0.05)
 
             subdir = os.path.split(file)[0]
             if train_label_index < 1:
@@ -432,7 +428,6 @@ def load_and_save_data_imagenet_with_memmap():
                 assert -.1<np.mean(resized_img)<.1
                 #print('stddev 0th item %.3f'%np.std(resized_img))
                 assert 0.9<np.std(resized_img)<1.1
-
             fp1[train_offset,:] = resized_img
             if subdir not in label_map:
                 train_label_index += 1
