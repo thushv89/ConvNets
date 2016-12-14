@@ -264,7 +264,7 @@ def load_and_save_data_imagenet_with_memmap():
     valid_directory = "/home/tgan4199/imagenet/ILSVRC2015/Data/CLS-LOC/val/"
     valid_annotation_directory = "/home/tgan4199/imagenet/ILSVRC2015/Annotations/CLS-LOC/val/"
     data_info_directory = "/home/tgan4199/imagenet/ILSVRC2015/ImageSets/"
-    data_save_directory = "imagenet_sm/"
+    data_save_directory = "imagenet_small/"
     # get all the directories in there
     class_distribution = [50,50]
     resized_dimension = 224
@@ -388,14 +388,14 @@ def load_and_save_data_imagenet_with_memmap():
     print('Found %d training samples in %d subdirectories...\n'%(train_size,len(train_subdirectories)))
     assert train_size>0
 
-    if not os.path.exists(data_save_directory+'imagenet_small_train_dataset_1'):
+    if not os.path.exists(data_save_directory+'imagenet_small_train_dataset'):
 
         dataset_filename = data_save_directory+'imagenet_small_train_dataset'
         label_filename = data_save_directory+'imagenet_small_train_labels'
         fp1 = np.memmap(filename=dataset_filename, dtype='float32', mode='w+', shape=(train_size,resized_dimension*resized_dimension*num_channels))
-        fp2 = np.memmap(filename=label_filename, dtype='float32', mode='w+', shape=(train_size,1))
+        fp2 = np.memmap(filename=label_filename, dtype='int32', mode='w+', shape=(train_size,1))
         print("\tmemory allocated for (%d items)..."%train_size)
-        filesize_dictionary[dataset_filename] = train_size
+        filesize_dictionary['imagenet_small_train_dataset'] = train_size
 
         print('Creating train dataset ...')
         pixel_depth = -1
@@ -405,7 +405,7 @@ def load_and_save_data_imagenet_with_memmap():
         for file in train_filenames:
             print('Processing file %s (%d)'%(file,train_offset))
             if train_offset % int(len(train_filenames)*0.05)==0:
-                print('\t%d%% complete'%(train_offset//int(len(train_filenames)*0.05))/0.05)
+                print('\t%d%% complete'%(train_offset//int(len(train_filenames)*100.0)))
 
             subdir = os.path.split(file)[0]
             if train_label_index < 1:
@@ -472,10 +472,10 @@ def load_and_save_data_imagenet_with_memmap():
 
     print('Found %d matching valid files...'%len(selected_valid_files))
 
-    if not os.path.exists(data_save_directory+'imagenet_small_valid_dataset.npy'):
+    if not os.path.exists(data_save_directory+'imagenet_small_valid_dataset'):
         pixel_depth=-1
-        fp1 = np.memmap(filename='imagenet_small_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension*resized_dimension*num_channels))
-        fp2 = np.memmap(filename='imagenet_small_valid_labels', dtype='float32', mode='w+', shape=(len(selected_valid_files),1))
+        fp1 = np.memmap(filename=data_save_directory+'imagenet_small_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension*resized_dimension*num_channels))
+        fp2 = np.memmap(filename=data_save_directory+'imagenet_small_valid_labels', dtype='int32', mode='w+', shape=(len(selected_valid_files),1))
 
         valid_index = 0
         for fname,valid_class in selected_valid_files.items():
@@ -493,7 +493,7 @@ def load_and_save_data_imagenet_with_memmap():
             fp2[valid_index,0] = valid_class
             valid_index += 1
 
-        filesize_dictionary['imagenet_small_valid_dataset.h5'] = len(selected_valid_files)
+        filesize_dictionary['imagenet_small_valid_dataset'] = len(selected_valid_files)
         del fp1,fp2
         print('Created tha valid file with %d entries'%valid_index)
     else:
@@ -502,7 +502,7 @@ def load_and_save_data_imagenet_with_memmap():
     with open(data_save_directory+'dataset_sizes.pickle','wb') as f:
         pickle.dump(filesize_dictionary, f, pickle.HIGHEST_PROTOCOL)
 
-load_and_save_data_imagenet_with_memmap()
+#load_and_save_data_imagenet_with_memmap()
 
 
 def reformat_data_imagenet_with_npy(train_filenames,**params):
@@ -540,14 +540,19 @@ def reformat_data_imagenet_with_npy(train_filenames,**params):
     return dataset,ohe_labels
 
 memmap_offset=-1
+dataset_sizes = {}
 def get_next_memmap_indices(filenames,chunk_size):
-    global memmap_offset
+    global memmap_offset,dataset_sizes
 
-    data_save_directory = "imagenet_sm/"
+    data_save_directory = "imagenet_small/"
 
     if memmap_offset == -1:
         with open(data_save_directory+'dataset_sizes.pickle','rb') as f:
             dataset_sizes = pickle.load(f)
+            train_size = dataset_sizes[data_save_directory+filenames[0]]
+            dataset_sizes.pop(data_save_directory+filenames[0])
+            dataset_sizes[filenames[0]]=train_size
+
         memmap_offset = 0
 
     if memmap_offset==dataset_sizes[filenames[0]]:
@@ -574,16 +579,18 @@ def reformat_data_imagenet_with_memmap_array(dataset,labels,**params):
 
     print("Reformatting data ...")
     dataset = dataset.reshape((-1,image_size,image_size,num_channels),order='C').astype(np.float32)
-    labels = labels.flatten()
+    print('\tlabels shape: ',labels.shape)
+    labels = labels.flatten().astype(np.int32)
+    print('\tlabels shape: ',labels.shape)
 
     if 'test_images' in params and params['test_images']:
         for i in range(10):
             rand_idx = np.random.randint(0,dataset.shape[0])
             imsave('test_img_'+str(i)+'.png', dataset[rand_idx,:,:,:])
 
-    print('\tFinal shape (train):%s',dataset.shape)
+    print('\tFinal shape:%s',dataset.shape)
     ohe_labels = (np.arange(num_labels) == labels[:,None]).astype(np.float32)
-    print('\tFinal shape (train) labels:%s',labels.shape)
+    print('\tFinal shape labels:%s',labels.shape)
 
     assert np.all(labels==np.argmax(ohe_labels,axis=1))
     return dataset,ohe_labels

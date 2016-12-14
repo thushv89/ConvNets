@@ -30,7 +30,7 @@ if __name__=='__main__':
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     logger.addHandler(fileHandler)
 
-    data_save_directory = "imagenet_sm/"
+    data_save_directory = "imagenet_small/"
     train_dataset_filename = 'imagenet_small_train_dataset'
     train_label_filename = 'imagenet_small_train_labels'
 
@@ -46,24 +46,31 @@ if __name__=='__main__':
     col_count = 224**2 * 3
     with open(data_save_directory+'dataset_sizes.pickle','rb') as f:
         dataset_sizes = pickle.load(f)
+        train_size = dataset_sizes[data_save_directory+train_dataset_filename]
+        valid_size = dataset_sizes[valid_dataset_fname+'.h5']
+        dataset_sizes.pop(data_save_directory+train_dataset_filename)
+        dataset_sizes.pop(valid_dataset_fname+'.h5')
+        dataset_sizes[train_dataset_filename]=train_size
+        dataset_sizes[valid_dataset_fname] = valid_size
 
+        print(dataset_sizes)
     train_size,valid_size = dataset_sizes[train_dataset_filename],dataset_sizes[valid_dataset_fname]
 
-    fp1 = np.memmap(train_dataset_filename,dtype=np.float32,mode='r',
+    fp1 = np.memmap(data_save_directory+valid_dataset_fname, dtype=np.float32,mode='r',
                                     offset=np.dtype('float32').itemsize*0,shape=(valid_size,col_count))
-    fp2 = np.memmap(train_label_filename,dtype=np.float32,mode='r',
-                    offset=np.dtype('float32').itemsize*0,shape=(valid_size,0))
+    fp2 = np.memmap(data_save_directory+valid_label_fname, dtype=np.float32,mode='r',
+                    offset=np.dtype('float32').itemsize*0,shape=(valid_size,1))
     vdataset = fp1[:,:]
-    vlabels = fp2[:,0]
+    vlabels = fp2[:]
     valid_dataset,valid_labels = load_data.reformat_data_imagenet_with_memmap_array(vdataset,vlabels)
 
     print('Valid data processed ...')
 
-    batch_size = 16
+    batch_size = 64
     num_epochs = 10
 
     decay_step = 1
-    start_lr = 0.1
+    start_lr = 0.01
     decay_learning_rate = True
 
     #dropout seems to be making it impossible to learn
@@ -76,7 +83,7 @@ if __name__=='__main__':
     accuracy_drop_cap = 10
     check_early_stop_from = 100
 
-    include_l2loss = True
+    include_l2loss = False
     beta = 1e-3
 
     graph = tf.Graph()
@@ -103,28 +110,35 @@ if __name__=='__main__':
                 test_accuracies = []
                 while filled_size<train_size_clipped:
 
-                    start_memmap,end_memmap,dataset_sizes = load_data.get_next_memmap_indices(train_dataset_filename,chunk_size)
+                    start_memmap,end_memmap,dataset_sizes = load_data.get_next_memmap_indices((train_dataset_filename,train_label_filename),chunk_size)
 
 
                     # Loading data from memmap
                     #reading from same memmap
 
                     print('Processing files %s,%s'%(train_dataset_filename,train_label_filename))
-                    print('\tOffset: %d%d'%(start_memmap,end_memmap))
-                    fp1 = np.memmap(train_dataset_filename,dtype=np.float32,mode='r',
-                                    offset=np.dtype('float32').itemsize*col_count*start_memmap[1],shape=(end_memmap[1]-start_memmap[1],col_count))
+                    print('\tOffset: %d, %d'%(start_memmap,end_memmap))
+                    fp1 = np.memmap(data_save_directory+train_dataset_filename,dtype=np.float32,mode='r',
+                                    offset=np.dtype('float32').itemsize*col_count*start_memmap,shape=(end_memmap-start_memmap,col_count))
 
-                    fp2 = np.memmap(train_label_filename,dtype=np.float32,mode='r',
-                                    offset=np.dtype('float32').itemsize*col_count*start_memmap[1],shape=(end_memmap[1]-start_memmap[1],0))
+                    fp2 = np.memmap(data_save_directory+train_label_filename,dtype=np.float32,mode='r',
+                                    offset=np.dtype('int32').itemsize*1*start_memmap,shape=(end_memmap-start_memmap,1))
 
                     train_dataset = fp1[:,:]
-                    train_labels = fp2[:,0]
+                    train_labels = fp2[:]
                     filled_size += train_dataset.shape[0]
-                    print('\tCurrent size of train data: %d'%filled_size)
+                    assert train_dataset.shape[0]==train_labels.shape[0]
+                    print('\tCurrent size of filled data: %d'%filled_size)
+                    print('\tTrain data: %d'%train_dataset.shape[0])
+                    print('\tTrain labels: %d'%train_labels.shape[0])
                     del fp1,fp2
 
+                    train_dataset,train_labels = load_data.reformat_data_imagenet_with_memmap_array(train_dataset,train_labels)
+                    assert train_dataset.shape[0]==train_labels.shape[0]
+                    assert valid_dataset.shape[0]==valid_labels.shape[0]
                     train_size,valid_size = train_dataset.shape[0],valid_dataset.shape[0]
                     print('Size (train,valid) %d,%d'%(train_size,valid_size))
+
 
                     hyperparams = {
                         'batch_size':batch_size,'start_lr':start_lr,'num_epochs':1,
@@ -137,7 +151,7 @@ if __name__=='__main__':
                                                  {'train_dataset':train_dataset,'train_labels':train_labels,
                                                   'valid_dataset':valid_dataset,'valid_labels':valid_labels,
                                                   'test_dataset':valid_dataset,'test_labels':valid_labels},hyperparams)
-                    test_accuracy.append(test_accuracy)
+                    test_accuracies.append(test_accuracy)
 
                 mean_test_accuracy = np.mean(test_accuracies)
                 test_accuracies = []
