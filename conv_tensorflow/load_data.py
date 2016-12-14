@@ -387,38 +387,34 @@ def load_and_save_data_imagenet_with_memmap():
     filesize_dictionary = {}
     print('Found %d training samples in %d subdirectories...\n'%(train_size,len(train_subdirectories)))
     assert train_size>0
+
     if not os.path.exists(data_save_directory+'imagenet_small_train_dataset_1'):
+
+        dataset_filename = data_save_directory+'imagenet_small_train_dataset'
+        label_filename = data_save_directory+'imagenet_small_train_labels'
+        fp1 = np.memmap(filename=dataset_filename, dtype='float32', mode='w+', shape=(train_size,resized_dimension*resized_dimension*num_channels))
+        fp2 = np.memmap(filename=label_filename, dtype='float32', mode='w+', shape=(train_size,1))
+        print("\tmemory allocated for (%d items)..."%train_size)
+        filesize_dictionary[dataset_filename] = train_size
+
         print('Creating train dataset ...')
         pixel_depth = -1
-        data_batches = 5
-        batch_size = ceil(train_size*1.0/data_batches)
-        batches_processed = 0
-        train_offset,batch_offset = 0,0
+        train_offset = 0
         train_label_index = -1
-        subdir_index = -1
+
         for file in train_filenames:
+
+            if train_offset == int(len(train_filenames)*0.25):
+                print('\t25%% complete')
+            if train_offset == int(len(train_filenames)*0.5):
+                print('\t50%% complete')
+            if train_offset == int(len(train_filenames)*0.75):
+                print('\t75%% complete')
+
             subdir = os.path.split(file)[0]
             if train_label_index < 1:
                 print('An example subdir %s'%subdir)
                 print('Processing File %s'%file)
-
-            # Saving data
-            if batch_offset==0:
-
-                batches_processed += 1
-
-                if batches_processed<data_batches:
-                    assert train_offset%batch_size==0
-
-                rows = min(batch_size,train_size-train_offset)
-                dataset_filename = data_save_directory+'imagenet_small_train_dataset_'+ str(batches_processed)
-                label_filename = data_save_directory+'imagenet_small_train_labels_'+ str(batches_processed)
-                fp1 = np.memmap(filename=dataset_filename, dtype='float32', mode='w+', shape=(rows,resized_dimension*resized_dimension*num_channels))
-                fp2 = np.memmap(filename=label_filename, dtype='float32', mode='w+', shape=(rows,1))
-                print("\t%d%% of memory allocated (%d items)..."%((batches_processed)*100.0//data_batches,min(batch_size, train_size-train_offset)))
-                filesize_dictionary[dataset_filename] = rows
-
-
 
             #image_data = ndimage.imread(subdir+os.sep+file).astype(float)
             resized_img = resize_image(train_directory+os.sep+file)
@@ -431,18 +427,19 @@ def load_and_save_data_imagenet_with_memmap():
                 print('\tFound pixel depth %.1f'%pixel_depth)
             resized_img = resized_img.flatten()
             resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
-            if batch_offset<5:
+            if train_offset<5:
                 #print('mean 0th item %.3f'%np.mean(resized_img))
                 assert -.1<np.mean(resized_img)<.1
                 #print('stddev 0th item %.3f'%np.std(resized_img))
                 assert 0.9<np.std(resized_img)<1.1
-            fp1[batch_offset,:] = resized_img
+
+            fp1[train_offset,:] = resized_img
             if subdir not in label_map:
                 train_label_index += 1
                 label_map[subdir] = train_label_index
-            fp2[batch_offset,0] = label_map[subdir]
+            fp2[train_offset,0] = label_map[subdir]
             train_offset += 1
-            batch_offset = (batch_offset+1)%batch_size
+
 
         print('Training data finished...')
         print('\tFound %d classes'%len(label_map))
@@ -510,7 +507,7 @@ def load_and_save_data_imagenet_with_memmap():
     with open(data_save_directory+'dataset_sizes.pickle','wb') as f:
         pickle.dump(filesize_dictionary, f, pickle.HIGHEST_PROTOCOL)
 
-#load_and_save_data_imagenet_with_memmap()
+load_and_save_data_imagenet_with_memmap()
 
 
 def reformat_data_imagenet_with_npy(train_filenames,**params):
@@ -547,45 +544,31 @@ def reformat_data_imagenet_with_npy(train_filenames,**params):
     assert np.all(labels==np.argmax(ohe_labels,axis=1))
     return dataset,ohe_labels
 
-memmap_offset=[-1,0]
+memmap_offset=-1
 def get_next_memmap_indices(filenames,chunk_size):
     global memmap_offset
 
-    prefix = 'imagenet_small_train_dataset_'
     data_save_directory = "imagenet_sm/"
-    if memmap_offset[0]==-1:
-        min_idx = 1000000
-        max_idx = 0
-        for fn in filenames:
-            min_idx = min(int(fn.split('_')[-1]),min_idx)
-            max_idx = max(int(fn.split('_')[-1]),max_idx)
-        memmap_offset[0]=min_idx
 
+    if memmap_offset == -1:
         with open(data_save_directory+'dataset_sizes.pickle','rb') as f:
             dataset_sizes = pickle.load(f)
+        memmap_offset = 0
 
-    if memmap_offset[0]==max_idx and memmap_offset[1]==dataset_sizes[prefix+str(max_idx)]:
-        memmap_offset = [0,0]
+    if memmap_offset==dataset_sizes[filenames[0]]:
+        memmap_offset = 0
 
     # e.g if dataset_size=10, offset=4 chunk_size=5
-    if memmap_offset+chunk_size<=dataset_sizes[prefix+str(memmap_offset[0])]-1:
+    if memmap_offset+chunk_size<=dataset_sizes[filenames[0]]-1:
         prev_offset = memmap_offset
-        memmap_offset[1] = memmap_offset+chunk_size
+        memmap_offset = memmap_offset+chunk_size
         return prev_offset,memmap_offset,dataset_sizes
+
     # e.g. if dataset_size = 10 offset=7 chunk_size=5
     # data from last => (10-1) - 7
-    # data from new => chunk_size - data_from_last
-    # new index => data_from_new
     else:
         prev_offset = memmap_offset
-        data_from_last = dataset_sizes[prefix+memmap_offset[0]]-memmap_offset[1]
-        data_from_new = chunk_size - data_from_last
-
-        # making sure we don't go beyond the data files
-        if memmap_offset[0]==max_idx and data_from_new>0:
-            memmap_offset = [max_idx,dataset_sizes[prefix+str(max_idx)]]
-        else:
-            memmap_offset = [memmap_offset[0]+1,data_from_new]
+        memmap_offset = dataset_sizes[filenames]
         return prev_offset,memmap_offset,dataset_sizes
 
 def reformat_data_imagenet_with_memmap_array(dataset,labels,**params):
