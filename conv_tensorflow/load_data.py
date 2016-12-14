@@ -8,6 +8,7 @@ from scipy import ndimage
 from PIL import Image
 import xml.etree.ElementTree as ET
 from math import ceil,floor
+from scipy.misc import imsave
 
 def load_and_save_data_imagenet():
     train_directory = "/home/tgan4199/imagenet/ILSVRC2015/Data/CLS-LOC/train/"
@@ -16,7 +17,7 @@ def load_and_save_data_imagenet():
     data_info_directory = "/home/tgan4199/imagenet/ILSVRC2015/ImageSets/"
 
     # get all the directories in there
-    class_distribution = [5,5]
+    class_distribution = [50,50]
     resized_dimension = 224
     num_channels = 3
 
@@ -41,7 +42,8 @@ def load_and_save_data_imagenet():
                 tree = ET.parse(valid_annotation_directory+os.sep+file)
                 root = tree.getroot()
                 for name in root.iter('name'):
-                    valid_map[tail]=name.attrib
+                    valid_map[tail]=str(name.text)
+                    break
         print('Finished the dictionary (valid_image > synset)')
 
         with open('temp_valid_map.pickle','wb') as f:
@@ -64,7 +66,7 @@ def load_and_save_data_imagenet():
             if subdir_str in train_subdirectories:
                 train_class_descriptions.append(line)
 
-    with open('gloss_cls-loc','w') as f:
+    with open('gloss_cls-loc.txt','w') as f:
         for desc_str in train_class_descriptions:
             f.write(desc_str)
 
@@ -83,148 +85,532 @@ def load_and_save_data_imagenet():
     artificial_synsets = np.random.permutation(artificial_synsets)
     selected_artificial_synsets = list(artificial_synsets[:class_distribution[1]])
 
-    '''print('Reading selected classes text files ...')
-    natural_synsets = []
-    f = open('natural_classes.txt', 'r')
-    for line in f:
-        if not line[0]=='#' and line[0]=='-':
-            temp_str = line[1:].rstrip('\n')
-            if temp_str in train_subdirectories:
-                natural_synsets.append(temp_str)
+    print('Summary of selected synsets ...')
+    print('\tNatural (%d): %s'%(len(natural_synsets),natural_synsets[:5]))
+    print('\tArtificial (%d): %s'%(len(artificial_synsets),artificial_synsets[:5]))
+
+    # check if the class synsets we chose are actually in the training data
+    for _ in range(10):
+        rand_nat = np.random.choice(natural_synsets)
+        rand_art = np.random.choice(artificial_synsets)
+        assert rand_nat in train_subdirectories
+        assert rand_art in train_subdirectories
+
+    # we use a shuffled train set when storing to avoid any order
+    train_size = 0
+    train_filenames = []
+    for subdir in train_subdirectories:
+        if subdir in selected_natural_synsets or subdir in selected_artificial_synsets:
+            file_count = len([file for file in os.listdir(train_directory+os.sep+subdir) if file.endswith('.JPEG')])
+            train_filenames.extend([subdir+os.sep+file for file in os.listdir(train_directory+os.sep+subdir) if file.endswith('.JPEG')])
+            train_size += file_count
+
+    np.random.shuffle(train_filenames)
+    # resize image
+    # if the resize size is more than the actual size, we pad with zeros
+    # if the image is black and white, we create 3 channels of same data
+    def resize_image(fname):
+        im = Image.open(fname)
+        im.thumbnail((resized_dimension,resized_dimension), Image.ANTIALIAS)
+        resized_img = np.array(im)
+
+        if resized_img.ndim<3:
+            resized_img = resized_img.reshape((resized_img.shape[0],resized_img.shape[1],1))
+            resized_img = np.repeat(resized_img,3,axis=2)
+            assert resized_img.shape[2]==num_channels
+        if resized_img.shape[0]<resized_dimension:
+            diff = resized_dimension - resized_img.shape[0]
+            lpad,rpad = floor(float(diff)/2.0),ceil(float(diff)/2.0)
+            #print('\tshape of resized img before padding %s'%str(resized_img.shape))
+            resized_img = np.pad(resized_img,((lpad,rpad),(0,0),(0,0)),'constant',constant_values=((0,0),(0,0),(0,0)))
+            #print('\tshape of resized img after padding %s'%str(resized_img.shape))
+        if resized_img.shape[1]<resized_dimension:
+            diff = resized_dimension - resized_img.shape[1]
+            lpad,rpad = floor(float(diff)/2.0),ceil(float(diff)/2.0)
+            #print('\tshape of resized img before padding %s'%str(resized_img.shape))
+            resized_img = np.pad(resized_img,((0,0),(lpad,rpad),(0,0)),'constant',constant_values=((0,0),(0,0),(0,0)))
+            #print('\tshape of resized img after padding %s'%str(resized_img.shape))
+        assert resized_img.shape[0]==resized_dimension
+        assert resized_img.shape[1]==resized_dimension
+        assert resized_img.shape[2]==num_channels
+        return resized_img
+
+    print('Found %d training samples in %d subdirectories...\n'%(train_size,len(train_subdirectories)))
+    assert train_size>0
+    if not os.path.exists('imagenet_small_train_dataset_1'):
+        print('Creating train dataset ...')
+        pixel_depth = -1
+        data_batches = 5
+        batch_size = floor(train_size*1.0/data_batches)
+        batches_processed = 0
+        train_offset,batch_offset = 0,0
+        train_label_index = -1
+        subdir_index = -1
+        for file in train_filenames:
+            subdir = os.path.split(file)[0]
+            if train_label_index < 1:
+                print('An example subdir %s'%subdir)
+                print('Processing File %s'%file)
+
+            if batch_offset==0:
+                    dataset = np.empty((min(batch_size, train_size-train_offset),resized_dimension*resized_dimension*num_channels),dtype=np.float32)
+                    labels = np.empty((min(batch_size, train_size-train_offset),1),dtype=np.int32)
+
+            #image_data = ndimage.imread(subdir+os.sep+file).astype(float)
+            resized_img = resize_image(train_directory+os.sep+file)
+            # probably has an alpha layer, ignore these kind of images
+            if resized_img.ndim==3 and resized_img.shape[2]>num_channels:
+                print('Ignoring image %s of size %s'%(file,str(resized_img.shape)))
+                continue
+            if pixel_depth == -1:
+                pixel_depth = 255.0 if np.max(resized_img)>128 else 1.0
+                print('\tFound pixel depth %.1f'%pixel_depth)
+            resized_img = resized_img.flatten()
+            resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
+            if batch_offset<5:
+                #print('mean 0th item %.3f'%np.mean(resized_img))
+                assert -.1<np.mean(resized_img)<.1
+                #print('stddev 0th item %.3f'%np.std(resized_img))
+                assert 0.9<np.std(resized_img)<1.1
+            dataset[batch_offset,:] = resized_img
+            if subdir not in label_map:
+                train_label_index += 1
+                label_map[subdir] = train_label_index
+            labels[batch_offset,0] = label_map[subdir]
+            train_offset += 1
+            batch_offset = (batch_offset+1)%batch_size
+
+            # Saving data
+            if batch_offset==0 or train_offset==train_size:
+
+                if batches_processed<data_batches:
+                    assert train_offset%batch_size==0
+
+                if batches_processed>0:
+                    filename = 'imagenet_small_train_dataset_'+ str(batches_processed)+'.npy'
+                    filename2 = 'imagenet_small_train_labels_'+ str(batches_processed)+'.npy'
+                    np.save(filename,dataset)
+                    np.save(filename2,labels)
+                    print("\t%d%% of data written (%d items)..."%((batches_processed)*100.0//data_batches,min(batch_size, train_size-train_offset)))
+
+                batches_processed += 1
+
+        print('Training data finished...')
+        print('\tFound %d classes'%len(label_map))
+
+        del dataset,labels
+
+        with open('imagenet_small_label_description.txt','w') as f:
+            for k,v in label_map.items():
+                desc_string = str(v)+','+str(k)
+                for line in train_class_descriptions:
+                    if k in line:
+                        desc_string += ','+line.split('\t')[1]
+                        break
+                f.write(desc_string)
+    else:
+        print('Training data exists. Not recreating...')
+        with open('imagenet_small_label_description.txt','r') as f:
+            for line in f:
+                line_tokens = line.split(',')
+                label_map[line_tokens[1]]=int(line_tokens[0])
+        print('Resored label map with %d entries'%len(label_map))
+        print('\tlabel_map keys: %s'%list(label_map.keys())[:5])
+        print('\tlabel_map values: %s'%list(label_map.values())[:5])
+    assert len(label_map) == np.sum(class_distribution)
+
+    valid_filenames, valid_classes = zip(*valid_map.items())
+    print('\tValid filenames:',list(valid_map.keys())[:5])
+    print('\tValid classes:',list(valid_map.values())[:5])
+
+    selected_valid_files = {}
+    for f,c in zip(valid_filenames,valid_classes):
+        if c in list(label_map.keys()):
+            selected_valid_files[f]=label_map[c]
+
+
+    print('Found %d matching valid files...'%len(selected_valid_files))
+
+    if not os.path.exists('imagenet_small_valid_dataset.npy'):
+        pixel_depth=-1
+        #fp1 = np.memmap(filename='imagenet_small_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension*resized_dimension*num_channels))
+        #fp2 = np.memmap(filename='imagenet_small_valid_labels', dtype='float32', mode='w+', shape=(len(selected_valid_files),1))
+        dataset = np.empty((len(selected_valid_files),resized_dimension*resized_dimension*num_channels),dtype=np.float32)
+        labels = np.empty((len(selected_valid_files),1),dtype=np.int32)
+        valid_index = 0
+        for fname,valid_class in selected_valid_files.items():
+            fname = fname.rstrip('.xml') + '.JPEG'
+            resized_img = resize_image(valid_directory+fname)
+            resized_img = resized_img.flatten()
+
+            if pixel_depth == -1:
+                pixel_depth = 255.0 if np.max(resized_img)>128 else 1.0
+                print('\tFound pixel depth %.1f'%pixel_depth)
+            resized_img = resized_img.flatten()
+            resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
+
+            dataset[valid_index,:] = resized_img
+            labels[valid_index,0] = valid_class
+            valid_index += 1
+        np.save('imagenet_small_valid_dataset.npy',dataset)
+        np.save('imagenet_small_valid_labels.npy',labels)
+        del dataset,labels
+        print('Created tha valid file with %d entries'%valid_index)
+    else:
+        print('Valid data exists.')
+
+def load_and_save_data_imagenet_with_memmap():
+    train_directory = "/home/tgan4199/imagenet/ILSVRC2015/Data/CLS-LOC/train/"
+    valid_directory = "/home/tgan4199/imagenet/ILSVRC2015/Data/CLS-LOC/val/"
+    valid_annotation_directory = "/home/tgan4199/imagenet/ILSVRC2015/Annotations/CLS-LOC/val/"
+    data_info_directory = "/home/tgan4199/imagenet/ILSVRC2015/ImageSets/"
+    data_save_directory = "imagenet_sm/"
+    # get all the directories in there
+    class_distribution = [50,50]
+    resized_dimension = 224
+    num_channels = 3
+
+    # label map is needed because I have to create my own class labels
+    # my label -> actual label
+    label_map = dict()
+
+    #read train_data txt
+    labels_from_train = dict()
+
+    # n01440764/n01440764_10026 1
+    # n01440764/n01440764_10027 2
+    # n01440764/n01440764_10029 3
+
+    print('Building a map for image > synset')
+    # Valid set classes
+    if not os.path.exists(data_save_directory+'temp_valid_map.pickle'):
+        valid_map = dict()
+        for file in os.listdir(valid_annotation_directory):
+            if file.endswith(".xml"):
+                head,tail = os.path.split(file)
+                tree = ET.parse(valid_annotation_directory+os.sep+file)
+                root = tree.getroot()
+                for name in root.iter('name'):
+                    valid_map[tail]=str(name.text)
+                    break
+        print('Finished the dictionary (valid_image > synset)')
+
+        with open(data_save_directory+'temp_valid_map.pickle','wb') as f:
+             pickle.dump(valid_map, f, pickle.HIGHEST_PROTOCOL)
+    else:
+        with open(data_save_directory+'temp_valid_map.pickle','rb') as f:
+            valid_map = pickle.load(f)
+
+    assert len(valid_map)>0
+    print('loaded %d entries in valid map\n'%len(valid_map))
+
+    # ignoring the 0th element because it is just a space
+    train_subdirectories = [os.path.split(x[0])[1] for x in os.walk(train_directory)][1:]
+    print('Subdirectories: %s\n'%train_subdirectories[:5])
+
+    train_class_descriptions = []
+    with open(data_save_directory+'gloss.txt', 'r') as f:
+        for line in f:
+            subdir_str = line.split('\t')[0]
+            if subdir_str in train_subdirectories:
+                train_class_descriptions.append(line)
+
+    with open(data_save_directory+'gloss_cls-loc.txt','w') as f:
+        for desc_str in train_class_descriptions:
+            f.write(desc_str)
+
+    natural_synsets, artificial_synsets = [],[]
+    with open(data_save_directory+'gloss_cls-loc.txt', 'r') as f:
+        for index,line in enumerate(f):
+            subdir_str = line.split('\t')[0]
+            if index<398:
+                natural_synsets.append(subdir_str)
             else:
-                print(temp_str,' not in train sub dir')
+                artificial_synsets.append(subdir_str)
+
     natural_synsets = np.random.permutation(natural_synsets)
     selected_natural_synsets = list(natural_synsets[:class_distribution[0]])
 
-    artificial_synsets = []
-    f = open('artificial_classes.txt', 'r')
-    for line in f:
-        if not line[0]=='#' and line[0]=='-':
-            temp_str = line[1:].rstrip('\n')
-            if temp_str in train_subdirectories:
-                artificial_synsets.append(temp_str)
     artificial_synsets = np.random.permutation(artificial_synsets)
-    selected_artificial_synsets = list(artificial_synsets[:class_distribution[1]])'''
+    selected_artificial_synsets = list(artificial_synsets[:class_distribution[1]])
 
     print('Summary of selected synsets ...')
     print('\tNatural (%d): %s'%(len(natural_synsets),natural_synsets[:5]))
     print('\tArtificial (%d): %s'%(len(artificial_synsets),artificial_synsets[:5]))
 
+    # check if the class synsets we chose are actually in the training data
     for _ in range(10):
         rand_nat = np.random.choice(natural_synsets)
         rand_art = np.random.choice(artificial_synsets)
-
-        print(rand_nat)
         assert rand_nat in train_subdirectories
-        print(rand_art)
         assert rand_art in train_subdirectories
 
+    # we use a shuffled train set when storing to avoid any order
     train_size = 0
+    train_filenames = []
     for subdir in train_subdirectories:
         if subdir in selected_natural_synsets or subdir in selected_artificial_synsets:
             file_count = len([file for file in os.listdir(train_directory+os.sep+subdir) if file.endswith('.JPEG')])
+            train_filenames.extend([subdir+os.sep+file for file in os.listdir(train_directory+os.sep+subdir) if file.endswith('.JPEG')])
             train_size += file_count
 
+    np.random.shuffle(train_filenames)
+    # resize image
+    # if the resize size is more than the actual size, we pad with zeros
+    # if the image is black and white, we create 3 channels of same data
+    def resize_image(fname):
+        im = Image.open(fname)
+        im.thumbnail((resized_dimension,resized_dimension), Image.ANTIALIAS)
+        resized_img = np.array(im)
+
+        if resized_img.ndim<3:
+            resized_img = resized_img.reshape((resized_img.shape[0],resized_img.shape[1],1))
+            resized_img = np.repeat(resized_img,3,axis=2)
+            assert resized_img.shape[2]==num_channels
+        if resized_img.shape[0]<resized_dimension:
+            diff = resized_dimension - resized_img.shape[0]
+            lpad,rpad = floor(float(diff)/2.0),ceil(float(diff)/2.0)
+            #print('\tshape of resized img before padding %s'%str(resized_img.shape))
+            resized_img = np.pad(resized_img,((lpad,rpad),(0,0),(0,0)),'constant',constant_values=((0,0),(0,0),(0,0)))
+            #print('\tshape of resized img after padding %s'%str(resized_img.shape))
+        if resized_img.shape[1]<resized_dimension:
+            diff = resized_dimension - resized_img.shape[1]
+            lpad,rpad = floor(float(diff)/2.0),ceil(float(diff)/2.0)
+            #print('\tshape of resized img before padding %s'%str(resized_img.shape))
+            resized_img = np.pad(resized_img,((0,0),(lpad,rpad),(0,0)),'constant',constant_values=((0,0),(0,0),(0,0)))
+            #print('\tshape of resized img after padding %s'%str(resized_img.shape))
+        assert resized_img.shape[0]==resized_dimension
+        assert resized_img.shape[1]==resized_dimension
+        #assert resized_img.shape[2]==num_channels
+        return resized_img
+
+    filesize_dictionary = {}
     print('Found %d training samples in %d subdirectories...\n'%(train_size,len(train_subdirectories)))
     assert train_size>0
-    print('Creating train dataset ...')
-    pixel_depth = -1
-    data_batches = 4
-    batch_index = 1
-    fp1 = np.memmap(filename='imagenet_small_train_dataset_1', dtype='float32', mode='w+', shape=(train_size//data_batches,resized_dimension*resized_dimension*num_channels))
-    fp2 = np.memmap(filename='imagenet_small_train_labels_1', dtype='float32', mode='w+', shape=(train_size//data_batches,1))
-    train_index = 0
-    train_label_index = -1
-    subdir_index = -1
-    for subdir in train_subdirectories:
+    if not os.path.exists(data_save_directory+'imagenet_small_train_dataset_1'):
+        print('Creating train dataset ...')
+        pixel_depth = -1
+        data_batches = 5
+        batch_size = ceil(train_size*1.0/data_batches)
+        batches_processed = 0
+        train_offset,batch_offset = 0,0
+        train_label_index = -1
+        subdir_index = -1
+        for file in train_filenames:
+            subdir = os.path.split(file)[0]
+            if train_label_index < 1:
+                print('An example subdir %s'%subdir)
+                print('Processing File %s'%file)
 
-        subdir_index+=1
-        if subdir not in selected_natural_synsets and \
-                        subdir not in selected_artificial_synsets:
-            continue
+            # Saving data
+            if batch_offset==0:
 
-        if train_label_index < 1:
-            print('An example subdir %s'%subdir)
-        print('Processing Sub Directory %s (%d)'%(subdir,subdir_index))
-        for file in os.listdir(train_directory+os.sep+subdir):
-            if file.endswith(".JPEG"):
-                if train_index>0 and train_index%floor(float(train_size)/data_batches)==0:
-                    print("\t%d%% of data written..."%(batch_index*100//data_batches))
-                    if batch_index!=data_batches:
-                        del fp1,fp2
-                        filename = 'imagenet_small_train_dataset_'+ str(batch_index)
-                        filename2 = 'imagenet_small_train_labels_'+ str(batch_index)
-                        fp1 = np.memmap(filename=filename, dtype='float32', mode='w+', shape=(train_size//data_batches,resized_dimension*resized_dimension*num_channels))
-                        fp2 = np.memmap(filename=filename2, dtype='float32', mode='w+', shape=(train_size//data_batches,1))
-                    else:
-                        del fp1,fp2
-                        filename = 'imagenet_small_train_dataset_'+ str(batch_index)
-                        filename2 = 'imagenet_small_train_labels_'+ str(batch_index)
-                        fp1 = np.memmap(filename=filename, dtype='float32', mode='w+', shape=(train_size-train_index,resized_dimension*resized_dimension*num_channels))
-                        fp2 = np.memmap(filename=filename2, dtype='float32', mode='w+', shape=(train_size-train_index,1))
-                    train_index=0
-                    batch_index+=1
+                batches_processed += 1
 
-                #image_data = ndimage.imread(subdir+os.sep+file).astype(float)
-                im = Image.open(train_directory+os.sep+subdir+os.sep+file)
-                im.thumbnail((resized_dimension,resized_dimension), Image.ANTIALIAS)
-                resized_img = np.array(im)
+                if batches_processed<data_batches:
+                    assert train_offset%batch_size==0
+
+                rows = min(batch_size,train_size-train_offset)
+                dataset_filename = data_save_directory+'imagenet_small_train_dataset_'+ str(batches_processed)
+                label_filename = data_save_directory+'imagenet_small_train_labels_'+ str(batches_processed)
+                fp1 = np.memmap(filename=dataset_filename, dtype='float32', mode='w+', shape=(rows,resized_dimension*resized_dimension*num_channels))
+                fp2 = np.memmap(filename=label_filename, dtype='float32', mode='w+', shape=(rows,1))
+                print("\t%d%% of memory allocated (%d items)..."%((batches_processed)*100.0//data_batches,min(batch_size, train_size-train_offset)))
+                filesize_dictionary[dataset_filename] = rows
 
 
-                if resized_img.ndim<3:
-                    resized_img = resized_img.reshape((resized_img.shape[0],resized_img.shape[1],1))
-                    resized_img = np.repeat(resized_img,3,axis=2)
-                    assert resized_img.shape[2]==num_channels
-                if resized_img.shape[0]<resized_dimension:
-                    diff = resized_dimension - resized_img.shape[0]
-                    lpad,rpad = floor(float(diff)/2.0),ceil(float(diff)/2.0)
-                    #print('\tshape of resized img before padding %s'%str(resized_img.shape))
-                    resized_img = np.pad(resized_img,((lpad,rpad),(0,0),(0,0)),'constant',constant_values=((0,0),(0,0),(0,0)))
-                    #print('\tshape of resized img after padding %s'%str(resized_img.shape))
-                if resized_img.shape[1]<resized_dimension:
-                    diff = resized_dimension - resized_img.shape[1]
-                    lpad,rpad = floor(float(diff)/2.0),ceil(float(diff)/2.0)
-                    #print('\tshape of resized img before padding %s'%str(resized_img.shape))
-                    resized_img = np.pad(resized_img,((0,0),(lpad,rpad),(0,0)),'constant',constant_values=((0,0),(0,0),(0,0)))
-                    #print('\tshape of resized img after padding %s'%str(resized_img.shape))
-                assert resized_img.shape[0]==resized_dimension
-                assert resized_img.shape[1]==resized_dimension
 
-                if pixel_depth == -1:
-                    pixel_depth = 255.0 if np.max(resized_img)>128 else 1.0
-                    print('\tFound pixel depth %.1f'%pixel_depth)
-                resized_img = resized_img.flatten()
-                resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
-                if train_index<5:
-                    #print('mean 0th item %.3f'%np.mean(resized_img))
-                    assert -.1<np.mean(resized_img)<.1
-                    #print('stddev 0th item %.3f'%np.std(resized_img))
-                    assert 0.9<np.std(resized_img)<1.1
-                fp1[train_index,:] = resized_img
-                if subdir not in label_map:
-                    train_label_index += 1
-                    label_map[subdir] = train_label_index
-                fp2[train_index,0] = label_map[subdir]
-                train_index += 1
+            #image_data = ndimage.imread(subdir+os.sep+file).astype(float)
+            resized_img = resize_image(train_directory+os.sep+file)
+            # probably has an alpha layer, ignore these kind of images
+            if resized_img.ndim==3 and resized_img.shape[2]>num_channels:
+                print('Ignoring image %s of size %s'%(file,str(resized_img.shape)))
+                continue
+            if pixel_depth == -1:
+                pixel_depth = 255.0 if np.max(resized_img)>128 else 1.0
+                print('\tFound pixel depth %.1f'%pixel_depth)
+            resized_img = resized_img.flatten()
+            resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
+            if batch_offset<5:
+                #print('mean 0th item %.3f'%np.mean(resized_img))
+                assert -.1<np.mean(resized_img)<.1
+                #print('stddev 0th item %.3f'%np.std(resized_img))
+                assert 0.9<np.std(resized_img)<1.1
+            fp1[batch_offset,:] = resized_img
+            if subdir not in label_map:
+                train_label_index += 1
+                label_map[subdir] = train_label_index
+            fp2[batch_offset,0] = label_map[subdir]
+            train_offset += 1
+            batch_offset = (batch_offset+1)%batch_size
 
+        print('Training data finished...')
+        print('\tFound %d classes'%len(label_map))
 
-    print('Training data finished...')
-    print('\tFound %d classes'%len(label_map))
+        del fp1,fp2
+
+        with open(data_save_directory+'imagenet_small_label_description.txt','w') as f:
+            for k,v in label_map.items():
+                desc_string = str(v)+','+str(k)
+                for line in train_class_descriptions:
+                    if k in line:
+                        desc_string += ','+line.split('\t')[1]
+                        break
+                f.write(desc_string)
+    else:
+        print('Training data exists. Not recreating...')
+        with open(data_save_directory+'imagenet_small_label_description.txt','r') as f:
+            for line in f:
+                line_tokens = line.split(',')
+                label_map[line_tokens[1]]=int(line_tokens[0])
+        print('Resored label map with %d entries'%len(label_map))
+        print('\tlabel_map keys: %s'%list(label_map.keys())[:5])
+        print('\tlabel_map values: %s'%list(label_map.values())[:5])
     assert len(label_map) == np.sum(class_distribution)
 
-    del fp1
-    del fp2 # flush
+    valid_filenames, valid_classes = zip(*valid_map.items())
+    print('\tValid filenames:',list(valid_map.keys())[:5])
+    print('\tValid classes:',list(valid_map.values())[:5])
 
-    with open('imagenet_small_label_description.txt','w') as f:
-        for k,v in label_map.items():
-            desc_string = str(v)+','+str(k)
-            for line in train_class_descriptions:
-                if k in line:
-                    desc_string += ','+line.split('\t')[1]
-                    break
-            f.write(desc_string)
+    selected_valid_files = {}
+    for f,c in zip(valid_filenames,valid_classes):
+        if c in list(label_map.keys()):
+            selected_valid_files[f]=label_map[c]
 
-load_and_save_data_imagenet()
+
+    print('Found %d matching valid files...'%len(selected_valid_files))
+
+    if not os.path.exists(data_save_directory+'imagenet_small_valid_dataset.npy'):
+        pixel_depth=-1
+        fp1 = np.memmap(filename='imagenet_small_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension*resized_dimension*num_channels))
+        fp2 = np.memmap(filename='imagenet_small_valid_labels', dtype='float32', mode='w+', shape=(len(selected_valid_files),1))
+
+        valid_index = 0
+        for fname,valid_class in selected_valid_files.items():
+            fname = fname.rstrip('.xml') + '.JPEG'
+            resized_img = resize_image(valid_directory+fname)
+            resized_img = resized_img.flatten()
+
+            if pixel_depth == -1:
+                pixel_depth = 255.0 if np.max(resized_img)>128 else 1.0
+                print('\tFound pixel depth %.1f'%pixel_depth)
+            resized_img = resized_img.flatten()
+            resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
+
+            fp1[valid_index,:] = resized_img
+            fp2[valid_index,0] = valid_class
+            valid_index += 1
+
+        filesize_dictionary['imagenet_small_valid_dataset.h5'] = len(selected_valid_files)
+        del fp1,fp2
+        print('Created tha valid file with %d entries'%valid_index)
+    else:
+        print('Valid data exists.')
+
+    with open(data_save_directory+'dataset_sizes.pickle','wb') as f:
+        pickle.dump(filesize_dictionary, f, pickle.HIGHEST_PROTOCOL)
+
+#load_and_save_data_imagenet_with_memmap()
+
+
+def reformat_data_imagenet_with_npy(train_filenames,**params):
+
+    image_size = 224
+    num_labels = 100
+    num_channels = 3 # rgb
+    #col_count = image_size**2 * num_channels
+
+    dataset = np.load(train_filenames[0],'r')
+    labels = np.load(train_filenames[1],'r')
+
+    #fp1 = np.memmap(train_filenames[0],dtype=np.float32,mode='r',offset=np.dtype('float32').itemsize*memmap_offset,shape=(row_count,col_count))
+    #fp2 = np.memmap(train_filenames[1],dtype=np.float32,mode='r',offset=np.dtype('float32').itemsize*memmap_offset,shape=(row_count,col_count))
+    #dataset = np.empty((row_count,col_count),dtype=np.float32)
+    #labels = np.empty((row_count,),dtype=np.int32)
+    #dataset[:] = fp1[:]
+    #labels[:,None] = fp2[:,0]
+    #del fp1,fp2
+
+    print("Reformatting data ...")
+    dataset = dataset.reshape((-1,image_size,image_size,num_channels),order='C').astype(np.float32)
+    labels = labels.flatten()
+
+    if 'test_images' in params and params['test_images']:
+        for i in range(10):
+            rand_idx = np.random.randint(0,dataset.shape[0])
+            imsave('test_img_'+str(i)+'.png', dataset[rand_idx,:,:,:])
+
+    print('\tFinal shape (train):%s',dataset.shape)
+    ohe_labels = (np.arange(num_labels) == labels[:,None]).astype(np.float32)
+    print('\tFinal shape (train) labels:%s',labels.shape)
+
+    assert np.all(labels==np.argmax(ohe_labels,axis=1))
+    return dataset,ohe_labels
+
+memmap_offset=[-1,0]
+def get_next_memmap_indices(filenames,chunk_size):
+    global memmap_offset
+
+    prefix = 'imagenet_small_train_dataset_'
+    data_save_directory = "imagenet_sm/"
+    if memmap_offset[0]==-1:
+        min_idx = 1000000
+        max_idx = 0
+        for fn in filenames:
+            min_idx = min(int(fn.split('_')[-1]),min_idx)
+            max_idx = max(int(fn.split('_')[-1]),max_idx)
+        memmap_offset[0]=min_idx
+
+        with open(data_save_directory+'dataset_sizes.pickle','rb') as f:
+            dataset_sizes = pickle.load(f)
+
+    if memmap_offset[0]==max_idx and memmap_offset[1]==dataset_sizes[prefix+str(max_idx)]:
+        memmap_offset = [0,0]
+
+    # e.g if dataset_size=10, offset=4 chunk_size=5
+    if memmap_offset+chunk_size<=dataset_sizes[prefix+str(memmap_offset[0])]-1:
+        prev_offset = memmap_offset
+        memmap_offset[1] = memmap_offset+chunk_size
+        return prev_offset,memmap_offset,dataset_sizes
+    # e.g. if dataset_size = 10 offset=7 chunk_size=5
+    # data from last => (10-1) - 7
+    # data from new => chunk_size - data_from_last
+    # new index => data_from_new
+    else:
+        prev_offset = memmap_offset
+        data_from_last = dataset_sizes[prefix+memmap_offset[0]]-memmap_offset[1]
+        data_from_new = chunk_size - data_from_last
+
+        # making sure we don't go beyond the data files
+        if memmap_offset[0]==max_idx and data_from_new>0:
+            memmap_offset = [max_idx,dataset_sizes[prefix+str(max_idx)]]
+        else:
+            memmap_offset = [memmap_offset[0]+1,data_from_new]
+        return prev_offset,memmap_offset,dataset_sizes
+
+def reformat_data_imagenet_with_memmap_array(dataset,labels,**params):
+
+    image_size = 224
+    num_labels = 100
+    num_channels = 3 # rgb
+
+    print("Reformatting data ...")
+    dataset = dataset.reshape((-1,image_size,image_size,num_channels),order='C').astype(np.float32)
+    labels = labels.flatten()
+
+    if 'test_images' in params and params['test_images']:
+        for i in range(10):
+            rand_idx = np.random.randint(0,dataset.shape[0])
+            imsave('test_img_'+str(i)+'.png', dataset[rand_idx,:,:,:])
+
+    print('\tFinal shape (train):%s',dataset.shape)
+    ohe_labels = (np.arange(num_labels) == labels[:,None]).astype(np.float32)
+    print('\tFinal shape (train) labels:%s',labels.shape)
+
+    assert np.all(labels==np.argmax(ohe_labels,axis=1))
+    return dataset,ohe_labels
+
+#reformat_data_imagenet_with_memmap(('imagenet_small_train_dataset_2.npy','imagenet_small_train_labels_2.npy'),test_images=True)
 
 def load_and_save_data_cifar10(filename,**params):
 
