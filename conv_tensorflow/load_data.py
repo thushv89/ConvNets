@@ -392,7 +392,7 @@ def load_and_save_data_imagenet_with_memmap():
 
         dataset_filename = data_save_directory+'imagenet_small_train_dataset'
         label_filename = data_save_directory+'imagenet_small_train_labels'
-        fp1 = np.memmap(filename=dataset_filename, dtype='float32', mode='w+', shape=(train_size,resized_dimension*resized_dimension*num_channels))
+        fp1 = np.memmap(filename=dataset_filename, dtype='float32', mode='w+', shape=(train_size,resized_dimension,resized_dimension,num_channels))
         fp2 = np.memmap(filename=label_filename, dtype='int32', mode='w+', shape=(train_size,1))
         print("\tmemory allocated for (%d items)..."%train_size)
         filesize_dictionary['imagenet_small_train_dataset'] = train_size
@@ -421,14 +421,14 @@ def load_and_save_data_imagenet_with_memmap():
             if pixel_depth == -1:
                 pixel_depth = 255.0 if np.max(resized_img)>128 else 1.0
                 print('\tFound pixel depth %.1f'%pixel_depth)
-            resized_img = resized_img.flatten()
+            #resized_img = resized_img.flatten()
             resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
             if train_offset<5:
                 #print('mean 0th item %.3f'%np.mean(resized_img))
                 assert -.1<np.mean(resized_img)<.1
                 #print('stddev 0th item %.3f'%np.std(resized_img))
                 assert 0.9<np.std(resized_img)<1.1
-            fp1[train_offset,:] = resized_img
+            fp1[train_offset,:,:,:] = resized_img
             if subdir not in label_map:
                 train_label_index += 1
                 label_map[subdir] = train_label_index
@@ -474,22 +474,21 @@ def load_and_save_data_imagenet_with_memmap():
 
     if not os.path.exists(data_save_directory+'imagenet_small_valid_dataset'):
         pixel_depth=-1
-        fp1 = np.memmap(filename=data_save_directory+'imagenet_small_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension*resized_dimension*num_channels))
+        fp1 = np.memmap(filename=data_save_directory+'imagenet_small_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension,resized_dimension,num_channels))
         fp2 = np.memmap(filename=data_save_directory+'imagenet_small_valid_labels', dtype='int32', mode='w+', shape=(len(selected_valid_files),1))
 
         valid_index = 0
         for fname,valid_class in selected_valid_files.items():
             fname = fname.rstrip('.xml') + '.JPEG'
             resized_img = resize_image(valid_directory+fname)
-            resized_img = resized_img.flatten()
 
             if pixel_depth == -1:
                 pixel_depth = 255.0 if np.max(resized_img)>128 else 1.0
                 print('\tFound pixel depth %.1f'%pixel_depth)
-            resized_img = resized_img.flatten()
+            #resized_img = resized_img.flatten()
             resized_img = (resized_img - np.mean(resized_img))/np.std(resized_img)
 
-            fp1[valid_index,:] = resized_img
+            fp1[valid_index,:,:,:] = resized_img
             fp2[valid_index,0] = valid_class
             valid_index += 1
 
@@ -540,36 +539,28 @@ def reformat_data_imagenet_with_npy(train_filenames,**params):
     return dataset,ohe_labels
 
 memmap_offset=-1
-dataset_sizes = {}
-def get_next_memmap_indices(filenames,chunk_size):
-    global memmap_offset,dataset_sizes
-
-    data_save_directory = "imagenet_small/"
+def get_next_memmap_indices(filenames,chunk_size,dataset_size):
+    global memmap_offset
 
     if memmap_offset == -1:
-        with open(data_save_directory+'dataset_sizes.pickle','rb') as f:
-            dataset_sizes = pickle.load(f)
-            train_size = dataset_sizes[data_save_directory+filenames[0]]
-            dataset_sizes.pop(data_save_directory+filenames[0])
-            dataset_sizes[filenames[0]]=train_size
-
         memmap_offset = 0
 
-    if memmap_offset==dataset_sizes[filenames[0]]:
+    if memmap_offset>=dataset_size:
+        print('Resetting memmap offset...\n')
         memmap_offset = 0
 
     # e.g if dataset_size=10, offset=4 chunk_size=5
-    if memmap_offset+chunk_size<=dataset_sizes[filenames[0]]-1:
+    if memmap_offset+chunk_size<=dataset_size-1:
         prev_offset = memmap_offset
         memmap_offset = memmap_offset+chunk_size
-        return prev_offset,memmap_offset,dataset_sizes
+        return prev_offset,memmap_offset
 
     # e.g. if dataset_size = 10 offset=7 chunk_size=5
     # data from last => (10-1) - 7
     else:
         prev_offset = memmap_offset
-        memmap_offset = dataset_sizes[filenames]
-        return prev_offset,memmap_offset,dataset_sizes
+        memmap_offset = dataset_size
+        return prev_offset,memmap_offset
 
 def reformat_data_imagenet_with_memmap_array(dataset,labels,**params):
 
@@ -577,20 +568,21 @@ def reformat_data_imagenet_with_memmap_array(dataset,labels,**params):
     num_labels = 100
     num_channels = 3 # rgb
 
-    print("Reformatting data ...")
-    dataset = dataset.reshape((-1,image_size,image_size,num_channels),order='C').astype(np.float32)
-    print('\tlabels shape: ',labels.shape)
     labels = labels.flatten().astype(np.int32)
-    print('\tlabels shape: ',labels.shape)
+    if 'silent' not in params or ('silent' in params and not params['silent']):
+        print("Reformatted data ...")
+        print('\tlabels shape: ',labels.shape)
 
     if 'test_images' in params and params['test_images']:
         for i in range(10):
             rand_idx = np.random.randint(0,dataset.shape[0])
             imsave('test_img_'+str(i)+'.png', dataset[rand_idx,:,:,:])
 
-    print('\tFinal shape:%s',dataset.shape)
+    if 'silent' not in params or ('silent' in params and not params['silent']):
+        print('\tFinal shape:%s',dataset.shape)
     ohe_labels = (np.arange(num_labels) == labels[:,None]).astype(np.float32)
-    print('\tFinal shape labels:%s',labels.shape)
+    if 'silent' not in params or ('silent' in params and not params['silent']):
+        print('\tFinal shape labels:',ohe_labels.shape)
 
     assert np.all(labels==np.argmax(ohe_labels,axis=1))
     return dataset,ohe_labels

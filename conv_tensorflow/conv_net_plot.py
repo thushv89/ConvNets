@@ -344,7 +344,7 @@ def calc_loss(logits,labels):
 def optimize_func(loss,global_step,decay_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=decay_step,decay_rate=0.95)
+        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=decay_step,decay_rate=0.99)
         learning_rate = tf.maximum(learning_rate,start_lr*0.05)
     else:
         learning_rate = start_lr
@@ -352,8 +352,6 @@ def optimize_func(loss,global_step,decay_step):
     optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
     return optimizer,learning_rate
 
-def inc_global_step(global_step):
-    return global_step.assign(global_step+1)
 
 def predict_with_logits(logits):
     # Predictions for the training, validation, and test data.
@@ -367,13 +365,21 @@ def predict_with_dataset(dataset):
 def get_conv_net_structure():
     return conv_ops,hyparams
 
-def train_conv_net(session,dataset_type,datasets,hyparams):
-    global image_size,num_labels,num_channels
-    global train_size,valid_size,test_size
-    global batch_size,num_epochs,start_lr,decay_learning_rate,dropout_rate,in_dropout_rate,use_dropout,early_stopping,accuracy_drops_cap,include_l2_loss,beta
-    global total_iterations
+logits,loss,pred,optimize,inc_gstep,test_pred = None,None,None,None,None,None
+tf_dataset,tf_labels,tf_test_dataset,tf_test_labels = None,None,None,None
+global_step,start_lr = None,None
 
-    total_iterations = 0
+def inc_global_step(global_step):
+    return global_step.assign(global_step+1)
+
+
+def initialize_conv_net(dataset_type,hyparams):
+    global batch_size,num_epochs,start_lr,decay_learning_rate,dropout_rate,in_dropout_rate,use_dropout,early_stopping,accuracy_drops_cap,include_l2_loss,beta,check_early_stop_from
+    global image_size,num_labels,num_channels
+    global total_iterations
+    global logits,loss,pred,optimize,inc_gstep,test_pred
+    global tf_dataset,tf_labels,tf_test_dataset,tf_test_labels
+    global global_step,start_lr
 
     # hyperparameters
     if dataset_type=='cifar-10':
@@ -384,6 +390,8 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
         image_size = 224
         num_labels = 100
         num_channels = 3 # rgb
+    else:
+        raise NotImplementedError
 
     batch_size = hyparams['batch_size']
 
@@ -408,19 +416,9 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
     #1e-7 : 1e-8 for 3 conv layers
     beta = hyparams['beta']
 
-
-    train_dataset,train_labels = datasets['train_dataset'],datasets['train_labels']
-    valid_dataset,valid_labels = datasets['valid_dataset'],datasets['valid_labels']
-    test_dataset,test_labels = datasets['test_dataset'],datasets['test_labels']
-
-    train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
-    print('Dataset sizes')
-    print('\tTrain: %d'%train_size)
-    print('\tValid: %d'%valid_size)
-    print('\tTest: %d'%test_size)
-    # if hyperparameters change, graph must be reset
-
-    test_accuracies = []
+    global_step = tf.Variable(0, trainable=False)
+    start_lr = tf.Variable(start_lr)
+    create_subsample_layers()
 
     # Input data.
     print('Input data defined...\n')
@@ -429,10 +427,6 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
 
     tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size,image_size,image_size,num_channels))
     tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
-
-    global_step = tf.Variable(0, trainable=False)
-    start_lr = tf.Variable(start_lr)
-    create_subsample_layers()
 
     print('================ Training ==================\n')
     logits = get_logits(tf_dataset,True)
@@ -458,6 +452,27 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
     print('\tInclude L2, Beta: ',include_l2_loss,', ',beta)
     print('\tDecay step %d'%decay_step)
     print('==================================================\n')
+
+def train_conv_net(session,datasets):
+    global train_size,valid_size,test_size
+    global start_lr
+    global logits,loss,pred,optimize,inc_gstep
+    global image_size,num_labels,num_channels
+    global tf_dataset,tf_labels,tf_test_dataset,tf_test_labels
+    global global_step,start_lr
+
+    total_iterations = 0
+
+    train_dataset,train_labels = datasets['train_dataset'],datasets['train_labels']
+    valid_dataset,valid_labels = datasets['valid_dataset'],datasets['valid_labels']
+    test_dataset,test_labels = datasets['test_dataset'],datasets['test_labels']
+
+    train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
+    print('Dataset sizes')
+    print('\tTrain: %d'%train_size)
+    print('\tValid: %d'%valid_size)
+    print('\tTest: %d'%test_size)
+    # if hyperparameters change, graph must be reset
 
     accuracy_drop = 0 # used for early stopping
     max_test_accuracy = 0
@@ -512,6 +527,69 @@ def train_conv_net(session,dataset_type,datasets,hyparams):
             break
 
     return max_test_accuracy
+
+def train_conv_net_once(session,datasets,g_step):
+    global train_size,valid_size,test_size
+    global start_lr
+    global logits,loss,pred,optimize,inc_gstep
+    global image_size,num_labels,num_channels
+    global tf_dataset,tf_labels,tf_test_dataset,tf_test_labels
+    global global_step,start_lr
+
+    total_iterations = 1
+
+    update_gstep = global_step.assign(g_step)
+    _ = session.run([update_gstep])
+
+    train_dataset,train_labels = datasets['train_dataset'],datasets['train_labels']
+    valid_dataset,valid_labels = datasets['valid_dataset'],datasets['valid_labels']
+    test_dataset,test_labels = datasets['test_dataset'],datasets['test_labels']
+
+    train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
+    print('Dataset sizes')
+    print('\tTrain: %d'%train_size)
+    print('\tValid: %d'%valid_size)
+    print('\tTest: %d'%test_size)
+    # if hyperparameters change, graph must be reset
+
+    max_test_accuracy = 0
+
+    for iteration in range(floor(float(train_size)/batch_size)):
+        offset = iteration * batch_size
+        assert offset < train_size
+        batch_data = train_dataset[offset:offset + batch_size, :, :, :]
+        batch_labels = train_labels[offset:offset + batch_size, :]
+
+        feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
+        _, l, (_,updated_lr), predictions = session.run([logits,loss,optimize,pred], feed_dict=feed_dict)
+
+        if total_iterations % 50 == 0:
+            print('\tMinibatch loss at iteration %d: %f' % (iteration, l))
+            print('\tLearning rate: %.5f'%updated_lr)
+            print('\tMinibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
+            print('\tGlobal step: %d'%global_step.eval())
+        total_iterations += 1
+
+    ts_acc_arr = None
+    for test_batch_id in range(floor(float(test_size)/batch_size)):
+
+        batch_test_data = test_dataset[test_batch_id*batch_size:(test_batch_id+1)*batch_size,:,:,:]
+        batch_test_labels = test_labels[test_batch_id*batch_size:(test_batch_id+1)*batch_size,:]
+
+        feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
+        test_predictions = session.run([test_pred],feed_dict=feed_test_dict)
+
+        if ts_acc_arr is None:
+            ts_acc_arr = np.asarray(test_predictions[0],dtype=np.float32)
+        else:
+            ts_acc_arr = np.append(ts_acc_arr,test_predictions[0],axis=0)
+
+        assert test_predictions[0].shape[0]==batch_test_labels.shape[0]
+
+    test_accuracy = accuracy(ts_acc_arr, test_labels[:ts_acc_arr.shape[0],:])
+    print('\tTest accuracy: %.1f%%' %test_accuracy)
+
+    return test_accuracy
 
 if __name__=='__main__':
 
