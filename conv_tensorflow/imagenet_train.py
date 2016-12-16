@@ -18,7 +18,6 @@ if __name__=='__main__':
     except getopt.GetoptError as err:
         print('')
 
-
     if len(opts)!=0:
         for opt,arg in opts:
             if opt == '--log_suffix':
@@ -40,7 +39,7 @@ if __name__=='__main__':
     data_percentages = []
     #data_percentages.extend(list(np.arange(0.001,0.010,0.001)))
     #data_percentages.extend(list(np.arange(0.01,0.10,0.01)))
-    data_percentages.extend(list(np.arange(0.2,1.1,0.1)))
+    data_percentages.extend(list(np.arange(0.5,1.1,0.5)))
     #data_percentages.append(0.1)
 
     col_count = (224,224,3)
@@ -60,7 +59,7 @@ if __name__=='__main__':
     train_size,valid_size = dataset_sizes[train_dataset_filename],dataset_sizes[valid_dataset_fname]
 
     fp1 = np.memmap(data_save_directory+valid_dataset_fname, dtype=np.float32,mode='r',
-                                    offset=np.dtype('float32').itemsize*0,shape=(valid_size,col_count[0],col_count[1],col_count[2]))
+                    offset=np.dtype('float32').itemsize*0,shape=(valid_size,col_count[0],col_count[1],col_count[2]))
     fp2 = np.memmap(data_save_directory+valid_label_fname, dtype=np.int32,mode='r',
                     offset=np.dtype('int32').itemsize*0,shape=(valid_size,1))
     vdataset = fp1[:,:,:,:]
@@ -90,7 +89,7 @@ if __name__=='__main__':
     beta = 1e-3
 
     graph = tf.Graph()
-    with tf.Session(graph=graph) as session:
+    with tf.Session(graph=graph,config = tf.ConfigProto(allow_soft_placement=True)) as session, tf.device('/gpu:0'):
         for data_percentage in data_percentages:
 
             hyperparams = {
@@ -103,11 +102,11 @@ if __name__=='__main__':
             conv_net_plot.initialize_conv_net('imagenet',hyperparams)
 
             if data_percentage < 0.01:
-                check_early_stop_from = 100
+                check_early_stop_from = 40
             elif 0.01 <= data_percentage < 0.1:
-                check_early_stop_from = 50
-            elif 0.1 <= data_percentage < 1.1:
                 check_early_stop_from = 25
+            elif 0.1 <= data_percentage < 1.1:
+                check_early_stop_from = 5
 
             chunk_size = batch_size*100
             train_size_clipped = train_size*data_percentage
