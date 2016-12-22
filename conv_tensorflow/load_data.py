@@ -553,14 +553,14 @@ def get_next_memmap_indices(filenames,chunk_size,dataset_size):
     if memmap_offset+chunk_size<=dataset_size-1:
         prev_offset = memmap_offset
         memmap_offset = memmap_offset+chunk_size
-        return prev_offset,memmap_offset
+        return int(prev_offset),int(memmap_offset)
 
     # e.g. if dataset_size = 10 offset=7 chunk_size=5
     # data from last => (10-1) - 7
     else:
         prev_offset = memmap_offset
         memmap_offset = dataset_size
-        return prev_offset,memmap_offset
+        return int(prev_offset),int(memmap_offset)
 
 def reformat_data_imagenet_with_memmap_array(dataset,labels,**params):
 

@@ -68,11 +68,15 @@ if __name__=='__main__':
 
     print('Valid data processed ...')
 
-    batch_size = 64
+    batch_size = 128
     num_epochs = 50
 
     decay_step = 1
-    start_lr = 0.01
+    ''' ======== Learning rate Information ==========
+    0.0001 (7 Layer network) (Loss > 10 after 1st Epoch)
+    Keep last 2D output small (14x14 vs 7x7) seems to increase accuracy drastically
+    '''
+    start_lr = 0.0001
     decay_learning_rate = True
 
     #dropout seems to be making it impossible to learn
@@ -83,7 +87,7 @@ if __name__=='__main__':
 
     early_stopping = True
     accuracy_drop_cap = 5
-    check_early_stop_from = 5
+    check_early_stop_from = 10
 
     include_l2loss = False
     beta = 1e-3
@@ -108,8 +112,8 @@ if __name__=='__main__':
             elif 0.1 <= data_percentage < 1.1:
                 check_early_stop_from = 5
 
-            chunk_size = batch_size*100
-            train_size_clipped = train_size*data_percentage
+            chunk_size = batch_size*200
+            train_size_clipped = int(train_size*data_percentage)
             chunks_in_train = train_size_clipped//chunk_size
             if abs(train_size_clipped - chunks_in_train*chunk_size) < 5*batch_size:
                 train_size_clipped = chunks_in_train*chunk_size
@@ -132,7 +136,6 @@ if __name__=='__main__':
 
                     # Loading data from memmap
                     print('Processing files %s,%s'%(train_dataset_filename,train_label_filename))
-                    print('\tOffset: %d, %d'%(start_memmap,end_memmap))
                     fp1 = np.memmap(data_save_directory+train_dataset_filename,dtype=np.float32,mode='r',
                                     offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*start_memmap,shape=(end_memmap-start_memmap,col_count[0],col_count[1],col_count[2]))
 
@@ -141,12 +144,16 @@ if __name__=='__main__':
 
                     train_dataset = fp1[:,:,:,:]
                     train_labels = fp2[:]
+
                     filled_size += train_dataset.shape[0]
-                    assert train_dataset.shape[0]==train_labels.shape[0]
+                    print('\tOffset: %d, %d'%(start_memmap,end_memmap))
                     print('\tCurrent size of filled data: %d'%filled_size)
+                    print('\tTrain size clipped: %d'%train_size_clipped)
                     print('\tTrain data: %d'%train_dataset.shape[0])
                     print('\tTrain labels: %d'%train_labels.shape[0])
                     del fp1,fp2
+                    assert filled_size==end_memmap
+                    assert train_dataset.shape[0]==train_labels.shape[0]
 
                     train_dataset,train_labels = reformat_data_imagenet_with_memmap_array(train_dataset,train_labels,silent=True)
                     assert train_dataset.shape[0]==train_labels.shape[0]

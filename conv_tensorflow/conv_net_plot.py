@@ -46,7 +46,7 @@ patch_size = 3
 
 num_epochs = 1000
 
-start_lr = 0.01
+start_lr = 0.005
 decay_learning_rate = True
 
 #dropout seems to be making it impossible to learn
@@ -77,9 +77,9 @@ beta = 5e-8
 conv_ops = [
     'conv_1','pool_1','loc_res_norm',
     'conv_2','pool_1','loc_res_norm',
-    'conv_3','loc_res_norm',
-    'conv_4','pool_1','loc_res_norm',
-    'conv_5','loc_res_norm',
+    'conv_3','pool_1','loc_res_norm',
+    'conv_4','loc_res_norm',
+    'conv_5','pool_1','loc_res_norm',
     'conv_6','loc_res_norm',
     'conv_7','loc_res_norm',
     'pool_global','fulcon_out'
@@ -130,6 +130,11 @@ weights,biases = {},{}
 
 valid_size,train_size,test_size = 0,0,0
 
+def lrelu(x, leak=0.2, name="lrelu"):
+     with tf.variable_scope(name):
+         f1 = 0.5 * (1 + leak)
+         f2 = 0.5 * (1 - leak)
+         return f1 * x + f2 * abs(x)
 
 def accuracy(predictions, labels):
     assert predictions.shape[0]==labels.shape[0]
@@ -152,7 +157,7 @@ def create_subsample_layers():
             print('\t\tBias:%d'%hyparams[op]['weights'][3])
             weights[op]=tf.Variable(
                 tf.truncated_normal(hyparams[op]['weights'],
-                                    stddev=2./min(5,hyparams[op]['weights'][0])
+                                    stddev=2./min(50,hyparams[op]['weights'][0])
                                     )
             )
             biases[op] = tf.Variable(tf.constant(np.random.random()*0.001,shape=[hyparams[op]['weights'][3]]))
@@ -167,7 +172,7 @@ def create_subsample_layers():
                     print('\t\t\tBias:%d'%inc_hyparams[k]['weights'][3])
                     weights[w_key] = tf.Variable(
                         tf.truncated_normal(inc_hyparams[k]['weights'],
-                                            stddev=2./min(5,inc_hyparams[k]['weights'][0])
+                                            stddev=2./min(50,inc_hyparams[k]['weights'][0])
                                             )
                     )
                     biases[w_key] = tf.Variable(tf.constant(np.random.random()*0.0,shape=[inc_hyparams[k]['weights'][3]]))
@@ -197,10 +202,11 @@ def create_fulcon_layers(fan_in):
 def get_logits(dataset,is_train):
 
     # Variables.
-    if not use_dropout:
-        x = dataset
-    else:
+    if use_dropout and is_train:
         x = tf.nn.dropout(dataset,1.0 - in_dropout_rate,seed=tf.set_random_seed(98765))
+    else:
+        x = dataset
+
     print('Calculating inputs for data X(%s)...'%x.get_shape().as_list())
     for op in conv_ops:
         if 'conv' in op:
@@ -219,7 +225,7 @@ def get_logits(dataset,is_train):
                 x = tf_maxout_x
                 print('\t\tX after maxout :%s'%(tf_maxout_x.get_shape().as_list()))
             else:
-                x = tf.nn.relu(x + biases[op])
+                x = lrelu(x + biases[op])
             print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
         if 'pool' in op:
             print('\tPooling data')
@@ -254,7 +260,7 @@ def get_logits(dataset,is_train):
                         padding=hyparams[op]['iconv_1x1']['padding']
                     )
                     # relu activation
-                    tmp_x = tf.nn.relu(tmp_x + biases[conv_1x1_id])
+                    tmp_x = lrelu(tmp_x + biases[conv_1x1_id])
 
                     if tf_incept_out is None:
                         tf_incept_out = tf.identity(tmp_x)
@@ -273,7 +279,7 @@ def get_logits(dataset,is_train):
                                              padding=hyparams[op]['iconv_1x1']['padding']
                                              )
                         #relu activation
-                        tmp_x = tf.nn.relu(tmp_x + biases[conv_1x1_id])
+                        tmp_x = lrelu(tmp_x + biases[conv_1x1_id])
 
                         if tf_incept_out is None:
                             tf_incept_out = tf.identity(tmp_x)
@@ -289,7 +295,7 @@ def get_logits(dataset,is_train):
                                              padding=hyparams[op]['iconv_1x1']['padding']
                                              )
                         #relu activation
-                        tmp_x = tf.nn.relu(tmp_x + biases[conv_1x1_id])
+                        tmp_x = lrelu(tmp_x + biases[conv_1x1_id])
 
                         #5x5 or 3x3 convolution
                         tmp_x = tf.nn.conv2d(tmp_x,
@@ -298,7 +304,7 @@ def get_logits(dataset,is_train):
                                              padding=hyparams[op][inc_op]['padding']
                         )
                         #relu activation
-                        tmp_x = tf.nn.relu(tmp_x + biases[inc_op_id])
+                        tmp_x = lrelu(tmp_x + biases[inc_op_id])
 
                         if tf_incept_out is None:
                             tf_incept_out = tf.identity(tmp_x)
@@ -329,11 +335,11 @@ def get_logits(dataset,is_train):
             continue
         else:
             if is_train and use_dropout:
-                x = tf.nn.dropout(tf.nn.relu(tf.matmul(x,weights[op])+biases[op]),keep_prob=1.-dropout_rate,seed=tf.set_random_seed(12321))
+                x = tf.nn.dropout(lrelu(tf.matmul(x,weights[op])+biases[op]),keep_prob=1.-dropout_rate,seed=tf.set_random_seed(12321))
             else:
-                x = tf.nn.relu(tf.matmul(x,weights[op])+biases[op])
+                x = lrelu(tf.matmul(x,weights[op])+biases[op])
 
-    if use_dropout:
+    if use_dropout and is_train:
         x = tf.nn.dropout(x,1.0-dropout_rate,seed=tf.set_random_seed(98765))
 
     return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out']
@@ -356,7 +362,8 @@ def optimize_func(loss,global_step,decay_step):
     else:
         learning_rate = start_lr
 
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+    #optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+    optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss)
     return optimizer,learning_rate
 
 
@@ -710,7 +717,7 @@ if __name__=='__main__':
             print('================ Training ==================\n')
             logits = get_logits(tf_dataset,True)
             loss = calc_loss(logits,tf_labels)
-            pred = predict_with_logits(logits)
+            pred = predict_with_dataset(tf_dataset)
             optimize = optimize_func(loss,global_step,decay_step)
             inc_gstep = inc_global_step(global_step)
             print('==============================================\n')
