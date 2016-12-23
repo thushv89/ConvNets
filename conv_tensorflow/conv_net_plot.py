@@ -75,13 +75,13 @@ beta = 5e-8
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
 conv_ops = [
-    'conv_1','pool_1','loc_res_norm',
-    'conv_2','pool_1','loc_res_norm',
-    'conv_3','pool_1','loc_res_norm',
-    'conv_4','loc_res_norm',
-    'conv_5','pool_1','loc_res_norm',
-    'conv_6','loc_res_norm',
-    'conv_7','loc_res_norm',
+    'conv_1','pool_1',
+    'conv_2','pool_1',
+    'conv_3','pool_1',
+    'conv_4',
+    'conv_5','pool_1',
+    'conv_6',
+    'conv_7',
     'pool_global','fulcon_out'
             ]
 
@@ -118,6 +118,29 @@ hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_
 
 
 #=====================================================================================================================#
+
+def pretty_print_convnet():
+    structure = ''
+    for op in conv_ops:
+        if 'conv' in op:
+            structure += 'Convolution Layer: ' + op + '\n'
+            structure += '\tWeights shape: ' + str(hyparams[op]['weights']) + '\n'
+            structure += '\tStride: ' + str(hyparams[op]['stride']) + '\n'
+            structure += '\tPadding: ' + str(hyparams[op]['padding']) + '\n'
+        elif 'pool' in op:
+            structure += 'Pooling Layer: ' + op + '\n'
+            structure += '\tType: ' + str(hyparams[op]['type']) + '\n'
+            structure += '\tKernel shape: ' + str(hyparams[op]['kernel']) + '\n'
+            structure += '\tStride: ' + str(hyparams[op]['stride']) + '\n'
+            structure += '\tPadding: ' + str(hyparams[op]['padding']) + '\n'
+        elif 'loc_res_norm' in op:
+            structure += 'Local Response Normalization: ' + op + '\n'
+        elif 'fulcon' in op:
+            structure += 'Fully Connected Layer: ' + op + '\n'
+            structure += '\tIn: ' + str(hyparams[op]['in']) + '\n'
+            structure += '\tOut: ' + str(hyparams[op]['out']) + '\n'
+
+    return structure
 
 train_dataset, train_labels = None,None
 valid_dataset, valid_labels = None,None
@@ -157,10 +180,10 @@ def create_subsample_layers():
             print('\t\tBias:%d'%hyparams[op]['weights'][3])
             weights[op]=tf.Variable(
                 tf.truncated_normal(hyparams[op]['weights'],
-                                    stddev=2./min(50,hyparams[op]['weights'][0])
+                                    stddev=2./min(50,10*hyparams[op]['weights'][0]*hyparams[op]['weights'][1])
                                     )
             )
-            biases[op] = tf.Variable(tf.constant(np.random.random()*0.001,shape=[hyparams[op]['weights'][3]]))
+            biases[op] = tf.Variable(tf.constant(np.random.random()*1e-5,shape=[hyparams[op]['weights'][3]]))
         if 'incept' in op:
             print('\n\tDefining the weights and biases for the Incept Module')
             inc_hyparams = hyparams[op]
@@ -172,7 +195,7 @@ def create_subsample_layers():
                     print('\t\t\tBias:%d'%inc_hyparams[k]['weights'][3])
                     weights[w_key] = tf.Variable(
                         tf.truncated_normal(inc_hyparams[k]['weights'],
-                                            stddev=2./min(50,inc_hyparams[k]['weights'][0])
+                                            stddev=2./min(50,inc_hyparams[k]['weights'][0]*inc_hyparams[k]['weights'][1])
                                             )
                     )
                     biases[w_key] = tf.Variable(tf.constant(np.random.random()*0.0,shape=[inc_hyparams[k]['weights'][3]]))
@@ -196,7 +219,7 @@ def create_fulcon_layers(fan_in):
                     )
                 )
 
-                biases[op] = tf.Variable(tf.constant(np.random.random()*0.001,shape=[hyparams[op]['out']]))
+                biases[op] = tf.Variable(tf.constant(np.random.random()*1e-5,shape=[hyparams[op]['out']]))
 
 
 def get_logits(dataset,is_train):
@@ -229,7 +252,10 @@ def get_logits(dataset,is_train):
             print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
         if 'pool' in op:
             print('\tPooling data')
-            x = tf.nn.max_pool(x,ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
+            if hyparams[op]['type']=='max':
+                x = tf.nn.max_pool(x,ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
+            elif hyparams[op]['type']=='avg':
+                x = tf.nn.avg_pool(x,ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
             print('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
         if op=='loc_res_norm':
             print('\tLocal Response Normalization')
@@ -388,7 +414,7 @@ def inc_global_step(global_step):
 
 
 def initialize_conv_net(dataset_type,hyparams):
-    global batch_size,num_epochs,start_lr,decay_learning_rate,dropout_rate,in_dropout_rate,use_dropout,early_stopping,accuracy_drops_cap,include_l2_loss,beta,check_early_stop_from
+    global batch_size,num_epochs,start_lr,decay_learning_rate,dropout_rate,in_dropout_rate,use_dropout,early_stopping,accuracy_drops_cap,include_l2_loss,beta,check_early_stop_from,decay_step
     global image_size,num_labels,num_channels
     global total_iterations
     global logits,loss,pred,optimize,inc_gstep,test_pred
@@ -576,12 +602,13 @@ def train_conv_net_once(session,datasets,g_step):
 
         feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
         _, l, (_,updated_lr), predictions = session.run([logits,loss,optimize,pred], feed_dict=feed_dict)
-
+        #print('\tMinibatch loss at iteration %d: %f' % (iteration, l))
         if total_iterations % 50 == 0:
             print('\tMinibatch loss at iteration %d: %f' % (iteration, l))
             print('\tLearning rate: %.5f'%updated_lr)
             print('\tMinibatch accuracy: %.1f%%' % accuracy(predictions, batch_labels))
             print('\tGlobal step: %d'%global_step.eval())
+            assert not np.isnan(l)
         total_iterations += 1
 
     ts_acc_arr = None
@@ -629,7 +656,7 @@ if __name__=='__main__':
     batch_size = 16
 
     num_epochs = 250
-    decay_step = 10
+    decay_step = 1
 
     start_lr = 0.2
     decay_learning_rate = True

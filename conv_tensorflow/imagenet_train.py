@@ -23,11 +23,17 @@ if __name__=='__main__':
             if opt == '--log_suffix':
                 log_suffix = arg
 
-    logger = logging.getLogger('logger_'+log_suffix)
-    logger.setLevel(logging.INFO)
-    fileHandler = logging.FileHandler('logger_'+log_suffix, mode='w')
-    fileHandler.setFormatter(logging.Formatter('%(message)s'))
-    logger.addHandler(fileHandler)
+    otLogger = logging.getLogger('onetimelogger_'+log_suffix)
+    otLogger.setLevel(logging.INFO)
+    otFileHandler = logging.FileHandler('onetimelogger_'+log_suffix, mode='w')
+    otFileHandler.setFormatter(logging.Formatter('%(message)s'))
+    otLogger.addHandler(otFileHandler)
+
+    iterLogger = logging.getLogger('iterativelogger_'+log_suffix)
+    iterLogger.setLevel(logging.INFO)
+    itFileHandler = logging.FileHandler('iterativelogger_'+log_suffix, mode='w')
+    itFileHandler.setFormatter(logging.Formatter('%(message)s'))
+    iterLogger.addHandler(itFileHandler)
 
     data_save_directory = "imagenet_small/"
     train_dataset_filename = 'imagenet_small_train_dataset'
@@ -75,6 +81,8 @@ if __name__=='__main__':
     ''' ======== Learning rate Information ==========
     0.0001 (7 Layer network) (Loss > 10 after 1st Epoch)
     Keep last 2D output small (14x14 vs 7x7) seems to increase accuracy drastically
+    Keep the initialization stddev < 0.02 otherwise loss explodes
+    Local Response Normalization worsen the results
     '''
     start_lr = 0.0001
     decay_learning_rate = True
@@ -90,7 +98,7 @@ if __name__=='__main__':
     check_early_stop_from = 10
 
     include_l2loss = False
-    beta = 1e-3
+    beta = 1e-5
 
     graph = tf.Graph()
     with tf.Session(graph=graph,config = tf.ConfigProto(allow_soft_placement=True)) as session, tf.device('/gpu:0'):
@@ -104,7 +112,8 @@ if __name__=='__main__':
                             }
 
             conv_net_plot.initialize_conv_net('imagenet',hyperparams)
-
+            iterLogger.info(conv_net_plot.pretty_print_convnet())
+            iterLogger.info('\n#Data Percentage,Epoch,Test Accuracy')
             if data_percentage < 0.01:
                 check_early_stop_from = 40
             elif 0.01 <= data_percentage < 0.1:
@@ -170,6 +179,7 @@ if __name__=='__main__':
                 mean_test_accuracy = np.mean(test_accuracies)
                 test_accuracies = []
                 print('Test accuracy for epoch %d: (Now) %.1f%% (Max) %.1f%%' %(epoch,mean_test_accuracy,max_test_accuracy))
+                iterLogger.info('%.3f,%d,%.3f',data_percentage,epoch,mean_test_accuracy)
 
                 if mean_test_accuracy > max_test_accuracy:
                     max_test_accuracy = mean_test_accuracy
@@ -180,5 +190,5 @@ if __name__=='__main__':
 
                 if epoch>check_early_stop_from and accuracy_drop>accuracy_drop_cap:
                     print("Test accuracy saturated...")
-                    logger.info('%.3f,%.3f,%d',data_percentage,max_test_accuracy,max_epoch)
+                    otLogger.info('%.3f,%.3f,%d',data_percentage,max_test_accuracy,max_epoch)
                     break
