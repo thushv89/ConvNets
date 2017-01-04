@@ -37,13 +37,12 @@ class AdaCNNConstructionQLearner(object):
             ('P',2,2),('P',3,2),('P',5,2),('Terminate',0,0,0)
         ]
         self.init_state = [0,('Init',0,0,0),self.image_size]
-        self.prev_actions = [] # all the actions belonging to a output trajectory
-        self.prev_states = [] # all the states belonging to a output trajectory
+
 
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
-        self.prev_state = restore_data['prev_state']
-        self.prev_action = restore_data['prev_action']
+        #self.prev_state = restore_data['prev_state']
+        #self.prev_action = restore_data['prev_action']
         self.q = restore_data['q']
 
     def get_output_size(self,in_size,op):
@@ -64,6 +63,9 @@ class AdaCNNConstructionQLearner(object):
 
     def output_trajectory(self, global_time_stamp, data):
 
+        prev_actions = [] # all the actions belonging to a output trajectory
+        prev_states = [] # all the states belonging to a output trajectory
+
         # State => Layer_Depth,Operation,Output_Size
 
         self.rl_logger.info('\n============== Policy Output for %d (Epoch: %d) ==============='%(self.local_time_stamp,global_time_stamp))
@@ -76,10 +78,10 @@ class AdaCNNConstructionQLearner(object):
 
         while layer_depth<self.upper_bound and output_size>1:
             # If we're just starting
-            if len(self.prev_states) == 0 or len(self.prev_actions) ==0:
+            if len(prev_states) == 0 or len(prev_actions) ==0:
                 state = self.init_state
             else:
-                state = (layer_depth,self.prev_action,self.get_output_size(output_size))
+                state = (layer_depth,prev_actions[-1],self.get_output_size(output_size))
                 self.rl_logger.info('Data for (Depth,Current Op,Output Size) %s'%str(state))
 
             if state not in self.q:
@@ -100,43 +102,43 @@ class AdaCNNConstructionQLearner(object):
             if action[2]>state[2]:
                 break
 
-            self.prev_actions.append(action)
-            self.prev_states.append(state)
+            prev_actions.append(action)
+            prev_states.append(state)
 
             # update output size and layer depth
             output_size = self.get_output_size(output_size)
             layer_depth += 1
 
-        self.prev_states.append([layer_depth,self.actions[-1],output_size])
+        prev_states.append([layer_depth,self.actions[-1],output_size])
         # decay epsilon
         self.epsilon = max(self.epsilon*0.9,0.1)
 
-        return action
+        return prev_states
 
     def update_policy(self,data):
+        '''
+        Update the policy
+        :param data: ['err_t']['err_t-1']['trajectory']
+        :return:
+        '''
+
         err_t = float(data['error_t'])/100.0
         reward = -err_t
 
-        self.rl_logger.info("Reward for action: %s: %.3f"%(self.prev_action,reward))
-        # sample = reward + self.discount_rate * max(self.q[state, a] for a in self.actions)
-        # len(gps) == 0 in the first time move() is called
+        self.rl_logger.info("Reward for trajectory: %.3f"%reward)
 
-        self.rl_logger.debug('\tPredicting with a GP. Using the gp prediction + reward as the sample ...')
-        sample = reward + self.discount_rate * max((np.asscalar(gp.predict(np.asarray(self.prev_state).reshape((1,-1)))[0])) for gp in self.gps.values())
+        for t_i in range(len(data['trajectory'])-1):
+            state = data['trajectory'][t_i]
+            next_state = data['trajectory'][t_i+1]
+            action = next_state[1]
 
-        self.rl_logger.info('\tUpdating the Q values ...')
+            # Bellman's equation (iterative)
+            # si-prev state, a-action_taken, sj-next state
+            # Q(t+1)(si,a) = (1-alp)*Q(t)(si,a) + alp*[r(t)+gam*max(Q(t)(sj,a'))]
+            self.q[state][action] = (1-self.learning_rate)*self.q[state][action] +\
+                self.learning_rate*(reward+self.discount_rate*np.max([self.q[next_state][a] for a in self.actions]))
 
-        if self.prev_action not in self.q:
-            self.rl_logger.debug('\tPrevious action not found in Q values. Creating a new entry ...')
-            self.q[self.prev_action]={self.prev_state: sample}
-        else:
-            if self.prev_state in self.q[self.prev_action]:
-                self.rl_logger.debug('\tPrevious state found in Q values. Updating it ...')
-                self.q[self.prev_action][self.prev_state] = (1 - self.learning_rate) * self.q[self.prev_action][self.prev_state] + \
-                                                            self.learning_rate * sample
-            else:
-                self.rl_logger.debug('\tPrevious state not found in Q values. Creating a new entry ...')
-                self.q[self.prev_action][self.prev_state] = sample
+        self.rl_logger.info('\tUpdated the Q values ...')
 
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action
