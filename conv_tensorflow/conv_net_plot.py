@@ -74,16 +74,37 @@ beta = 5e-8
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
-conv_ops = [
-    'conv_1','pool_1',
-    'conv_2','pool_1',
-    'conv_3','pool_1',
-    'conv_4',
-    'conv_5','pool_1',
-    'conv_6',
-    'conv_7',
-    'pool_global','fulcon_out'
-            ]
+conv_architecture = 'LeNet5' # LeNet7 / LeNet5 / LeNet3
+
+if conv_architecture == 'LeNet7':
+    conv_ops = [
+        'conv_1','pool_1',
+        'conv_2','pool_1',
+        'conv_3','pool_1',
+        'conv_4',
+        'conv_5','pool_1',
+        'conv_6',
+        'conv_7',
+        'pool_global','fulcon_out'
+                ]
+elif conv_architecture == 'LeNet5':
+    conv_ops = [
+        'conv_1','pool_1',
+        'conv_2','pool_1',
+        'conv_3','pool_1',
+        'conv_4',
+        'conv_5',
+        'pool_global','fulcon_out'
+        ]
+elif conv_architecture == 'LeNet3':
+    conv_ops = [
+        'conv_1','pool_1',
+        'conv_2','pool_1',
+        'conv_3',
+        'pool_global','fulcon_out'
+        ]
+else:
+    raise NotImplementedError
 
 #number of feature maps for each convolution layer
 depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512,'conv_5':1024,'conv_6':1024,'conv_7':1024}
@@ -103,8 +124,14 @@ conv_7_hyparams = {'weights':[3,3,depth_conv['conv_6'],depth_conv['conv_7']],'st
 pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_3_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
-pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'SAME'}
-
+if conv_architecture=='LeNet7':
+    pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'VALID'}
+elif conv_architecture=='LeNet5':
+    pool_global_hyparams = {'type':'avg','kernel':[1,14,14,1],'stride':[1,1,1,1],'padding':'VALID'}
+elif conv_architecture == 'LeNet3':
+    pool_global_hyparams = {'type':'avg','kernel':[1,28,28,1],'stride':[1,1,1,1],'padding':'VALID'}
+else:
+    raise NotImplementedError
 
 
 # fully connected layer hyperparameters
@@ -163,6 +190,17 @@ def accuracy(predictions, labels):
     assert predictions.shape[0]==labels.shape[0]
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
+
+def accuracy_top3(predictions,labels):
+    assert predictions.shape[0]==labels.shape[0]
+    top5_args = np.argsort(predictions,axis=1)[:,num_labels-3:]
+    label_args = np.argmax(labels,1)
+    total_correct = 0
+    for i in range(predictions.shape[0]):
+        if np.any(top5_args[i,:]==label_args[i]):
+            total_correct += 1
+
+    return 100.0 * total_correct / predictions.shape[0]
 
 
 def create_subsample_layers():
@@ -383,7 +421,7 @@ def calc_loss(logits,labels):
 def optimize_func(loss,global_step,decay_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=decay_step,decay_rate=0.99)
+        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=decay_step,decay_rate=0.95)
         learning_rate = tf.maximum(learning_rate,start_lr*0.05)
     else:
         learning_rate = start_lr
@@ -414,7 +452,9 @@ def inc_global_step(global_step):
 
 
 def initialize_conv_net(dataset_type,hyparams):
-    global batch_size,num_epochs,start_lr,decay_learning_rate,dropout_rate,in_dropout_rate,use_dropout,early_stopping,accuracy_drops_cap,include_l2_loss,beta,check_early_stop_from,decay_step
+    global batch_size,num_epochs,start_lr,decay_learning_rate,dropout_rate
+    global in_dropout_rate,use_dropout,early_stopping,accuracy_drops_cap
+    global include_l2_loss,beta,check_early_stop_from,decay_step
     global image_size,num_labels,num_channels
     global total_iterations
     global logits,loss,pred,optimize,inc_gstep,test_pred
@@ -568,7 +608,7 @@ def train_conv_net(session,datasets):
 
     return max_test_accuracy
 
-def train_conv_net_once(session,datasets,g_step):
+def train_conv_net_once(session,datasets,g_step,include_top3=False):
     global train_size,valid_size,test_size
     global start_lr
     global logits,loss,pred,optimize,inc_gstep
@@ -628,9 +668,13 @@ def train_conv_net_once(session,datasets,g_step):
         assert test_predictions[0].shape[0]==batch_test_labels.shape[0]
 
     test_accuracy = accuracy(ts_acc_arr, test_labels[:ts_acc_arr.shape[0],:])
-    print('\tTest accuracy: %.1f%%' %test_accuracy)
-
-    return test_accuracy
+    if include_top3:
+        test_accuracy_top3 = accuracy_top3(ts_acc_arr, test_labels[:ts_acc_arr.shape[0],:])
+        print('\tTest accuracy: %.2f%% (top-1) %.2f%% (top-3)' %(test_accuracy,test_accuracy_top3))
+        return test_accuracy,test_accuracy_top3
+    else:
+        print('\tTest accuracy: %.2f%%'%test_accuracy)
+        return test_accuracy
 
 if __name__=='__main__':
 

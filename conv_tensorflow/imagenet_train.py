@@ -45,8 +45,8 @@ if __name__=='__main__':
     data_percentages = []
     #data_percentages.extend(list(np.arange(0.001,0.010,0.001)))
     #data_percentages.extend(list(np.arange(0.01,0.10,0.01)))
-    data_percentages.extend(list(np.arange(0.5,1.1,0.5)))
-    #data_percentages.append(0.1)
+    #data_percentages.extend(list(np.arange(0.5,1.1,0.5)))
+    data_percentages.extend([1.0,0.5,0.1])
 
     col_count = (224,224,3)
     with open(data_save_directory+'dataset_sizes.pickle','rb') as f:
@@ -95,14 +95,23 @@ if __name__=='__main__':
 
     early_stopping = True
     accuracy_drop_cap = 5
-    check_early_stop_from = 10
 
     include_l2loss = False
     beta = 1e-5
 
+    include_top3 = True
+
     graph = tf.Graph()
+
     with tf.Session(graph=graph,config = tf.ConfigProto(allow_soft_placement=True)) as session, tf.device('/gpu:0'):
         for data_percentage in data_percentages:
+
+            if data_percentage < 0.01:
+                check_early_stop_from = 40
+            elif 0.01 <= data_percentage < 0.1:
+                check_early_stop_from = 25
+            elif 0.1 <= data_percentage < 1.1:
+                check_early_stop_from = 10
 
             hyperparams = {
                         'batch_size':batch_size,'start_lr':start_lr,'num_epochs':1,
@@ -113,13 +122,10 @@ if __name__=='__main__':
 
             conv_net_plot.initialize_conv_net('imagenet',hyperparams)
             iterLogger.info(conv_net_plot.pretty_print_convnet())
-            iterLogger.info('\n#Data Percentage,Epoch,Test Accuracy')
-            if data_percentage < 0.01:
-                check_early_stop_from = 40
-            elif 0.01 <= data_percentage < 0.1:
-                check_early_stop_from = 25
-            elif 0.1 <= data_percentage < 1.1:
-                check_early_stop_from = 5
+            if not include_top3:
+                iterLogger.info('\n#Data Percentage,Epoch,Test Accuracy')
+            else:
+                iterLogger.info('\n#Data Percentage,Epoch,Test Accuracy, Test Accuracy (Top-3)')
 
             chunk_size = batch_size*200
             train_size_clipped = int(train_size*data_percentage)
@@ -131,6 +137,7 @@ if __name__=='__main__':
             print('Running for %d data points'%train_size_clipped)
             train_dataset,train_labels = None,None
             max_test_accuracy = 0.0
+            max_test_accuracy_top3 = 0.0
             accuracy_drop = 0
             max_epoch = 0
             for epoch in range(num_epochs):
@@ -139,6 +146,7 @@ if __name__=='__main__':
                 filled_size = 0
 
                 test_accuracies = []
+                test_accuracies_top3  = []
                 while filled_size<train_size_clipped:
 
                     start_memmap,end_memmap = get_next_memmap_indices((train_dataset_filename,train_label_filename),chunk_size,train_size_clipped)
@@ -170,25 +178,55 @@ if __name__=='__main__':
                     train_size,valid_size = train_dataset.shape[0],valid_dataset.shape[0]
                     print('Size (train,valid) %d,%d'%(train_size,valid_size))
 
-                    test_accuracy = conv_net_plot.train_conv_net_once(session,
+                    test_accuracy,test_accuracy_top3 = conv_net_plot.train_conv_net_once(session,
                                                  {'train_dataset':train_dataset,'train_labels':train_labels,
                                                   'valid_dataset':valid_dataset,'valid_labels':valid_labels,
-                                                  'test_dataset':valid_dataset,'test_labels':valid_labels},epoch)
+                                                  'test_dataset':valid_dataset,'test_labels':valid_labels},epoch,include_top3)
                     test_accuracies.append(test_accuracy)
+                    if include_top3:
+                        test_accuracies_top3.append(test_accuracy_top3)
 
                 mean_test_accuracy = np.mean(test_accuracies)
-                test_accuracies = []
-                print('Test accuracy for epoch %d: (Now) %.1f%% (Max) %.1f%%' %(epoch,mean_test_accuracy,max_test_accuracy))
-                iterLogger.info('%.3f,%d,%.3f',data_percentage,epoch,mean_test_accuracy)
+                if include_top3:
+                    mean_test_accuracy_top3 = np.mean(test_accuracies_top3)
 
-                if mean_test_accuracy > max_test_accuracy:
-                    max_test_accuracy = mean_test_accuracy
-                    max_epoch = epoch
-                    accuracy_drop = 0
+                test_accuracies,test_accuracies_top3 = [],[]
+
+                if include_top3:
+                    print('Test accuracy for epoch %d: (Now) %.2f%% (Max) %.2f%%' %(epoch,mean_test_accuracy,max_test_accuracy))
+                    print('Test accuracy (Top-3) for epoch %d: (Now) %.2f%% (Max) %.2f%%' %(epoch,mean_test_accuracy_top3,max_test_accuracy_top3))
+                    iterLogger.info('%.3f,%d,%.3f,%.3f',data_percentage,epoch,mean_test_accuracy,mean_test_accuracy_top3)
                 else:
-                    accuracy_drop += 1
+                    print('Test accuracy for epoch %d: (Now) %.2f%% (Max) %.2f%%' %(epoch,mean_test_accuracy,max_test_accuracy))
+                    iterLogger.info('%.3f,%d,%.3f',data_percentage,epoch,mean_test_accuracy)
 
-                if epoch>check_early_stop_from and accuracy_drop>accuracy_drop_cap:
-                    print("Test accuracy saturated...")
-                    otLogger.info('%.3f,%.3f,%d',data_percentage,max_test_accuracy,max_epoch)
-                    break
+                if include_top3:
+                    if mean_test_accuracy > max_test_accuracy:
+                        max_test_accuracy = mean_test_accuracy
+
+                    if mean_test_accuracy_top3 > max_test_accuracy_top3:
+                        max_test_accuracy_top3 = mean_test_accuracy_top3
+                        max_epoch = epoch
+                        accuracy_drop = 0
+                    else:
+                        accuracy_drop += 1
+
+                    if epoch>check_early_stop_from and accuracy_drop>accuracy_drop_cap:
+                        break
+                else:
+                    if mean_test_accuracy > max_test_accuracy:
+                        max_test_accuracy = mean_test_accuracy
+                        max_epoch = epoch
+                        accuracy_drop = 0
+                    else:
+                        accuracy_drop += 1
+
+                    if epoch>check_early_stop_from and accuracy_drop>accuracy_drop_cap:
+                        break
+
+            if not include_top3:
+                print("Test accuracy saturated...")
+                otLogger.info('%.3f,%.3f,%d',data_percentage,max_test_accuracy,max_epoch)
+            else:
+                print("Test accuracy saturated...")
+                otLogger.info('%.3f,%.3f,%.3f,%d',data_percentage,max_test_accuracy,max_test_accuracy_top3,max_epoch)
