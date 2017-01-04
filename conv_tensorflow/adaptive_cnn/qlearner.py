@@ -40,7 +40,7 @@ class AdaCNNConstructionQLearner(object):
             ('C',5,1,64),('C',5,1,128),('C',5,1,256),
             ('P',2,2),('P',3,2),('P',5,2),('Terminate',0,0,0)
         ]
-        self.init_state = (0,('Init',0,0,0),self.image_size)
+        self.init_state = (-1,('Init',0,0,0),self.image_size)
 
 
     def restore_policy(self,**restore_data):
@@ -59,7 +59,7 @@ class AdaCNNConstructionQLearner(object):
         '''
 
         x = in_size
-        if op[0] is 'C' or op[0] is 'P':
+        if op[0] == 'C' or op[0] == 'P':
             s = op[2]
             x = ceil(float(x)/float(s))
 
@@ -76,7 +76,7 @@ class AdaCNNConstructionQLearner(object):
         # err_t should be calculated on something the CNN hasn't seen yet
         # err_t-1 should be calculated on something the CNN has seen (e.g mean of last 10 batches)
 
-        layer_depth = 0
+        layer_depth = self.init_state[0]
         output_size = self.image_size
 
         while layer_depth<self.upper_bound and output_size>1:
@@ -84,7 +84,9 @@ class AdaCNNConstructionQLearner(object):
             if len(prev_states) == 0 or len(prev_actions) ==0:
                 state = self.init_state
             else:
-                state = (layer_depth,prev_actions[-1],self.get_output_size(output_size,prev_actions[-1]))
+                # update output size
+                output_size = self.get_output_size(output_size,prev_actions[-1])
+                state = (layer_depth,prev_actions[-1],output_size)
                 self.rl_logger.info('Data for (Depth,Current Op,Output Size) %s'%str(state))
 
             # make sure next action stride is not larger than output.
@@ -101,8 +103,10 @@ class AdaCNNConstructionQLearner(object):
 
             # deterministic selection (if epsilon is not 1 or q is not empty)
             if np.random.random()>self.epsilon:
-                np.random.shuffle(self.actions)
-                action = max([self.q[state][a] for a in self.actions])
+                copy_actions = list(self.actions)
+                np.random.shuffle(copy_actions)
+                action_idx = np.asscalar(np.argmax([self.q[state][a] for a in self.actions]))
+                action = copy_actions[action_idx]
             # random selection
             else:
                 action = self.actions[np.random.randint(0,len(self.actions))]
@@ -110,8 +114,7 @@ class AdaCNNConstructionQLearner(object):
             prev_actions.append(action)
             prev_states.append(state)
 
-            # update output size and layer depth
-            output_size = self.get_output_size(output_size)
+            # update layer depth
             layer_depth += 1
 
         prev_states.append([layer_depth,self.actions[-1],output_size])

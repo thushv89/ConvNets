@@ -39,15 +39,15 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
     for op in cnn_ops:
         if 'conv' in op:
             weights[op] = tf.Variable(tf.truncated_normal(
-                cnn_hyps[op]['kernel'],
-                stddev=2./(cnn_hyps[op]['kernel'][0]*cnn_hyps[op]['kernel'][1])
+                cnn_hyps[op]['weights'],
+                stddev=2./(cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
             ),name=op+'_weights')
             biases[op] = tf.Variable(tf.constant(
-                np.random.random()*0.01,shape=[cnn_hyps[op]['kernel'][3]]
+                np.random.random()*0.01,shape=[cnn_hyps[op]['weights'][3]]
             ),name=op+'_bias')
 
-            print('Weights for %s initialized with size %s'%(op,str(cnn_hyps[op]['kernel'])))
-            print('Biases for %s initialized with size %d'%(op,cnn_hyps[op]['kernel'][3]))
+            print('Weights for %s initialized with size %s'%(op,str(cnn_hyps[op]['weights'])))
+            print('Biases for %s initialized with size %d'%(op,cnn_hyps[op]['weights'][3]))
 
         if 'fulcon' in op:
             weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
@@ -193,7 +193,7 @@ if __name__=='__main__':
         cnn_ops = []
         cnn_hyperparameters = {}
         last_feature_map_depth = 0 # need this to calculate the fulcon layer in size
-
+        prev_conv_hyp = None
         # building ops and hyperparameters out of states
         for state in traj_states:
             # state (layer_depth,op=(type,kernel,stride,depth),out_size)
@@ -201,10 +201,10 @@ if __name__=='__main__':
             depth_index = state[0]
             if op[0] is 'C':
                 op_id = 'conv_'+str(depth_index)
-                if depth_index==0:
+                if prev_conv_hyp is None:
                     hyps = {'weights':[op[1],op[1],num_channels,op[3]],'stride':[1,op[2],op[2],1],'padding':'SAME'}
                 else:
-                    hyps = {'weights':[op[1],op[1],prev_conv_hyp['kernel'][3],op[3]],'stride':[1,op[2],op[2],1],'padding':'SAME'}
+                    hyps = {'weights':[op[1],op[1],prev_conv_hyp['weights'][3],op[3]],'stride':[1,op[2],op[2],1],'padding':'SAME'}
 
                 cnn_ops.append(op_id)
                 cnn_hyperparameters[op_id]=hyps
@@ -216,7 +216,7 @@ if __name__=='__main__':
                 hyps = {'type':'max','kernel':[1,op[1],op[1],1],'stride':[1,op[2],op[2],1],'padding':'SAME'}
                 cnn_ops.append(op_id)
                 cnn_hyperparameters[op_id]=hyps
-            elif op[0] is 'Terminate':
+            elif op[0] == 'Terminate':
                 output_size = traj_states[-2][2]
                 if output_size>1:
                     cnn_ops.append('pool_global')
@@ -226,7 +226,12 @@ if __name__=='__main__':
                 hyps = {'in':output_size*output_size*last_feature_map_depth,'out':num_labels}
                 cnn_ops.append(op_id)
                 cnn_hyperparameters[op_id]=hyps
+            elif op[0] == 'Init':
+                continue
             else:
+                print('='*60)
+                print(op[0])
+                print('='*60)
                 raise NotImplementedError
 
         weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
@@ -247,8 +252,6 @@ if __name__=='__main__':
             # Valid data
             tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
             tf_valid_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
-
-            weights,biases = initialize_cnn_with_ops() #initialize the initial conv net
 
             logits = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
             loss = calc_loss(logits,tf_labels)
