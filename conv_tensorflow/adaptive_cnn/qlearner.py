@@ -22,6 +22,7 @@ class AdaCNNConstructionQLearner(object):
         self.upper_bound = params['upper_bound']
         self.q = {} #store Q values
         self.epsilon = params['epsilon']
+        self.experiance_dict = {}
         self.rl_logger = logging.getLogger('Discreet Policy Logger')
         self.rl_logger.setLevel(logging_level)
         console = logging.StreamHandler(sys.stdout)
@@ -30,13 +31,16 @@ class AdaCNNConstructionQLearner(object):
         self.rl_logger.addHandler(console)
 
         self.local_time_stamp = 0
+        # all the available actions
+        # 'C',r,s,d => rxr convolution with sxs stride with d feature maps
+        # 'P',r,s => max pooling with rxr window size and sxs stride
         self.actions = [
             ('C',1,1,64),('C',1,1,128),('C',1,1,256),
             ('C',3,1,64),('C',3,1,128),('C',3,1,256),
             ('C',5,1,64),('C',5,1,128),('C',5,1,256),
             ('P',2,2),('P',3,2),('P',5,2),('Terminate',0,0,0)
         ]
-        self.init_state = [0,('Init',0,0,0),self.image_size]
+        self.init_state = (0,('Init',0,0,0),self.image_size)
 
 
     def restore_policy(self,**restore_data):
@@ -61,14 +65,13 @@ class AdaCNNConstructionQLearner(object):
 
         return x
 
-    def output_trajectory(self, global_time_stamp, data):
+    def output_trajectory(self):
 
         prev_actions = [] # all the actions belonging to a output trajectory
         prev_states = [] # all the states belonging to a output trajectory
 
         # State => Layer_Depth,Operation,Output_Size
 
-        self.rl_logger.info('\n============== Policy Output for %d (Epoch: %d) ==============='%(self.local_time_stamp,global_time_stamp))
         # Errors (current and previous) used to calculate reward
         # err_t should be calculated on something the CNN hasn't seen yet
         # err_t-1 should be calculated on something the CNN has seen (e.g mean of last 10 batches)
@@ -81,12 +84,20 @@ class AdaCNNConstructionQLearner(object):
             if len(prev_states) == 0 or len(prev_actions) ==0:
                 state = self.init_state
             else:
-                state = (layer_depth,prev_actions[-1],self.get_output_size(output_size))
+                state = (layer_depth,prev_actions[-1],self.get_output_size(output_size,prev_actions[-1]))
                 self.rl_logger.info('Data for (Depth,Current Op,Output Size) %s'%str(state))
 
+            # make sure next action stride is not larger than output.
+            # For this there could be two solutions. Break the loop or try for few times.
+            # Currently breaks the loop
+            if len(prev_actions)>0 and self.get_output_size(output_size,prev_actions[-1])>state[2]:
+                break
+
             if state not in self.q:
+                act_dict = {}
                 for a in self.actions:
-                    self.q[state][a] = 0
+                    act_dict[a] = 0
+                self.q[state]=act_dict
 
             # deterministic selection (if epsilon is not 1 or q is not empty)
             if np.random.random()>self.epsilon:
@@ -95,12 +106,6 @@ class AdaCNNConstructionQLearner(object):
             # random selection
             else:
                 action = self.actions[np.random.randint(0,len(self.actions))]
-
-            # make sure next action stride is not larger than output.
-            # For this there could be two solutions. Break the loop or try for few times.
-            # Currently breaks the loop
-            if action[2]>state[2]:
-                break
 
             prev_actions.append(action)
             prev_states.append(state)
@@ -118,12 +123,12 @@ class AdaCNNConstructionQLearner(object):
     def update_policy(self,data):
         '''
         Update the policy
-        :param data: ['err_t']['err_t-1']['trajectory']
+        :param data: ['accuracy']['trajectory']
         :return:
         '''
 
-        err_t = float(data['error_t'])/100.0
-        reward = -err_t
+        acc = float(data['accuracy'])/100.0
+        reward = acc
 
         self.rl_logger.info("Reward for trajectory: %.3f"%reward)
 
