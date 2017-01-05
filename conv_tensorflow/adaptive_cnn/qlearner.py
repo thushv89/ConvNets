@@ -84,17 +84,12 @@ class AdaCNNConstructionQLearner(object):
             if len(prev_states) == 0 or len(prev_actions) ==0:
                 state = self.init_state
             else:
-                # update output size
+                # update output size. This is the output of the current state
                 output_size = self.get_output_size(output_size,prev_actions[-1])
                 state = (layer_depth,prev_actions[-1],output_size)
                 self.rl_logger.info('Data for (Depth,Current Op,Output Size) %s'%str(state))
 
-            # make sure next action stride is not larger than output.
-            # For this there could be two solutions. Break the loop or try for few times.
-            # Currently breaks the loop
-            if len(prev_actions)>0 and self.get_output_size(output_size,prev_actions[-1])>state[2]:
-                break
-
+            # initializing q values to zero
             if state not in self.q:
                 act_dict = {}
                 for a in self.actions:
@@ -103,24 +98,101 @@ class AdaCNNConstructionQLearner(object):
 
             # deterministic selection (if epsilon is not 1 or q is not empty)
             if np.random.random()>self.epsilon:
+                self.rl_logger.debug('Choosing action deterministic...')
                 copy_actions = list(self.actions)
                 np.random.shuffle(copy_actions)
                 action_idx = np.asscalar(np.argmax([self.q[state][a] for a in self.actions]))
                 action = copy_actions[action_idx]
+                self.rl_logger.debug('\tChose: %s'%str(action))
+                # If action Terminate received, we set it to None. Coz at the end we add terminate anyway
+                if action[0] == 'Terminate':
+                    action = None
+                    self.rl_logger.debug('\tTerminate action selected. Terminating Loop')
+                    break
+                # ================= Look ahead 1 step (Validate Predicted Action) =========================
+                # make sure predicted action stride is not larger than resulting output.
+                # make sure predicted kernel size is not larger than the resulting output
+                # To avoid such scenarios we create a restricted action space if this happens and chose from that
+                restricted_action_space = list(self.actions)
+                predicted_kernel_size = action[1]
+                predicted_stride = action[2]
+                next_output_size =self.get_output_size(output_size,action)
+
+                while next_output_size<predicted_stride or next_output_size<predicted_kernel_size:
+                    self.rl_logger.debug('\tAction %s is not valid (Predicted output size: %d). '%(str(action),next_output_size))
+                    restricted_action_space.remove(action)
+                    # if we do not have any more possible actions
+                    if len(restricted_action_space)==0:
+                        action = None
+                        break
+                    action_idx = np.asscalar(np.argmax([self.q[state][a] for a in restricted_action_space]))
+                    action = restricted_action_space[action_idx]
+                    # update kernel,stride,output_size accordingly
+                    predicted_kernel_size = action[1]
+                    predicted_stride = action[2]
+                    next_output_size =self.get_output_size(output_size,action)
+
             # random selection
             else:
+                self.rl_logger.debug('Choosing action stochastic...')
                 action = self.actions[np.random.randint(0,len(self.actions))]
+                self.rl_logger.debug('\tChose: %s'%str(action))
+                # If action Terminate received, we set it to None. Coz at the end we add terminate anyway
+                if action[0] == 'Terminate':
+                    action = None
+                    self.rl_logger.debug('\tTerminate action selected. Terminating Loop')
+                    break
 
-            prev_actions.append(action)
-            prev_states.append(state)
+                # ================= Look ahead 1 step (Validate Predicted Action) =========================
+                # make sure predicted action stride is not larger than resulting output.
+                # make sure predicted kernel size is not larger than the resulting output
+                # To avoid such scenarios we create a restricted action space if this happens
+                restricted_action_space = list(self.actions)
+                predicted_kernel_size = action[1]
+                predicted_stride = action[2]
+                next_output_size =self.get_output_size(output_size,action)
 
-            # update layer depth
-            layer_depth += 1
+                while next_output_size<predicted_stride or next_output_size<predicted_kernel_size:
+                    self.rl_logger.debug('\tAction %s is not valid (Predicted output size: %d). '%(str(action),next_output_size))
+                    restricted_action_space.remove(action)
+                    # if we do not have any more possible actions
+                    if len(restricted_action_space)==0:
+                        action = None
+                        break
 
-        prev_states.append([layer_depth,self.actions[-1],output_size])
+                    action_idx = np.asscalar(np.argmax([self.q[state][a] for a in restricted_action_space]))
+                    action = restricted_action_space[action_idx]
+                    # update kernel,stride,output_size accordingly
+                    predicted_kernel_size = action[1]
+                    predicted_stride = action[2]
+                    next_output_size =self.get_output_size(output_size,action)
+
+            self.rl_logger.debug('Finally Selected action: %s'%str(action))
+            # if a valid state is found
+            if action is not None:
+                prev_actions.append(action)
+                prev_states.append(state)
+
+                # update layer depth
+                layer_depth += 1
+            # if valid state not found
+            else:
+                break
+
+        # Terminal State
+        terminal_state = (layer_depth,self.actions[-1],output_size)
+        prev_states.append(terminal_state)
+        # this q value represents terminating network at different depths
+        if terminal_state not in self.q:
+            self.q[terminal_state]={self.actions[-1]:0}
+            self.rl_logger.debug('Added terminal state %s to Q with value (%s)'%(str(terminal_state),str(self.actions[-1])))
+
         # decay epsilon
         self.epsilon = max(self.epsilon*0.9,0.1)
-
+        self.rl_logger.debug('='*60)
+        self.rl_logger.debug('States')
+        self.rl_logger.debug(prev_states)
+        self.rl_logger.debug('='*60)
         return prev_states
 
     def update_policy(self,data):
@@ -139,12 +211,15 @@ class AdaCNNConstructionQLearner(object):
             state = data['trajectory'][t_i]
             next_state = data['trajectory'][t_i+1]
             action = next_state[1]
-
+            self.rl_logger.debug('Updating Q for ...')
+            self.rl_logger.debug('\tCurrent State: %s'%str(state))
+            self.rl_logger.debug('\tAction Taken: %s'%str(action))
+            self.rl_logger.debug('\tNext State: %s'%str(next_state))
             # Bellman's equation (iterative)
             # si-prev state, a-action_taken, sj-next state
             # Q(t+1)(si,a) = (1-alp)*Q(t)(si,a) + alp*[r(t)+gam*max(Q(t)(sj,a'))]
             self.q[state][action] = (1-self.learning_rate)*self.q[state][action] +\
-                self.learning_rate*(reward+self.discount_rate*np.max([self.q[next_state][a] for a in self.actions]))
+                self.learning_rate*(reward+self.discount_rate*np.max([self.q[next_state][a] for a in self.q[next_state].keys()]))
 
         self.rl_logger.info('\tUpdated the Q values ...')
 

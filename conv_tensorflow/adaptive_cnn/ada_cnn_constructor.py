@@ -19,7 +19,7 @@ logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
 
-start_lr = 0.001
+start_lr = 0.0001
 decay_learning_rate = True
 
 #dropout seems to be making it impossible to learn
@@ -27,10 +27,38 @@ decay_learning_rate = True
 dropout_rate = 0.25
 use_dropout = False
 
-include_l2_loss = True
+include_l2_loss = False
 #keep beta small (0.2 is too much >0.002 seems to be fine)
 beta = 1e-5
 
+def get_final_x(cnn_ops,cnn_hyps):
+    '''
+    Takes a new operations and concat with existing set of operations
+    then output what the final output size will be
+    :param op_list: list of operations
+    :param hyp: Hyperparameters fo the operation
+    :return: a tuple (width,height) of x
+    '''
+
+    x = image_size
+    for op in cnn_ops:
+        hyp_op = cnn_hyps[op]
+        if 'conv' in op:
+            f = hyp_op['weights'][0]
+            s = hyp_op['stride'][1]
+
+            x = ceil(float(x)/float(s))
+        elif 'pool' in op:
+            if hyp_op['padding']=='SAME':
+                f = hyp_op['kernel'][1]
+                s = hyp_op['stride'][1]
+                x = ceil(float(x)/float(s))
+            elif hyp_op['padding']=='VALID':
+                f = hyp_op['kernel'][1]
+                s = hyp_op['stride'][1]
+                x = ceil(float(x - f + 1)/float(s))
+
+    return x
 
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
     weights,biases = {},{}
@@ -40,7 +68,7 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
         if 'conv' in op:
             weights[op] = tf.Variable(tf.truncated_normal(
                 cnn_hyps[op]['weights'],
-                stddev=2./(cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
+                stddev=2./max(20,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
             ),name=op+'_weights')
             biases[op] = tf.Variable(tf.constant(
                 np.random.random()*0.01,shape=[cnn_hyps[op]['weights'][3]]
@@ -101,9 +129,9 @@ def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
     shape = x.get_shape().as_list()
     rows = shape[0]
 
-    fin_xw,fin_xh = get_final_x(None,None)
-    logger.debug("My calculation, TensorFlow calculation: (%d,%d), (%d,%d)"%(fin_xw,fin_xh,shape[1],shape[2]))
-    assert fin_xw == shape[1] and fin_xh == shape[2]
+    fin_x = get_final_x(cnn_ops,cnn_hyps)
+    logger.debug("My calculation, TensorFlow calculation: %d, %d"%(fin_x,shape[1]))
+    assert fin_x == shape[1]
 
     print('Unwrapping last convolution layer %s to %s hidden layer'%(shape,(rows,cnn_hyps['fulcon_out']['in'])))
     x = tf.reshape(x, [rows,cnn_hyps['fulcon_out']['in']])
@@ -150,6 +178,7 @@ def predict_with_dataset(dataset,cnn_ops,cnn_hyps,weights,biases):
     return prediction
 
 def accuracy(predictions, labels):
+
     assert predictions.shape[0]==labels.shape[0]
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
@@ -181,12 +210,16 @@ if __name__=='__main__':
     train_dataset,train_labels = dataset[:75*batch_size,:,:,:],labels[:75*batch_size,:]
     valid_dataset,valid_labels = dataset[75*batch_size:100*batch_size,:,:,:],labels[75*batch_size:100*batch_size,:]
     train_size,valid_size = train_dataset.shape[0],valid_dataset.shape[0]
+    logger.info('='*80)
+    logger.info('\tTrain Size: %d'%train_size)
+    logger.info('\tValid Size: %d'%valid_size)
+    logger.info('='*80)
 
     policy_iterations = 50
-    construction_epochs = 10
+    construction_epochs = 20
 
     #Construction Policy Learner
-    constructor = qlearner.AdaCNNConstructionQLearner(learning_rate=0.1,discount_rate=0.99,image_size=image_size,upper_bound=8,epsilon=0.99)
+    constructor = qlearner.AdaCNNConstructionQLearner(learning_rate=0.1,discount_rate=0.99,image_size=image_size,upper_bound=10,epsilon=0.99)
 
     for pIter in range(policy_iterations):
         traj_states = constructor.output_trajectory()
@@ -199,7 +232,7 @@ if __name__=='__main__':
             # state (layer_depth,op=(type,kernel,stride,depth),out_size)
             op = state[1] # op => type,kernel,stride,depth
             depth_index = state[0]
-            if op[0] is 'C':
+            if op[0] == 'C':
                 op_id = 'conv_'+str(depth_index)
                 if prev_conv_hyp is None:
                     hyps = {'weights':[op[1],op[1],num_channels,op[3]],'stride':[1,op[2],op[2],1],'padding':'SAME'}
@@ -211,19 +244,25 @@ if __name__=='__main__':
                 prev_conv_hyp = hyps # need this to set the input depth for a conv layer
                 last_feature_map_depth = op[3]
 
-            elif op[0] is 'P':
+            elif op[0] == 'P':
                 op_id = 'pool_'+str(depth_index)
                 hyps = {'type':'max','kernel':[1,op[1],op[1],1],'stride':[1,op[2],op[2],1],'padding':'SAME'}
                 cnn_ops.append(op_id)
                 cnn_hyperparameters[op_id]=hyps
             elif op[0] == 'Terminate':
-                output_size = traj_states[-2][2]
+                if len(traj_states)>1:
+                    output_size = traj_states[-2][2]
+                # this could happen if we get terminal state without any other states in trajectory
+                else:
+                    output_size = image_size
                 if output_size>1:
                     cnn_ops.append('pool_global')
                     pg_hyps =  {'type':'avg','kernel':[1,output_size,output_size,1],'stride':[1,1,1,1],'padding':'VALID'}
+                    cnn_hyperparameters['pool_global']=pg_hyps
 
                 op_id = 'fulcon_out'
-                hyps = {'in':output_size*output_size*last_feature_map_depth,'out':num_labels}
+                hyps = {'in':1*1*last_feature_map_depth,'out':num_labels}
+                assert last_feature_map_depth>0
                 cnn_ops.append(op_id)
                 cnn_hyperparameters[op_id]=hyps
             elif op[0] == 'Init':
@@ -234,24 +273,24 @@ if __name__=='__main__':
                 print('='*60)
                 raise NotImplementedError
 
-        weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
+
 
         graph = tf.Graph()
 
         with tf.Session(graph=graph,config = tf.ConfigProto(allow_soft_placement=True)) as session, tf.device('/gpu:0'):
+
+            weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
+
             global_step = tf.Variable(0, trainable=False)
 
             logger.info('Input data defined...\n')
             # Input train data
-            tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-            tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
-
-            tf_pool_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-            tf_pool_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+            tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TrainDataset')
+            tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TrainLabels')
 
             # Valid data
-            tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-            tf_valid_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+            tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='ValidDataset')
+            tf_valid_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='ValidLabels')
 
             logits = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
             loss = calc_loss(logits,tf_labels)
@@ -265,7 +304,9 @@ if __name__=='__main__':
             tf.initialize_all_variables().run()
 
             for cEpoch in range(construction_epochs):
-                for batch_id in range(ceil(train_size//batch_size)-1):
+                train_losses = []
+                mean_train_loss = 0
+                for batch_id in range(ceil(train_size//batch_size)):
 
                     batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
                     batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
@@ -274,9 +315,19 @@ if __name__=='__main__':
                     _, l, (_,updated_lr), predictions = session.run(
                             [logits,loss,optimize,pred], feed_dict=feed_dict
                     )
+                    if np.isnan(l):
+                        logger.critical('NaN detected: (eEpoch,batchID)'%(cEpoch,batch_id))
+                    assert not np.isnan(l)
+                    train_losses.append(l)
+
+                mean_train_loss = np.mean(train_losses)
+                logger.info('='*80)
+                logger.info('\tEpoch: %d'%cEpoch)
+                logger.info('\tLearning rate: %.5f'%updated_lr)
+                logger.info('\tMinibatch Mean Loss: %.3f'%mean_train_loss)
 
                 full_valid_predictions = None
-                for vbatch_id in range(ceil(train_size//batch_size)-1):
+                for vbatch_id in range(ceil(valid_size//batch_size)):
                     # validation batch
                     batch_valid_data = valid_dataset[vbatch_id*batch_size:(vbatch_id+1)*batch_size, :, :, :]
                     batch_valid_labels = valid_labels[vbatch_id*batch_size:(vbatch_id+1)*batch_size, :]
@@ -290,6 +341,9 @@ if __name__=='__main__':
                         full_valid_predictions = np.append(full_valid_predictions,valid_predictions[0],axis=0)
 
                 valid_accuracy = accuracy(full_valid_predictions, valid_labels)
+                logger.info('\tValid Accuracy: %.3f'%valid_accuracy)
+                logger.info('='*80)
+
                 _ = session.run([inc_gstep])
 
             del weights,biases
