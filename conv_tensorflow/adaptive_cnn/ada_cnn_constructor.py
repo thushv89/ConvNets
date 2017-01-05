@@ -385,11 +385,13 @@ if __name__=='__main__':
                 valid_accuracy = 0.0
             constructor.update_policy({'accuracy':valid_accuracy,'trajectory':traj_states})
 
-            mean_best_half_accuracy = np.mean(
-                np.asarray(half_valid_accuracy_log)[
-                    np.argsort(np.asarray(half_valid_accuracy_log))[len(half_valid_accuracy_log)-10:len(half_valid_accuracy_log)]
-                ]
-            )
+            if len(half_valid_accuracy_log)>5:
+                mean_best_half_accuracy = np.mean(
+                    np.asarray(half_valid_accuracy_log)[
+                        np.argsort(np.asarray(half_valid_accuracy_log))[len(half_valid_accuracy_log)-10:len(half_valid_accuracy_log)]
+                    ]
+                )
+
             logger.debug('='*40)
             logger.debug('Mean best: %.3f'%mean_best_half_accuracy)
             logger.debug('='*40)
