@@ -52,7 +52,8 @@ class AdaCNNConstructionQLearner(object):
             ('C',1,1,64),('C',1,1,128),('C',1,1,256),
             ('C',3,1,64),('C',3,1,128),('C',3,1,256),
             ('C',5,1,64),('C',5,1,128),('C',5,1,256),
-            ('P',2,2,0),('P',3,2,0),('P',5,2,0),('Terminate',0,0,0)
+            ('P',2,2,0),('P',3,2,0),('P',5,2,0),
+            ('Terminate',0,0,0)
         ]
         self.init_state = (-1,('Init',0,0,0),self.image_size)
 
@@ -261,11 +262,12 @@ class AdaCNNConstructionQLearner(object):
         if self.local_time_stamp%25==0:
             with open(self.persist_dir+os.sep+'experience_'+str(self.local_time_stamp)+'.pickle','wb') as f:
                 pickle.dump(self.experiance_tuples, f, pickle.HIGHEST_PROTOCOL)
-        if self.local_time_stamp%5==0:
-            net_string = ''
-            for s in data['trajectory']:
-                net_string += '#'+s[1][0]+','+str(s[1][1])+','+str(s[1][2])+','+str(s[1][3])
-            self.best_policy_logger.info("%d,%s,%.3f",self.local_time_stamp,net_string,data['accuracy'])
+
+        # log every structure proposed
+        net_string = ''
+        for s in data['trajectory']:
+            net_string += '#'+s[1][0]+','+str(s[1][1])+','+str(s[1][2])+','+str(s[1][3])
+        self.best_policy_logger.info("%d,%s,%.3f",self.local_time_stamp,net_string,data['accuracy'])
 
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action

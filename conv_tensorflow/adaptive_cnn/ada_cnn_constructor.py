@@ -13,23 +13,28 @@ import time
 import qlearner
 from data_pool import Pool
 
+##################################################################
+# AdaCNN Constructor
+# ===============================================================
+# AdaCNN constructor looks at a small sample (e.g. 10000) of a large dataset
+# Then runs e-greedy Q-Learn for different CNN models with a validation accuracy as the reward
+##################################################################
+
 logger = None
 logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-
 start_lr = 0.0001
 decay_learning_rate = True
-
-#dropout seems to be making it impossible to learn
-#maybe only works for large nets
 dropout_rate = 0.25
 use_dropout = False
-
-include_l2_loss = False
 #keep beta small (0.2 is too much >0.002 seems to be fine)
+include_l2_loss = False
 beta = 1e-5
+check_early_stopping_from = 5
+accuracy_drop_cap = 3
+
 
 def get_final_x(cnn_ops,cnn_hyps):
     '''
@@ -59,6 +64,7 @@ def get_final_x(cnn_ops,cnn_hyps):
                 x = ceil(float(x - f + 1)/float(s))
 
     return x
+
 
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
     weights,biases = {},{}
@@ -91,6 +97,7 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
             logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['out'])
 
     return weights,biases
+
 
 def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
     logger.info('Current set of operations: %s'%cnn_ops)
@@ -136,6 +143,7 @@ def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
 
     return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out']
 
+
 def calc_loss(logits,labels):
     # Training computation.
     if include_l2_loss:
@@ -146,8 +154,10 @@ def calc_loss(logits,labels):
 
     return loss
 
+
 def calc_loss_vector(logits,labels):
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
+
 
 def optimize_func(loss,global_step):
     # Optimizer.
@@ -159,24 +169,28 @@ def optimize_func(loss,global_step):
     optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss)
     return optimizer,learning_rate
 
+
 def optimize_with_fixed_lr_func(loss,learning_rate):
     optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss)
     return optimizer
 
+
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
+
 
 def predict_with_logits(logits):
     # Predictions for the training, validation, and test data.
     prediction = tf.nn.softmax(logits)
     return prediction
 
+
 def predict_with_dataset(dataset,cnn_ops,cnn_hyps,weights,biases):
     prediction = tf.nn.softmax(get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases))
     return prediction
 
-def accuracy(predictions, labels):
 
+def accuracy(predictions, labels):
     assert predictions.shape[0]==labels.shape[0]
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
@@ -213,11 +227,14 @@ if __name__=='__main__':
     logger.info('\tValid Size: %d'%valid_size)
     logger.info('='*80)
 
-    policy_iterations = 51
+    policy_iterations = 101
     construction_epochs = 11
 
     #Construction Policy Learner
     constructor = qlearner.AdaCNNConstructionQLearner(learning_rate=0.1,discount_rate=0.99,image_size=image_size,upper_bound=10,epsilon=0.99)
+
+    half_valid_accuracy_log = []
+    mean_best_half_accuracy = 0.0
 
     for pIter in range(policy_iterations):
         logger.info('='*80)
@@ -299,6 +316,8 @@ if __name__=='__main__':
 
             tf.initialize_all_variables().run()
 
+            prev_valid_accuracy = 0
+            acc_drop_count = 0
             for cEpoch in range(construction_epochs):
                 train_losses = []
                 mean_train_loss = 0
@@ -337,11 +356,40 @@ if __name__=='__main__':
                         full_valid_predictions = np.append(full_valid_predictions,valid_predictions[0],axis=0)
 
                 valid_accuracy = accuracy(full_valid_predictions, valid_labels)
+
+                # accuracy after half of epochs
+                if cEpoch == int(construction_epochs//2):
+                    half_valid_accuracy_log.append(valid_accuracy)
+
                 logger.info('\tValid Accuracy: %.3f'%valid_accuracy)
                 logger.info('='*40)
-
                 _ = session.run([inc_gstep])
+
+                prev_valid_accuracy = valid_accuracy
+                if cEpoch>check_early_stopping_from and prev_valid_accuracy>valid_accuracy:
+                    acc_drop_count += 1
+
+                # Early stopping conditions
+                # Consecutive accuracy_drop_cap accuracy drops
+                # after half the epochs, valid accuracy is below the average best half accuracies
+                if cEpoch>check_early_stopping_from and \
+                    (acc_drop_count>accuracy_drop_cap or valid_accuracy<mean_best_half_accuracy):
+                    logger.info('Terminating Training.')
+                    logger.info('\tValid Accuracy: %.2f Mean Best: %.2f',valid_accuracy,mean_best_half_accuracy)
+                    logger.info('\tAccuracy Drop Count: %d',acc_drop_count)
+                    break
 
             del weights,biases
             logger.info('='*80)
+            if valid_accuracy<100.0/float(num_labels):
+                valid_accuracy = 0.0
             constructor.update_policy({'accuracy':valid_accuracy,'trajectory':traj_states})
+
+            mean_best_half_accuracy = np.mean(
+                np.asarray(half_valid_accuracy_log)[
+                    np.argsort(np.asarray(half_valid_accuracy_log))[len(half_valid_accuracy_log)-10:len(half_valid_accuracy_log)]
+                ]
+            )
+            logger.debug('='*40)
+            logger.debug('Mean best: %.3f'%mean_best_half_accuracy)
+            logger.debug('='*40)
