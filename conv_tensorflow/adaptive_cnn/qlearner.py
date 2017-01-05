@@ -9,6 +9,9 @@ import random
 import logging
 import sys
 from math import ceil
+from six.moves import cPickle as pickle
+import os
+
 logging_level = logging.DEBUG
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
 
@@ -22,13 +25,24 @@ class AdaCNNConstructionQLearner(object):
         self.upper_bound = params['upper_bound']
         self.q = {} #store Q values
         self.epsilon = params['epsilon']
-        self.experiance_dict = {}
+        self.experiance_tuples = []
         self.rl_logger = logging.getLogger('Discreet Policy Logger')
         self.rl_logger.setLevel(logging_level)
         console = logging.StreamHandler(sys.stdout)
         console.setFormatter(logging.Formatter(logging_format))
         console.setLevel(logging_level)
         self.rl_logger.addHandler(console)
+
+        self.persist_dir = 'constructor_rl' # various things we persist related to ConstructorRL
+        if not os.path.exists(self.persist_dir):
+            os.makedirs(self.persist_dir)
+
+        # Log the output every few epochs
+        self.best_policy_logger = logging.getLogger('best_policy_logger')
+        self.best_policy_logger.setLevel(logging.INFO)
+        bpfileHandler = logging.FileHandler(self.persist_dir+os.sep+'best_policy_log', mode='w')
+        bpfileHandler.setFormatter(logging.Formatter('%(message)s'))
+        self.best_policy_logger.addHandler(bpfileHandler)
 
         self.local_time_stamp = 0
         # all the available actions
@@ -38,7 +52,7 @@ class AdaCNNConstructionQLearner(object):
             ('C',1,1,64),('C',1,1,128),('C',1,1,256),
             ('C',3,1,64),('C',3,1,128),('C',3,1,256),
             ('C',5,1,64),('C',5,1,128),('C',5,1,256),
-            ('P',2,2),('P',3,2),('P',5,2),('Terminate',0,0,0)
+            ('P',2,2,0),('P',3,2,0),('P',5,2,0),('Terminate',0,0,0)
         ]
         self.init_state = (-1,('Init',0,0,0),self.image_size)
 
@@ -193,6 +207,7 @@ class AdaCNNConstructionQLearner(object):
         self.rl_logger.debug('States')
         self.rl_logger.debug(prev_states)
         self.rl_logger.debug('='*60)
+
         return prev_states
 
     def update_policy(self,data):
@@ -201,6 +216,7 @@ class AdaCNNConstructionQLearner(object):
         :param data: ['accuracy']['trajectory']
         :return:
         '''
+        self.experiance_tuples.append((data['trajectory'],data['accuracy']))
 
         acc = float(data['accuracy'])/100.0
         reward = acc
@@ -221,7 +237,35 @@ class AdaCNNConstructionQLearner(object):
             self.q[state][action] = (1-self.learning_rate)*self.q[state][action] +\
                 self.learning_rate*(reward+self.discount_rate*np.max([self.q[next_state][a] for a in self.q[next_state].keys()]))
 
+        # Replay experiance
+        if np.random.random()<0.1:
+            self.rl_logger.debug('Replaying Experience')
+            for traj,acc in self.experiance_tuples:
+                exp_reward = acc
+                for t_i in range(len(traj)-1):
+                    state = traj[t_i]
+                    next_state = traj[t_i+1]
+                    action = next_state[1]
+                    # Bellman's equation (iterative)
+                    # si-prev state, a-action_taken, sj-next state
+                    # Q(t+1)(si,a) = (1-alp)*Q(t)(si,a) + alp*[r(t)+gam*max(Q(t)(sj,a'))]
+                    self.q[state][action] = (1-self.learning_rate)*self.q[state][action] +\
+                        self.learning_rate*(exp_reward+self.discount_rate*np.max([self.q[next_state][a] for a in self.q[next_state].keys()]))
+
         self.rl_logger.info('\tUpdated the Q values ...')
+        self.local_time_stamp += 1
+
+        if self.local_time_stamp%10==0:
+            with open(self.persist_dir+os.sep+'Q_'+str(self.local_time_stamp)+'.pickle','wb') as f:
+                pickle.dump(self.q, f, pickle.HIGHEST_PROTOCOL)
+        if self.local_time_stamp%25==0:
+            with open(self.persist_dir+os.sep+'experience_'+str(self.local_time_stamp)+'.pickle','wb') as f:
+                pickle.dump(self.experiance_tuples, f, pickle.HIGHEST_PROTOCOL)
+        if self.local_time_stamp%5==0:
+            net_string = ''
+            for s in data['trajectory']:
+                net_string += '#'+s[1][0]+','+str(s[1][1])+','+str(s[1][2])+','+str(s[1][3])
+            self.best_policy_logger.info("%d,%s,%.3f",self.local_time_stamp,net_string,data['accuracy'])
 
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action

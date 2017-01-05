@@ -14,7 +14,7 @@ import qlearner
 from data_pool import Pool
 
 logger = None
-logging_level = logging.DEBUG
+logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
@@ -74,8 +74,8 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
                 np.random.random()*0.01,shape=[cnn_hyps[op]['weights'][3]]
             ),name=op+'_bias')
 
-            print('Weights for %s initialized with size %s'%(op,str(cnn_hyps[op]['weights'])))
-            print('Biases for %s initialized with size %d'%(op,cnn_hyps[op]['weights'][3]))
+            logger.debug('Weights for %s initialized with size %s',op,str(cnn_hyps[op]['weights']))
+            logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['weights'][3])
 
         if 'fulcon' in op:
             weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
@@ -86,12 +86,10 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
                 np.random.random()*0.01,shape=[cnn_hyps[op]['out']]
             ),name=op+'_bias')
 
-            print('Weights for %s initialized with size %d,%d'%(
-                op,cnn_hyps[op]['in'],cnn_hyps[op]['out']
-            ))
-            print('Biases for %s initialized with size %d'%(
-                op,cnn_hyps[op]['out']
-            ))
+            logger.debug('Weights for %s initialized with size %d,%d',
+                op,cnn_hyps[op]['in'],cnn_hyps[op]['out'])
+            logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['out'])
+
     return weights,biases
 
 def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
@@ -215,17 +213,19 @@ if __name__=='__main__':
     logger.info('\tValid Size: %d'%valid_size)
     logger.info('='*80)
 
-    policy_iterations = 50
-    construction_epochs = 20
+    policy_iterations = 51
+    construction_epochs = 11
 
     #Construction Policy Learner
     constructor = qlearner.AdaCNNConstructionQLearner(learning_rate=0.1,discount_rate=0.99,image_size=image_size,upper_bound=10,epsilon=0.99)
 
     for pIter in range(policy_iterations):
+        logger.info('='*80)
+        logger.info('Policy Iteration: %d'%pIter)
         traj_states = constructor.output_trajectory()
         cnn_ops = []
         cnn_hyperparameters = {}
-        last_feature_map_depth = 0 # need this to calculate the fulcon layer in size
+        last_feature_map_depth = num_channels # need this to calculate the fulcon layer in size
         prev_conv_hyp = None
         # building ops and hyperparameters out of states
         for state in traj_states:
@@ -262,21 +262,17 @@ if __name__=='__main__':
 
                 op_id = 'fulcon_out'
                 hyps = {'in':1*1*last_feature_map_depth,'out':num_labels}
-                assert last_feature_map_depth>0
                 cnn_ops.append(op_id)
                 cnn_hyperparameters[op_id]=hyps
             elif op[0] == 'Init':
                 continue
             else:
-                print('='*60)
+                print('='*40)
                 print(op[0])
-                print('='*60)
+                print('='*40)
                 raise NotImplementedError
 
-
-
         graph = tf.Graph()
-
         with tf.Session(graph=graph,config = tf.ConfigProto(allow_soft_placement=True)) as session, tf.device('/gpu:0'):
 
             weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
@@ -321,7 +317,7 @@ if __name__=='__main__':
                     train_losses.append(l)
 
                 mean_train_loss = np.mean(train_losses)
-                logger.info('='*80)
+                logger.info('='*40)
                 logger.info('\tEpoch: %d'%cEpoch)
                 logger.info('\tLearning rate: %.5f'%updated_lr)
                 logger.info('\tMinibatch Mean Loss: %.3f'%mean_train_loss)
@@ -342,9 +338,10 @@ if __name__=='__main__':
 
                 valid_accuracy = accuracy(full_valid_predictions, valid_labels)
                 logger.info('\tValid Accuracy: %.3f'%valid_accuracy)
-                logger.info('='*80)
+                logger.info('='*40)
 
                 _ = session.run([inc_gstep])
 
             del weights,biases
+            logger.info('='*80)
             constructor.update_policy({'accuracy':valid_accuracy,'trajectory':traj_states})
