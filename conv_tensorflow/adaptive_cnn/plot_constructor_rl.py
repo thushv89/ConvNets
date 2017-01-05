@@ -8,7 +8,7 @@ import numpy as np
 constructor_dir = 'constructor_rl'
 
 Q = {}
-for i in range(10,41,10):
+for i in range(100,101,10):
     with open(constructor_dir+os.sep+'Q_'+str(i)+'.pickle','rb') as f:
         Q[i] = pickle.load(f)
 
@@ -28,7 +28,7 @@ if __name__ == '__main__':
     #ax3 = axarr[2]
 
     x_axis = np.arange(max_depth)
-    q_10 =  Q[20]
+    q_10 =  Q[100]
     # {action => {layer_depth => list_of_q_values}}
     list_q_for_action_by_depth = {}
     for state,action_dict in q_10.items():
