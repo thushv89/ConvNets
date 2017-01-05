@@ -28,7 +28,7 @@ if __name__ == '__main__':
     #ax3 = axarr[2]
 
     x_axis = np.arange(max_depth)
-    q_10 =  Q[40]
+    q_10 =  Q[20]
     # {action => {layer_depth => list_of_q_values}}
     list_q_for_action_by_depth = {}
     for state,action_dict in q_10.items():

@@ -273,20 +273,20 @@ class AdaCNNConstructionQLearner(object):
         return self.q,self.gps,self.prev_state,self.prev_action
 
 
-class ContinuousState(object):
+class AdaCNNAdaptingQLearner(object):
 
     def __init__(self, **params):
 
         self.learning_rate = params['learning_rate']
         self.discount_rate = params['discount_rate']
-        self.eta_1 = params['eta_1'] # Q collection starts after this
-        self.eta_2 = params['eta_2'] # Evenly perform actions until this
+
         self.gp_interval = params['gp_interval'] #GP calculating interval (10)
-        self.policy_intervel = params['policy_interval']
         self.q = {} #store Q values
         self.gps = {} #store gaussian curves
         self.epsilon = params['epsilon']
-        self.rl_logger = logging.getLogger('Policy Logger')
+        self.net_depth = params['net_depth']
+
+        self.rl_logger = logging.getLogger('Adapting Policy Logger')
         self.rl_logger.setLevel(logging_level)
         console = logging.StreamHandler(sys.stdout)
         console.setFormatter(logging.Formatter(logging_format))
@@ -294,18 +294,139 @@ class ContinuousState(object):
         self.rl_logger.addHandler(console)
 
         self.local_time_stamp = 0
-        self.actions = []
+        self.actions = [
+            ('add',32),('add',64),('add',128),
+            ('remove',32),('remove',64),('remove',128),
+            ('finetune',0),('do_nothing',0)
+        ]
 
-        self.prev_action = None
-        self.prev_state = None
-        self.finetune_action = None
+        self.init_state = (-1,0,0)
 
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
-        self.prev_state = restore_data['prev_state']
-        self.prev_action = restore_data['prev_action']
         self.q = restore_data['q']
         self.gps = restore_data['gps']
+
+    def output_action(self,data):
+        prev_actions = []
+        prev_states = []
+
+        # data => ['distMSE']['filter_counts']
+        # ['filter_counts'] => depth_index : filter_count
+        # State => Layer_Depth (w.r.t net), dist_MSE, number of filters in layer
+        for ni in range(self.net_depth):
+            if len(prev_states) == 0 or len(prev_actions) ==0:
+                state = self.init_state
+            else:
+                state = (ni,data['distMSE'],data['filter_counts'][ni])
+                self.rl_logger.info('Data for (Depth Index,DistMSE,Filter Count) %s'%str(state))
+
+            # initializing q values to zero
+            if state not in self.q:
+                act_dict = {}
+                for a in self.actions:
+                    act_dict[a] = 0
+                self.q[state]=act_dict
+
+            # deterministic selection (if epsilon is not 1 or q is not empty)
+            if np.random.random()>self.epsilon:
+                self.rl_logger.debug('Choosing action deterministic...')
+                copy_actions = list(self.actions)
+                np.random.shuffle(copy_actions)
+                action_idx = np.asscalar(np.argmax([self.q[state][a] for a in self.actions]))
+                action = copy_actions[action_idx]
+                self.rl_logger.debug('\tChose: %s'%str(action))
+                # If action Terminate received, we set it to None. Coz at the end we add terminate anyway
+                if action[0] == 'Terminate':
+                    action = None
+                    self.rl_logger.debug('\tTerminate action selected. Terminating Loop')
+                    break
+                # ================= Look ahead 1 step (Validate Predicted Action) =========================
+                # make sure predicted action stride is not larger than resulting output.
+                # make sure predicted kernel size is not larger than the resulting output
+                # To avoid such scenarios we create a restricted action space if this happens and chose from that
+                restricted_action_space = list(self.actions)
+                predicted_kernel_size = action[1]
+                predicted_stride = action[2]
+                next_output_size =self.get_output_size(output_size,action)
+
+                while next_output_size<predicted_stride or next_output_size<predicted_kernel_size:
+                    self.rl_logger.debug('\tAction %s is not valid (Predicted output size: %d). '%(str(action),next_output_size))
+                    restricted_action_space.remove(action)
+                    # if we do not have any more possible actions
+                    if len(restricted_action_space)==0:
+                        action = None
+                        break
+                    action_idx = np.asscalar(np.argmax([self.q[state][a] for a in restricted_action_space]))
+                    action = restricted_action_space[action_idx]
+                    # update kernel,stride,output_size accordingly
+                    predicted_kernel_size = action[1]
+                    predicted_stride = action[2]
+                    next_output_size =self.get_output_size(output_size,action)
+
+            # random selection
+            else:
+                self.rl_logger.debug('Choosing action stochastic...')
+                action = self.actions[np.random.randint(0,len(self.actions))]
+                self.rl_logger.debug('\tChose: %s'%str(action))
+                # If action Terminate received, we set it to None. Coz at the end we add terminate anyway
+                if action[0] == 'Terminate':
+                    action = None
+                    self.rl_logger.debug('\tTerminate action selected. Terminating Loop')
+                    break
+
+                # ================= Look ahead 1 step (Validate Predicted Action) =========================
+                # make sure predicted action stride is not larger than resulting output.
+                # make sure predicted kernel size is not larger than the resulting output
+                # To avoid such scenarios we create a restricted action space if this happens
+                restricted_action_space = list(self.actions)
+                predicted_kernel_size = action[1]
+                predicted_stride = action[2]
+                next_output_size =self.get_output_size(output_size,action)
+
+                while next_output_size<predicted_stride or next_output_size<predicted_kernel_size:
+                    self.rl_logger.debug('\tAction %s is not valid (Predicted output size: %d). '%(str(action),next_output_size))
+                    restricted_action_space.remove(action)
+                    # if we do not have any more possible actions
+                    if len(restricted_action_space)==0:
+                        action = None
+                        break
+
+                    action_idx = np.asscalar(np.argmax([self.q[state][a] for a in restricted_action_space]))
+                    action = restricted_action_space[action_idx]
+                    # update kernel,stride,output_size accordingly
+                    predicted_kernel_size = action[1]
+                    predicted_stride = action[2]
+                    next_output_size =self.get_output_size(output_size,action)
+
+            self.rl_logger.debug('Finally Selected action: %s'%str(action))
+        # if a valid state is found
+        if action is not None:
+            prev_actions.append(action)
+            prev_states.append(state)
+
+            # update layer depth
+            layer_depth += 1
+        # if valid state not found
+        else:
+            break
+
+        # Terminal State
+        terminal_state = (layer_depth,self.actions[-1],output_size)
+        prev_states.append(terminal_state)
+        # this q value represents terminating network at different depths
+        if terminal_state not in self.q:
+            self.q[terminal_state]={self.actions[-1]:0}
+            self.rl_logger.debug('Added terminal state %s to Q with value (%s)'%(str(terminal_state),str(self.actions[-1])))
+
+        # decay epsilon
+        self.epsilon = max(self.epsilon*0.9,0.1)
+        self.rl_logger.debug('='*60)
+        self.rl_logger.debug('States')
+        self.rl_logger.debug(prev_states)
+        self.rl_logger.debug('='*60)
+
+        return prev_states
 
     def update_policy(self, global_time_stamp, data,success=True):
 

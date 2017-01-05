@@ -386,6 +386,7 @@ if __name__=='__main__':
             constructor.update_policy({'accuracy':valid_accuracy,'trajectory':traj_states})
 
             if len(half_valid_accuracy_log)>5:
+                # get the mean of best 10 validation accuracies
                 mean_best_half_accuracy = np.mean(
                     np.asarray(half_valid_accuracy_log)[
                         np.argsort(np.asarray(half_valid_accuracy_log))[len(half_valid_accuracy_log)-10:len(half_valid_accuracy_log)]
