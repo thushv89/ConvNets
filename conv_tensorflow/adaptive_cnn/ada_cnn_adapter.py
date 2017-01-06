@@ -337,7 +337,7 @@ def adapt_cnn(cnn_ops,cnn_hyps,states,actions,rolling_activation_means):
             amount_to_rmv = ai[1]
             assert 'conv' in op
 
-            indices_of_filters_keep = list(np.argsort(rolling_ativation_means[op]).flatten())[amount_to_rmv:]
+            indices_of_filters_keep = np.argsort(rolling_ativation_means[op]).flatten().astype('int32')[amount_to_rmv:]
 
             # currently no way to generally slice using gather
             # need to do a transoformation to do this.
@@ -431,7 +431,7 @@ if __name__=='__main__':
         # Adapting Policy Learner
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
                                                   discount_rate=0.99,
-                                                  gp_interval = 1,
+                                                  fit_interval = 5,
                                                   filter_upper_bound=1024,
                                                   net_depth=layer_count,
                                                   upper_bound=10,

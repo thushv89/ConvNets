@@ -11,7 +11,7 @@ import sys
 from math import ceil
 from six.moves import cPickle as pickle
 import os
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LinearRegression
 
 logging_level = logging.DEBUG
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
@@ -292,7 +292,7 @@ class AdaCNNAdaptingQLearner(object):
         self.discount_rate = params['discount_rate']
         self.filter_upper_bound = params['filter_upper_bound']
 
-        self.gp_interval = params['gp_interval'] #GP calculating interval (10)
+        self.fit_interval = params['fit_interval'] #GP calculating interval (10)
         self.q = {} # store Q values a=> state
         self.regressors = {} # store logistic regressors
 
@@ -344,10 +344,10 @@ class AdaCNNAdaptingQLearner(object):
 
                 q_for_actions = []
                 for a in copy_actions:
-                    if a in self.regressors:
+                    if a in self.regressors and self.local_time_stamp>self.fit_interval+1:
                         q_for_actions.append(self.regressors[a].predict(state))
                     else:
-                        q_for_actions = 0.0
+                        q_for_actions = [0.0]
 
                 action_idx = np.asscalar(np.argmax(q_for_actions))
                 action = copy_actions[action_idx]
@@ -437,10 +437,13 @@ class AdaCNNAdaptingQLearner(object):
         # data['next_accuracy'] => validation accuracy (unseen)
         # data['prev_accuracy'] => validation accuracy (seen)
 
-        if self.local_time_stamp>0 and self.local_time_stamp%self.fit_interval==0:
+        if self.local_time_stamp>0 or self.local_time_stamp%self.fit_interval==0:
             self.rl_logger.info('Training the Approximator...')
             for a in self.regressors.keys():
-                self.regressors[a].fit(self.q[a][:,0],self.q[a][:,1])
+                x,y = zip(*self.q[a].items())
+                self.rl_logger.debug('X: %s',str(np.asarray(x)[:5]))
+                self.rl_logger.debug('Y: %s',str(np.asarray(y)[:5]))
+                self.regressors[a].fit(np.asarray(x),np.asarray(y).reshape(-1,1))
 
         reward = 0.75*data['next_accuracy'] + 0.25*data['prev_accuracy']
 
@@ -460,13 +463,15 @@ class AdaCNNAdaptingQLearner(object):
 
             # Q[a][(state,q)]
             if ai not in self.q:
-                self.regressors[ai]=LogisticRegression(penalty='l2')
-                self.q[ai]=np.asarray([si,0.0])
-            else:
-                self.q[ai]=np.append(self.q[ai],np.asarray([si,reward]),axis=0)
+                self.regressors[ai]=LinearRegression()
 
-            self.q[ai][si] = (1-self.learning_rate)*self.regressors[ai].predict(si) +\
-                        self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(sj) for a in self.regressors.keys()]))
+            self.q[ai]={si:reward}
+
+            if self.local_time_stamp>self.fit_interval+1:
+                self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(si) +\
+                            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(sj) for a in self.regressors.keys()]))
+            else:
+                self.q[ai][si]=reward
 
         self.local_time_stamp += 1
 
