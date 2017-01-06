@@ -2,7 +2,7 @@ __author__ = 'Thushan Ganegedara'
 
 from enum import IntEnum
 from collections import defaultdict
-from sklearn.gaussian_process import GaussianProcessRegressor
+#from sklearn.gaussian_process import GaussianProcessRegressor
 import numpy as np
 import json
 import random
@@ -11,6 +11,7 @@ import sys
 from math import ceil
 from six.moves import cPickle as pickle
 import os
+from sklearn.linear_model import LogisticRegression
 
 logging_level = logging.DEBUG
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
@@ -23,6 +24,8 @@ class AdaCNNConstructionQLearner(object):
         self.discount_rate = params['discount_rate']
         self.image_size = params['image_size']
         self.upper_bound = params['upper_bound']
+        self.num_episodes = params['num_episodes']
+
         self.q = {} #store Q values
         self.epsilon = params['epsilon']
         self.experiance_tuples = []
@@ -49,14 +52,16 @@ class AdaCNNConstructionQLearner(object):
         # 'C',r,s,d => rxr convolution with sxs stride with d feature maps
         # 'P',r,s => max pooling with rxr window size and sxs stride
         self.actions = [
-            ('C',1,1,64),('C',1,1,128),('C',1,1,256),
-            ('C',3,1,64),('C',3,1,128),('C',3,1,256),
-            ('C',5,1,64),('C',5,1,128),('C',5,1,256),
+            ('C',1,1,64),
+            ('C',3,1,64),('C',3,1,128),('C',3,1,256),('C',3,1,512),
+            ('C',5,1,64),('C',5,1,128),('C',5,1,256),('C',5,1,512),
             ('P',2,2,0),('P',3,2,0),('P',5,2,0),
             ('Terminate',0,0,0)
         ]
         self.init_state = (-1,('Init',0,0,0),self.image_size)
 
+        self.best_model_string = ''
+        self.best_model_accuracy = 0.0
 
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
@@ -95,6 +100,7 @@ class AdaCNNConstructionQLearner(object):
         output_size = self.image_size
 
         while layer_depth<self.upper_bound and output_size>1:
+            action = None
             # If we're just starting
             if len(prev_states) == 0 or len(prev_actions) ==0:
                 state = self.init_state
@@ -119,11 +125,7 @@ class AdaCNNConstructionQLearner(object):
                 action_idx = np.asscalar(np.argmax([self.q[state][a] for a in self.actions]))
                 action = copy_actions[action_idx]
                 self.rl_logger.debug('\tChose: %s'%str(action))
-                # If action Terminate received, we set it to None. Coz at the end we add terminate anyway
-                if action[0] == 'Terminate':
-                    action = None
-                    self.rl_logger.debug('\tTerminate action selected. Terminating Loop')
-                    break
+
                 # ================= Look ahead 1 step (Validate Predicted Action) =========================
                 # make sure predicted action stride is not larger than resulting output.
                 # make sure predicted kernel size is not larger than the resulting output
@@ -152,11 +154,6 @@ class AdaCNNConstructionQLearner(object):
                 self.rl_logger.debug('Choosing action stochastic...')
                 action = self.actions[np.random.randint(0,len(self.actions))]
                 self.rl_logger.debug('\tChose: %s'%str(action))
-                # If action Terminate received, we set it to None. Coz at the end we add terminate anyway
-                if action[0] == 'Terminate':
-                    action = None
-                    self.rl_logger.debug('\tTerminate action selected. Terminating Loop')
-                    break
 
                 # ================= Look ahead 1 step (Validate Predicted Action) =========================
                 # make sure predicted action stride is not larger than resulting output.
@@ -181,7 +178,13 @@ class AdaCNNConstructionQLearner(object):
                     predicted_stride = action[2]
                     next_output_size =self.get_output_size(output_size,action)
 
+            # If action Terminate received, we set it to None. Coz at the end we add terminate anyway
+            if action[0] == 'Terminate':
+                action = None
+                self.rl_logger.debug('\tTerminate action selected.')
+
             self.rl_logger.debug('Finally Selected action: %s'%str(action))
+
             # if a valid state is found
             if action is not None:
                 prev_actions.append(action)
@@ -268,6 +271,15 @@ class AdaCNNConstructionQLearner(object):
             net_string += '#'+s[1][0]+','+str(s[1][1])+','+str(s[1][2])+','+str(s[1][3])
         self.best_policy_logger.info("%d,%s,%.3f",self.local_time_stamp,net_string,data['accuracy'])
 
+        if data['accuracy']>self.best_model_accuracy:
+            self.best_model_accuracy = data['accuracy']
+            self.best_model_string = net_string
+
+        if self.num_episodes==self.local_time_stamp:
+            self.best_policy_logger.info()
+            self.best_policy_logger.info("Best:%s,%.3f",net_string,data['accuracy'])
+
+
     def get_policy_info(self):
         return self.q,self.gps,self.prev_state,self.prev_action
 
@@ -281,8 +293,8 @@ class AdaCNNAdaptingQLearner(object):
         self.filter_upper_bound = params['filter_upper_bound']
 
         self.gp_interval = params['gp_interval'] #GP calculating interval (10)
-        self.q = {} #store Q values
-        self.gps = {} #store gaussian curves
+        self.q = {} # store Q values a=> state
+        self.regressors = {} # store logistic regressors
 
         self.epsilon = params['epsilon']
         self.net_depth = params['net_depth']
@@ -301,14 +313,12 @@ class AdaCNNAdaptingQLearner(object):
             ('finetune',0),('do_nothing',0)
         ]
 
-        self.init_state = (-1,0,0)
-
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
         self.q = restore_data['q']
-        self.gps = restore_data['gps']
+        self.regressors = restore_data['lrs']
 
-    def output_action(self,data):
+    def output_trajectory(self,data):
         prev_actions = []
         prev_states = []
 
@@ -316,28 +326,26 @@ class AdaCNNAdaptingQLearner(object):
         # ['filter_counts'] => depth_index : filter_count
         # State => Layer_Depth (w.r.t net), dist_MSE, number of filters in layer
         for ni in range(self.net_depth):
-            if len(prev_states) == 0 or len(prev_actions) ==0:
-                state = self.init_state
-            else:
-                state = (ni,data['distMSE'],data['filter_counts'][ni])
-                self.rl_logger.info('Data for (Depth Index,DistMSE,Filter Count) %s'%str(state))
 
-            # initializing q values to zero
-            if state not in self.q:
-                act_dict = {}
-                for a in self.actions:
-                    act_dict[a] = 0
-                self.q[state]=act_dict
+            state = (ni,data['distMSE'],data['filter_counts'][ni])
+            self.rl_logger.info('Data for (Depth Index,DistMSE,Filter Count) %s'%str(state))
+
+            # pooling operation always action='do nothing'
+            if data['filter_counts'][ni]==0:
+                prev_states.append(state)
+                prev_actions.append(self.actions[-1])
+                continue
 
             # deterministic selection (if epsilon is not 1 or q is not empty)
             if np.random.random()>self.epsilon:
                 self.rl_logger.debug('Choosing action deterministic...')
                 copy_actions = list(self.actions)
                 np.random.shuffle(copy_actions)
+
                 q_for_actions = []
                 for a in copy_actions:
-                    if a in self.gps and ni in self.gps[a]:
-                        q_for_actions.append(self.gps[a][ni].predict(state))
+                    if a in self.regressors:
+                        q_for_actions.append(self.regressors[a].predict(state))
                     else:
                         q_for_actions = 0.0
 
@@ -354,6 +362,8 @@ class AdaCNNAdaptingQLearner(object):
                     next_filter_count =data['filter_counts'][ni]+action[1]
                 elif action[0]=='remove':
                     next_filter_count =data['filter_counts'][ni]-action[1]
+                else:
+                    next_filter_count = data['filter_counts'][ni]
 
                 while next_filter_count<0 or next_filter_count>self.filter_upper_bound:
                     self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
@@ -388,7 +398,8 @@ class AdaCNNAdaptingQLearner(object):
                     next_filter_count =data['filter_counts'][ni]+action[1]
                 elif action[0]=='remove':
                     next_filter_count =data['filter_counts'][ni]-action[1]
-
+                else:
+                    next_filter_count = data['filter_counts'][ni]
                 while next_filter_count<0 or next_filter_count>self.filter_upper_bound:
                     self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
                     restricted_action_space.remove(action)
@@ -408,8 +419,8 @@ class AdaCNNAdaptingQLearner(object):
 
             self.rl_logger.debug('Finally Selected action: %s'%str(action))
 
-        prev_actions.append(action)
-        prev_states.append(state)
+            prev_actions.append(action)
+            prev_states.append(state)
 
         # decay epsilon
         self.epsilon = max(self.epsilon*0.9,0.1)
@@ -423,28 +434,41 @@ class AdaCNNAdaptingQLearner(object):
     def update_policy(self, data):
         # data['states'] => list of states
         # data['actions'] => list of actions
-        # data['accuracy'] => validation accuracy
-        reward = data['accuracy']
+        # data['next_accuracy'] => validation accuracy (unseen)
+        # data['prev_accuracy'] => validation accuracy (seen)
+
+        if self.local_time_stamp>0 and self.local_time_stamp%self.fit_interval==0:
+            self.rl_logger.info('Training the Approximator...')
+            for a in self.regressors.keys():
+                self.regressors[a].fit(self.q[a][:,0],self.q[a][:,1])
+
+        reward = 0.75*data['next_accuracy'] + 0.25*data['prev_accuracy']
 
         for si,ai in zip(data['states'],data['actions']):
+
+            # we don't care about pooling opeartions
+            if si[2]==0:
+                continue
+
             sj = si
             if ai[0]=='add':
-                sj[2]=si[2]+ai[1]
+                new_filter_size=si[2]+ai[1]
+                sj = (si[0],si[1],new_filter_size)
             elif ai[0]=='remove':
-                sj[2]=si[2]-ai[1]
+                new_filter_size=si[2]-ai[1]
+                sj = (si[0],si[1],new_filter_size)
 
-            # gp_data[a][layer_index][(state,q)]
+            # Q[a][(state,q)]
             if ai not in self.q:
-                self.q[ai]={}
+                self.regressors[ai]=LogisticRegression(penalty='l2')
+                self.q[ai]=np.asarray([si,0.0])
             else:
-                if si[0] not in self.gp_data[ai]:
-                    self.q[ai]={si[0]:[(si,reward)]}
-                else:
-                    self.q[ai][si[0]].append((si,reward))
+                self.q[ai]=np.append(self.q[ai],np.asarray([si,reward]),axis=0)
 
-            self.q[ai][si] = (1-self.learning_rate)*self.q[ai][si] +\
-                        self.learning_rate*(reward+self.discount_rate*np.max([self.q[next_state][a] for a in self.q[next_state].keys()]))
+            self.q[ai][si] = (1-self.learning_rate)*self.regressors[ai].predict(si) +\
+                        self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(sj) for a in self.regressors.keys()]))
 
         self.local_time_stamp += 1
+
     def get_policy_info(self):
-        return self.q,self.gps,self.prev_state,self.prev_action
+        return self.q,self.regressors,self.prev_state,self.prev_action

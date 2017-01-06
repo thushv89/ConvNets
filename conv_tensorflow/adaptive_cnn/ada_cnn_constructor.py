@@ -227,11 +227,16 @@ if __name__=='__main__':
     logger.info('\tValid Size: %d'%valid_size)
     logger.info('='*80)
 
-    policy_iterations = 101
+    policy_iterations = 201
     construction_epochs = 11
 
     #Construction Policy Learner
-    constructor = qlearner.AdaCNNConstructionQLearner(learning_rate=0.1,discount_rate=0.99,image_size=image_size,upper_bound=10,epsilon=0.99)
+    constructor = qlearner.AdaCNNConstructionQLearner(learning_rate=0.1,
+                                                      discount_rate=0.99,
+                                                      image_size=image_size,
+                                                      upper_bound=8,
+                                                      epsilon=0.99,
+                                                      num_episodes=policy_iterations)
 
     half_valid_accuracy_log = []
     mean_best_half_accuracy = 0.0
