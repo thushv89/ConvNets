@@ -263,6 +263,7 @@ def get_ops_hyps_from_string(net_string):
 
     return cnn_ops,cnn_hyperparameters
 
+
 def adapt_cnn(cnn_ops,cnn_hyps,states,actions,rolling_activation_means):
 
     # find the last convolutional layer
@@ -337,7 +338,7 @@ def adapt_cnn(cnn_ops,cnn_hyps,states,actions,rolling_activation_means):
             amount_to_rmv = ai[1]
             assert 'conv' in op
 
-            indices_of_filters_keep = np.argsort(rolling_ativation_means[op]).flatten().astype('int32')[amount_to_rmv:]
+            indices_of_filters_keep = (np.argsort(rolling_ativation_means[op]).flatten()[amount_to_rmv:]).astype('int32')
 
             # currently no way to generally slice using gather
             # need to do a transoformation to do this.
@@ -402,7 +403,7 @@ if __name__=='__main__':
     #TODO: Load data 75*batch_size (train) & 25*batch_size (valid)
     data_dir = '..'+os.sep+'..'+os.sep+'data'
     (dataset,labels),(_,_),(_,_)=load_data.reformat_data_cifar10(data_dir,'cifar-10.pickle')
-    train_dataset,train_labels = dataset[:100*batch_size,:,:,:],labels[:100*batch_size,:]
+    train_dataset,train_labels = dataset[:300*batch_size,:,:,:],labels[:300*batch_size,:]
     train_size = train_dataset.shape[0]
     logger.info('='*80)
     logger.info('\tTrain Size: %d'%train_size)
@@ -412,9 +413,15 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#P,5,2,0#C,3,1,128#C,5,1,512#C,3,1,64#C,3,1,128#C,5,1,128#Terminate,0,0,0"
     cnn_string = "C,5,1,256#P,5,2,0#Terminate,0,0,0"
+
+    # Resetting this every policy interval
     rolling_data_distribution = {}
+    mean_data_distribution = {}
+    prev_mean_distribution = {}
     for li in range(num_labels):
         rolling_data_distribution[li]=0.0
+        mean_data_distribution[li]=1.0/float(num_labels)
+        prev_mean_distribution[li]=1.0/float(num_labels)
 
     graph = tf.Graph()
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.65)
@@ -479,38 +486,6 @@ if __name__=='__main__':
             batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
 
-            cnt = Counter(np.argmax(batch_labels,axis=1))
-
-            if batch_id%policy_interval==0:
-                #Update and Get a new policy
-                if current_states is not None and current_actions is not None:
-                    adapter.update_policy({'states':current_states,'actions':current_actions,
-                                           'next_accuracy':next_valid_accuracy,'prev_accuracy':prev_valid_accuracy})
-                distMSE = 0.0
-                for li in range(num_labels):
-                    distMSE += ((float(cnt[li])/float(batch_size))-rolling_data_distribution[li])**2
-                distMSE = np.sqrt(distMSE)
-
-                filter_dict = {}
-                for op_i,op in enumerate(cnn_ops):
-                    if 'conv' in op:
-                        filter_dict[op_i]=cnn_hyperparameters[op]['weights'][3]
-                    elif 'pool' in op:
-                        filter_dict[op_i]=0
-
-                current_states,current_actions = adapter.output_trajectory({'distMSE':distMSE,'filter_counts':filter_dict})
-                # where all magic happens
-                adapt_cnn(cnn_ops,cnn_hyperparameters,current_states,current_actions,rolling_ativation_means)
-                # calculating all the things again
-                logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
-
-                #reset rolling activation means because network changed
-                rolling_ativation_means = {}
-                for op in cnn_ops:
-                    if 'conv' in op:
-                        logger.debug("Resetting activation means to zero for %s with %d",op,cnn_hyperparameters[op]['weights'][3])
-                        rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
-
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
             _, activation_means, l, (_,updated_lr), predictions = session.run(
                     [logits,act_means,loss,optimize,pred], feed_dict=feed_dict
@@ -561,6 +536,51 @@ if __name__=='__main__':
                 mean_train_loss = 0.0
                 train_losses = []
 
+            cnt = Counter(np.argmax(batch_labels,axis=1))
+
             # calculate rolling mean of data distribution (amounts of different classes)
             for li in range(num_labels):
                 rolling_data_distribution[li]=(1-decay)*rolling_data_distribution[li] + decay*float(cnt[li])/float(batch_size)
+                mean_data_distribution[li] += float(cnt[li])/(float(batch_size)*float(policy_interval))
+
+            # ====================== Policy update and output ======================
+            if batch_id>0 and batch_id%policy_interval==0:
+                #Update and Get a new policy
+                if current_states is not None and current_actions is not None:
+                    logger.info('Updating the Policy for')
+                    logger.info('\tStates: %s',str(current_states))
+                    logger.info('\tActions: %s',str(current_actions))
+                    logger.info('\tValide accuracy: %.2f (Unseen) %.2f (seen)',next_valid_accuracy,prev_valid_accuracy)
+                    adapter.update_policy({'states':current_states,'actions':current_actions,
+                                           'next_accuracy':next_valid_accuracy,'prev_accuracy':prev_valid_accuracy})
+                distMSE = 0.0
+                for li in range(num_labels):
+                    distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
+
+                filter_dict = {}
+                for op_i,op in enumerate(cnn_ops):
+                    if 'conv' in op:
+                        filter_dict[op_i]=cnn_hyperparameters[op]['weights'][3]
+                    elif 'pool' in op:
+                        filter_dict[op_i]=0
+
+                current_states,current_actions = adapter.output_trajectory({'distMSE':distMSE,'filter_counts':filter_dict})
+                # where all magic happens
+                adapt_cnn(cnn_ops,cnn_hyperparameters,current_states,current_actions,rolling_ativation_means)
+                # calculating all the things again
+                logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+
+                #reset rolling activation means because network changed
+                rolling_ativation_means = {}
+                for op in cnn_ops:
+                    if 'conv' in op:
+                        logger.debug("Resetting activation means to zero for %s with %d",op,cnn_hyperparameters[op]['weights'][3])
+                        rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
+
+                logger.debug('Resetting both data distribution means')
+
+                prev_mean_distribution = mean_data_distribution
+                for li in range(num_labels):
+                    rolling_data_distribution[li]=0.0
+                    mean_data_distribution[li]=0.0
+

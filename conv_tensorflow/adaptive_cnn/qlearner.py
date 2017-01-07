@@ -308,9 +308,8 @@ class AdaCNNAdaptingQLearner(object):
 
         self.local_time_stamp = 0
         self.actions = [
-            ('add',32),('add',64),('add',128),
-            ('remove',32),('remove',64),('remove',128),
-            ('finetune',0),('do_nothing',0)
+            ('add',32),('remove',32),('add',64),('remove',64),
+            ('add',128),('remove',128),('finetune',0),('do_nothing',0)
         ]
 
     def restore_policy(self,**restore_data):
@@ -336,18 +335,30 @@ class AdaCNNAdaptingQLearner(object):
                 prev_actions.append(self.actions[-1])
                 continue
 
+            # we try actions evenly otherwise cannot have the approximator
+            if self.local_time_stamp<len(self.actions)*2:
+                self.rl_logger.debug('Choosing aciton evenly...')
+                action = self.actions[self.local_time_stamp%len(self.actions)]
+
+                if action[0]=='add':
+                    next_filter_count =data['filter_counts'][ni]+action[1]
+                elif action[0]=='remove':
+                    next_filter_count =data['filter_counts'][ni]-action[1]
+                else:
+                    next_filter_count = data['filter_counts'][ni]
+
+                if next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+                    action = self.actions[-1]
+
             # deterministic selection (if epsilon is not 1 or q is not empty)
-            if np.random.random()>self.epsilon:
+            elif np.random.random()>self.epsilon:
                 self.rl_logger.debug('Choosing action deterministic...')
                 copy_actions = list(self.actions)
                 np.random.shuffle(copy_actions)
 
                 q_for_actions = []
                 for a in copy_actions:
-                    if a in self.regressors and self.local_time_stamp>self.fit_interval+1:
-                        q_for_actions.append(self.regressors[a].predict(state))
-                    else:
-                        q_for_actions = [0.0]
+                    q_for_actions.append(self.regressors[a].predict(state))
 
                 action_idx = np.asscalar(np.argmax(q_for_actions))
                 action = copy_actions[action_idx]
@@ -365,7 +376,7 @@ class AdaCNNAdaptingQLearner(object):
                 else:
                     next_filter_count = data['filter_counts'][ni]
 
-                while next_filter_count<0 or next_filter_count>self.filter_upper_bound:
+                while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
                     self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
                     del q_for_actions[restricted_action_space.index(action)]
                     restricted_action_space.remove(action)
@@ -400,7 +411,7 @@ class AdaCNNAdaptingQLearner(object):
                     next_filter_count =data['filter_counts'][ni]-action[1]
                 else:
                     next_filter_count = data['filter_counts'][ni]
-                while next_filter_count<0 or next_filter_count>self.filter_upper_bound:
+                while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
                     self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
                     restricted_action_space.remove(action)
 
@@ -417,7 +428,7 @@ class AdaCNNAdaptingQLearner(object):
                     elif action[0]=='remove':
                         next_filter_count =data['filter_counts'][ni]-action[1]
 
-            self.rl_logger.debug('Finally Selected action: %s'%str(action))
+                self.rl_logger.debug('Finally Selected action: %s'%str(action))
 
             prev_actions.append(action)
             prev_states.append(state)
@@ -467,7 +478,7 @@ class AdaCNNAdaptingQLearner(object):
 
             self.q[ai]={si:reward}
 
-            if self.local_time_stamp>self.fit_interval+1:
+            if self.local_time_stamp>len(self.actions)*2+1:
                 self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(si) +\
                             self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(sj) for a in self.regressors.keys()]))
             else:
