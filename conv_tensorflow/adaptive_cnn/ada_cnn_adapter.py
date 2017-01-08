@@ -379,18 +379,86 @@ def adapt_cnn(cnn_ops,cnn_hyps,states,actions,rolling_activation_means):
                 cnn_hyperparameters[next_conv_op]['weights'][2]-=amount_to_rmv
                 assert w.get_shape().as_list()==cnn_hyperparameters[op]['weights']
 
+
+def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
+    global logger
+    col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
+    logger.info('Processing files %s,%s'%(dataset_filename,label_filename))
+    fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
+                    offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*start_idx,shape=(size,col_count[0],col_count[1],col_count[2]))
+
+    fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
+                    offset=np.dtype('int32').itemsize*1*size,shape=(size,1))
+
+    train_dataset = fp1[:,:,:,:]
+    train_labels = fp2[:]
+
+    del fp1,fp2
+    return train_dataset,train_labels
+
 if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
+    behavior = 'non-stationary'
+
+    dataset_info = {'dataset_type':datatype,'behavior':behavior}
+    dataset_filename,label_filename = None,None
+    test_dataset,test_labels = None,None
     if datatype=='cifar-10':
         image_size = 32
         num_labels = 10
         num_channels = 3 # rgb
-    elif datatype=='notMNIST':
-        image_size = 28
-        num_labels = 10
-        num_channels = 1 # grayscale
+        dataset_size = 50000
+
+        if behavior == 'non-stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-10-non-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-10-non-station-label.pkl'
+            dataset_size = 1280000
+            chunk_size = 51200
+
+        test_size=10000
+        test_dataset_filename='data_non_station'+os.sep+'cifar-10-non-station-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'cifar-10-non-station-test-label.pkl'
+        fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
+                        offset=np.dtype('float32').itemsize*image_size*image_size*num_channels*0,
+                        shape=(test_size,image_size,image_size,num_channels))
+        fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
+                        offset=np.dtype('int32').itemsize*0,shape=(test_size,1))
+        test_dataset = fp1[:,:,:,:]
+        test_labels = fp2[:]
+
+    elif datatype=='imagenet-100':
+        image_size = 224
+        num_labels = 100
+        num_channels = 3
+        dataset_size = 128000
+        if behavior == 'non-stationary':
+            dataset_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-dataset.pkl'
+            label_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-label.pkl'
+            image_size = 128
+            dataset_size = 1280000
+            chunk_size = 12800
+
+        test_size=5000
+        test_dataset_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-dataset.pkl'
+        test_label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-label.pkl'
+        fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
+                        offset=np.dtype('float32').itemsize*image_size*image_size*num_channels*0,
+                        shape=(test_size,image_size,image_size,num_channels))
+
+        fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
+                        offset=np.dtype('int32').itemsize*0,shape=(test_size,1))
+        test_dataset = fp1[:,:,:,:]
+        test_labels = fp2[:]
+
+    del fp1,fp2
+
+    dataset_info['image_size']=image_size
+    dataset_info['num_labels']=num_labels
+    dataset_info['num_channels']=num_channels
+    dataset_info['dataset_size']=dataset_size
+    dataset_info['chunk_size']=chunk_size
 
     logger = logging.getLogger('main_logger')
     logger.setLevel(logging_level)
@@ -399,11 +467,13 @@ if __name__=='__main__':
     console.setLevel(logging_level)
     logger.addHandler(console)
 
+    # Loading data
+    memmap_idx = 0
+    train_dataset,train_labels = None,None
 
-    #TODO: Load data 75*batch_size (train) & 25*batch_size (valid)
-    data_dir = '..'+os.sep+'..'+os.sep+'data'
-    (dataset,labels),(_,_),(_,_)=load_data.reformat_data_cifar10(data_dir,'cifar-10.pickle')
-    train_dataset,train_labels = dataset[:300*batch_size,:,:,:],labels[:300*batch_size,:]
+    assert chunk_size%batch_size==0
+    batches_in_chunk = chunk_size//batch_size
+
     train_size = train_dataset.shape[0]
     logger.info('='*80)
     logger.info('\tTrain Size: %d'%train_size)
@@ -481,17 +551,22 @@ if __name__=='__main__':
         current_states,current_actions = None,None
         prev_valid_accuracy,next_valid_accuracy = 0,0
         #TODO: Think about decaying learning rate (should or shouldn't)
-        for batch_id in range(ceil(train_size//batch_size)-1):
+        for batch_id in range(ceil(dataset_size//batch_size)-1):
+            chunk_batch_id = batch_id%batches_in_chunk
 
-            batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
-            batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
+            if chunk_batch_id==0:
+                train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+1)
+                memmap_idx += chunk_size
+
+            batch_data = train_dataset[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :, :, :]
+            batch_labels = train_labels[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :]
 
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
             _, activation_means, l, (_,updated_lr), predictions = session.run(
                     [logits,act_means,loss,optimize,pred], feed_dict=feed_dict
             )
             if np.isnan(l):
-                logger.critical('NaN detected: (batchID)'%batch_id)
+                logger.critical('NaN detected: (batchID)'%chunk_batch_id)
 
             assert not np.isnan(l)
 
@@ -502,8 +577,8 @@ if __name__=='__main__':
             train_losses.append(l)
 
             # validation batch (Unseen)
-            batch_valid_data = train_dataset[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :, :, :]
-            batch_valid_labels = train_labels[(batch_id+1)*batch_size:(batch_id+2)*batch_size, :]
+            batch_valid_data = train_dataset[(chunk_batch_id+1)*batch_size:(chunk_batch_id+2)*batch_size, :, :, :]
+            batch_valid_labels = train_labels[(chunk_batch_id+1)*batch_size:(chunk_batch_id+2)*batch_size, :]
 
             feed_valid_dict = {tf_valid_dataset:batch_valid_data, tf_valid_labels:batch_valid_labels}
             next_valid_predictions = session.run([pred_valid],feed_dict=feed_valid_dict)

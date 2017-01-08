@@ -256,6 +256,62 @@ def load_slice_from_cifar_10(dataset_info,data_filename,start_idx,end_idx):
 
     return {'dataset':train_dataset[start_idx:end_idx+1,:,:,:],'labels':train_labels[start_idx:end_idx+1,None]}
 
+def generate_imagenet_test_data(dataset_filename,label_filename,save_directory):
+
+    resize_dim,test_size = dataset_info['resize_to'], dataset_info['test_size']
+    num_channels = dataset_info['num_channels']
+    col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
+    fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
+                    offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*0,shape=(test_size,col_count[0],col_count[1],col_count[2]))
+    fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
+                    offset=np.dtype('int32').itemsize*1*test_size,shape=(test_size,1))
+
+    test_dataset = fp1[:,:,:,:]
+    test_labels = fp2[:]
+
+    del fp1,fp2
+
+    fp1 = np.memmap(filename=save_directory+os.sep+'imagenet-100-nonstation-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,resize_dim,resize_dim,num_channels))
+    fp2 = np.memmap(filename=save_directory+os.sep+'imagenet-100-nonstation-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
+
+    idx = 0
+    for img,lbl in zip(test_dataset[:],test_labels[:]):
+        unnorm_image = img-np.min(img)
+        unnorm_image /= np.max(unnorm_image)
+        unnorm_image *= 255.0
+        im = Image.fromarray(np.uint8(unnorm_image))
+        im.thumbnail((resize_to,resize_to), Image.ANTIALIAS)
+        sample_img = np.array(im)
+        sample_img = (sample_img - np.mean(sample_img))/np.std(sample_img)
+        fp1[idx,:,:,:]=sample_img
+        fp2[idx,0]=lbl
+        idx+=1
+
+    del fp1,fp2
+
+def generate_cifar_test_data(dataset_filename,save_directory):
+    image_size = dataset_info['image_size']
+    test_size = dataset_info['test_size']
+    num_channels = dataset_info['num_channels']
+    col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
+
+    with open(data_filename,'rb') as f:
+        save = pickle.load(f)
+        test_dataset, test_labels = save['test_dataset'],save['test_labels']
+
+    fp1 = np.memmap(filename=save_directory+os.sep+'cifar-10-nonstation-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
+    fp2 = np.memmap(filename=save_directory+os.sep+'cifar-10-nonstation-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
+
+    idx = 0
+    for img,lbl in zip(test_dataset[:],test_labels[:]):
+        img = img.reshape((-1,col_count[0],col_count[1],col_count[2]),order='F').astype(np.float32)
+        img = (img - np.mean(img))/np.std(img)
+        fp1[idx,:,:,:]=img
+        fp2[idx,0]=lbl
+        idx+=1
+
+    del fp1,fp2
+
 def test_generated_data(dataset_info,persist_dir,dataset_filename,label_filename):
     global logger
 
@@ -317,7 +373,7 @@ if __name__ == '__main__':
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = batch_size*10 # number of samples sampled for each instance of the gaussian curve
 
-    dataset_type = 'cifar-10' #'cifar-10 imagenet-100
+    dataset_type = 'imagenet-100' #'cifar-10 imagenet-100
 
     if dataset_type == 'cifar-10':
         data_save_directory = 'data_non_station'
@@ -327,10 +383,10 @@ if __name__ == '__main__':
         num_labels = 10
         num_channels = 3
         dataset_size = 50000
-        replace_cap = 35
+        test_size = 10000
         image_use_counter = {}
         dataset_info = {'dataset_type':dataset_type,'elements':elements,'chunk_size':chunk_size,'image_size':image_size,
-                        'num_channels':num_channels,'num_labels':num_labels,'dataset_size':dataset_size}
+                        'num_channels':num_channels,'num_labels':num_labels,'dataset_size':dataset_size,'test_size':test_size}
 
     elif dataset_type == 'imagenet-100':
         data_save_directory = '..'+os.sep+'imagenet_small'
@@ -342,10 +398,10 @@ if __name__ == '__main__':
         dataset_size = 128000
         data_in_memory = chunk_size
         resize_to = 128
-        replace_cap = 20
+        test_size = 5000
         image_use_counter = {}
         dataset_info = {'dataset_type':dataset_type,'elements':elements,'chunk_size':chunk_size,'image_size':image_size,'num_labels':num_labels,'dataset_size':dataset_size,
-                        'num_channels':num_channels,'data_in_memory':chunk_size,'resize_to':resize_to}
+                        'num_channels':num_channels,'data_in_memory':chunk_size,'resize_to':resize_to,'test_size':test_size}
 
     logger.info('='*60)
     logger.info('Dataset Information')
@@ -361,14 +417,16 @@ if __name__ == '__main__':
         label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_small_train_labels'
         new_dataset_filename = data_save_directory+os.sep+'imagenet-100-nonstation-dataset.pkl'
         new_labels_filename = data_save_directory+os.sep+'imagenet-100-nonstation-labels.pkl'
-        sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,priors,data_save_directory)
+        #sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,priors,data_save_directory)
+        generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
     elif dataset_type == 'cifar-10':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-10.pickle'
         new_dataset_filename = data_save_directory+os.sep+'cifar-10-nonstation-dataset.pkl'
         new_labels_filename = data_save_directory+os.sep+'cifar-10-nonstation-labels.pkl'
-        sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)
+        generate_cifar_test_data(data_filename,data_save_directory)
+        #sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)
 
-    test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
+    #test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
     ''' =============== Quick Test =====================
     x = np.linspace(0, 10, sample_size).reshape(-1, 1)
     #x = np.random.random(size=[1,sample_size])
