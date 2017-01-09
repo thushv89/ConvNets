@@ -268,8 +268,8 @@ def get_ops_hyps_from_string(net_string):
     return cnn_ops,cnn_hyperparameters
 
 
-def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,weights,biases,si,ai,layer_activations):
-    global logger
+def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
+    global logger,weights,biases
     tf_ops = []
     tf_new_weights = {} # tensors to add for each 'add' action
     tf_new_biases = {}
@@ -414,7 +414,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,weights,biases,si,ai,layer_activation
             logger.debug('')
             assert tf_new_weights[si][next_conv_op].get_shape().as_list()==cnn_hyperparameters[next_conv_op]['weights']
 
-    return tf_ops,weights,biases,changed_variables
+    return tf_ops,changed_variables
 
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
     global logger
@@ -437,8 +437,10 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
     assert np.all(np.argmax(train_ohe_labels[:10],axis=1).flatten()==train_labels[:10].flatten())
     return train_dataset,train_ohe_labels
 
-if __name__=='__main__':
+weights,biases = None,None
 
+if __name__=='__main__':
+    global weights,biases
     #type of data training
     datatype = 'cifar-10'
     behavior = 'non-stationary'
@@ -704,8 +706,8 @@ if __name__=='__main__':
                 for si,ai in zip(current_states,current_actions):
                     op = cnn_ops[si[0]]
                     if 'conv' in op:
-                        tf_ops,weights,biases,changed_vars = adapt_cnn_with_tf_ops(cnn_ops, cnn_hyperparameters,
-                                                                                   weights,biases, si, ai, rolling_ativation_means[op])
+                        tf_ops,changed_vars = adapt_cnn_with_tf_ops(cnn_ops, cnn_hyperparameters,
+                                                                                   si, ai, rolling_ativation_means[op])
                         # need to do this in order of states
                         new_param_values = session.run(tf_ops)
                         #all_tr_vars = tf.trainable_variables()
