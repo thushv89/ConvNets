@@ -452,9 +452,11 @@ class AdaCNNAdaptingQLearner(object):
             self.rl_logger.info('Training the Approximator...')
             for a in self.regressors.keys():
                 x,y = zip(*self.q[a].items())
-                self.rl_logger.debug('X: %s',str(np.asarray(x)[:5]))
-                self.rl_logger.debug('Y: %s',str(np.asarray(y)[:5]))
-                self.regressors[a].fit(np.asarray(x),np.asarray(y).reshape(-1,1))
+                x,y = np.asarray(x).flatten().reshape(-1,len(data['states'][0])),np.asarray(y).reshape(-1,1)
+                assert x.shape[0]== len(self.q[a])
+
+                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[:3]),str(np.asarray(y)[:3]))
+                self.regressors[a].fit(x,y)
 
         reward = 0.75*data['next_accuracy'] + 0.25*data['prev_accuracy']
 

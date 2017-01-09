@@ -289,7 +289,7 @@ def generate_imagenet_test_data(dataset_filename,label_filename,save_directory):
 
     del fp1,fp2
 
-def generate_cifar_test_data(dataset_filename,save_directory):
+def generate_cifar_test_data(data_filename,save_directory):
     image_size = dataset_info['image_size']
     test_size = dataset_info['test_size']
     num_channels = dataset_info['num_channels']
@@ -373,7 +373,7 @@ if __name__ == '__main__':
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = batch_size*10 # number of samples sampled for each instance of the gaussian curve
 
-    dataset_type = 'imagenet-100' #'cifar-10 imagenet-100
+    dataset_type = 'cifar-10' #'cifar-10 imagenet-100
 
     if dataset_type == 'cifar-10':
         data_save_directory = 'data_non_station'

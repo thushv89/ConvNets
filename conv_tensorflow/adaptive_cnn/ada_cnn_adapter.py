@@ -27,8 +27,8 @@ logging_level = logging.DEBUG
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-start_lr = 0.0001
-decay_learning_rate = True
+start_lr = 0.00002
+decay_learning_rate = False
 dropout_rate = 0.25
 use_dropout = False
 #keep beta small (0.2 is too much >0.002 seems to be fine)
@@ -79,7 +79,7 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
                 stddev=2./max(20,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
             ),name=op+'_weights')
             biases[op] = tf.Variable(tf.constant(
-                np.random.random()*0.01,shape=[cnn_hyps[op]['weights'][3]]
+                np.random.random()*0.001,shape=[cnn_hyps[op]['weights'][3]]
             ),name=op+'_bias')
 
             logger.debug('Weights for %s initialized with size %s',op,str(cnn_hyps[op]['weights']))
@@ -91,7 +91,7 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
                 stddev=2./cnn_hyps[op]['in']
             ),name=op+'_weights')
             biases[op] = tf.Variable(tf.constant(
-                np.random.random()*0.01,shape=[cnn_hyps[op]['out']]
+                np.random.random()*0.001,shape=[cnn_hyps[op]['out']]
             ),name=op+'_bias')
 
             logger.debug('Weights for %s initialized with size %d,%d',
@@ -160,25 +160,29 @@ def calc_loss(logits,labels):
     return loss
 
 
+
 def calc_loss_vector(logits,labels):
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
-
 
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
         learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.95)
     else:
-        learning_rate = start_lr
+        learning_rate = tf.Variable(start_lr)
 
     optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss)
     return optimizer,learning_rate
 
+def optimize_with_variable_func(loss,global_step,variables):
+    # Optimizer.
+    if decay_learning_rate:
+        learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.95)
+    else:
+        learning_rate = tf.Variable(start_lr)
 
-def optimize_with_fixed_lr_func(loss,learning_rate):
-    optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss)
-    return optimizer
-
+    optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss,var_list=variables)
+    return optimizer,learning_rate
 
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
@@ -264,8 +268,12 @@ def get_ops_hyps_from_string(net_string):
     return cnn_ops,cnn_hyperparameters
 
 
-def adapt_cnn(cnn_ops,cnn_hyps,states,actions,rolling_activation_means):
-
+def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,weights,biases,si,ai,layer_activations):
+    global logger
+    tf_ops = []
+    tf_new_weights = {} # tensors to add for each 'add' action
+    tf_new_biases = {}
+    changed_variables = []
     # find the last convolutional layer
     last_conv_id = ''
     for tmp_op in reversed(cnn_ops):
@@ -273,128 +281,161 @@ def adapt_cnn(cnn_ops,cnn_hyps,states,actions,rolling_activation_means):
             last_conv_id = tmp_op
             break
 
-    for si,ai in zip(states,actions):
-        op = cnn_ops[si[0]]
-        logger.debug('Running action %s for op %s',str(ai),op)
-        # Dont need to change anything
-        if ai[0]!='add' and ai[0]!='remove':
-            continue
-        # add depth
-        elif ai[0]=='add':
-            amount_to_add = ai[1]
-            logger.debug('Adding %d filter for %s action recieved',amount_to_add,op)
-            assert 'conv' in op
+    op = cnn_ops[si[0]]
+    logger.debug('Running action %s for op %s',str(ai),op)
+    # Dont need to change anything
+    if ai[0]!='add' and ai[0]!='remove':
+        return
+    # add depth
+    elif ai[0]=='add':
+        amount_to_add = ai[1]
+        logger.debug('Adding %d filter for %s action recieved',amount_to_add,op)
+        assert 'conv' in op
 
-            # change both weights and biase in the current op
-            op_new_weights = tf.Variable(
-                tf.truncated_normal([cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1],
-                                     cnn_hyps[op]['weights'][2],amount_to_add],stddev=0.02)
-            )
-            op_new_bias = tf.Variable(
-                tf.truncated_normal([amount_to_add],stddev=0.001)
-            )
-            tf.initialize_variables([op_new_weights,op_new_bias]).run()
+        # change both weights and biase in the current op
+        logger.debug('Concatting %s(old) and %s(new)',str(weights[op].get_shape().as_list()),
+                     str([cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2],amount_to_add]))
+        tf_new_weights[op] = tf.concat(3,[weights[op],
+                                            tf.truncated_normal([cnn_hyps[op]['weights'][0],
+                                                                 cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2],amount_to_add],stddev=0.02)
+                                            ])
+        tf_new_biases[op]= tf.concat(0,[biases[op],tf.truncated_normal([amount_to_add],stddev=0.001)])
 
-            weights[op]= tf.concat(3,[weights[op],op_new_weights])
-            biases[op]= tf.concat(0,[biases[op],op_new_bias])
+        logger.debug('Summary of changes to weights of %s ...',op)
+        logger.debug('\tNew Weights: %s',str(tf_new_weights[op].get_shape().as_list()))
 
-            # change out hyperparameter of op
-            cnn_hyperparameters[op]['weights'][3]+=amount_to_add
+        tf_ops.append(tf.assign(weights[op],tf_new_weights[op],validate_shape=False,use_locking=True))
+        tf_ops.append(tf.assign(biases[op],tf_new_biases[op],validate_shape=False,use_locking=True))
+        changed_variables.extend([weights[op],biases[op]])
+        # ============ obsolete =======================
+        #weights[op]= tf.Variable(tf.concat(3,[weights[op],op_new_weights]),name=op+'_weights')
+        #biases[op]= tf.Variable(tf.concat(0,[biases[op],op_new_bias]),name=op+'_biases')
+        #tf.initialize_variables([weights[op],biases[op]]).run()
+        #logger.debug('\t%s Weights (after adding): %s',op,str(weights[op].get_shape().as_list()))
 
-            # ================ Changes to next_op ===============
-            # Very last convolutional layer
-            # this is different from other layers
-            # as a change in this require changes to FC layer
-            if op==last_conv_id:
-                # change FC layer
-                fc_new_weights = tf.Variable(
-                    tf.truncated_normal([amount_to_add,num_labels],stddev=0.02)
-                )
-                tf.initialize_variables([fc_new_weights]).run()
-                weights['fulcon_out'] = tf.concat(0,[weights['fulcon_out'],fc_new_weights])
+        # change out hyperparameter of op
+        cnn_hyperparameters[op]['weights'][3]+=amount_to_add
 
-                cnn_hyps['fulcon_out']['in']+=amount_to_add
+        # ================ Changes to next_op ===============
+        # Very last convolutional layer
+        # this is different from other layers
+        # as a change in this require changes to FC layer
+        if op==last_conv_id:
+            # change FC layer
+            tf_new_weights['fulcon_out'] = tf.concat(0,[weights['fulcon_out'],tf.truncated_normal([amount_to_add,num_labels],stddev=0.02)])
 
-            else:
+            logger.debug('Summary of changes to weights of fulcon_out')
+            logger.debug('\tNew Weights: %s',str(tf_new_weights['fulcon_out'].get_shape().as_list()))
 
-                # change in hyperparameter of next conv op
-                next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(op)+1:] if 'conv' in tmp_op][0]
-                assert op!=next_conv_op
+            tf_ops.append(tf.assign(weights['fulcon_out'],tf_new_weights['fulcon_out'],validate_shape=False,use_locking=True))
+            changed_variables.append(weights['fulcon_out'])
+            # =============== obsolete =====================
+            #tf.initialize_variables([fc_new_weights]).run()
+            #weights['fulcon_out'] = tf.Variable(tf.concat(0,[weights['fulcon_out'],fc_new_weights]),name='fulcon_out'+'_weights')
+            #logger.debug('\t%s Weights (after adding): %s','fulcon_out',str(weights['fulcon_out'].get_shape().as_list()))
 
-                # change only the weights in next conv_op
-                next_op_new_weights = tf.Variable(
-                    tf.truncated_normal([cnn_hyps[next_conv_op][0],cnn_hyps[next_conv_op][1],amount_to_add,cnn_hyps[next_conv_op][3]],stddev=0.02)
-                )
-                tf.initialize_variables([next_op_new_weights]).run()
-                weights[next_conv_op] = tf.concat(3,[weights[next_conv_op],next_op_new_weights])
+            cnn_hyps['fulcon_out']['in']+=amount_to_add
 
-                cnn_hyperparameters[next_conv_op]['weights'][2]+=amount_to_add
+        else:
 
-        elif ai[0]=='remove':
+            # change in hyperparameter of next conv op
+            next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(op)+1:] if 'conv' in tmp_op][0]
+            assert op!=next_conv_op
 
-            # this is trickier than adding weights
-            # We remove the given number of filters
-            # which have the least rolling mean activation averaged over whole map
-            amount_to_rmv = ai[1]
-            assert 'conv' in op
+            # change only the weights in next conv_op
+            tf_new_weights[next_conv_op]=tf.concat(2,[weights[next_conv_op],
+                                          tf.truncated_normal([cnn_hyps[next_conv_op]['weights'][0],cnn_hyps[next_conv_op]['weights'][1],
+                                                               amount_to_add,cnn_hyps[next_conv_op]['weights'][3]],stddev=0.02)])
+            logger.debug('Summary of changes to weights of %s',next_conv_op)
+            logger.debug('\tNew Weights: %s',str(tf_new_weights[next_conv_op].get_shape().as_list()))
 
-            indices_of_filters_keep = (np.argsort(rolling_ativation_means[op]).flatten()[amount_to_rmv:]).astype('int32')
+            tf_ops.append(tf.assign(weights[next_conv_op],tf_new_weights[next_conv_op],validate_shape=False,use_locking=True))
+            changed_variables.append(weights[next_conv_op])
+            # ================ obsolete =======================
+            #tf.initialize_variables([next_op_new_weights]).run()
+            #weights[next_conv_op] = tf.Variable(tf.concat(2,[weights[next_conv_op],next_op_new_weights]),name=next_conv_op+'_weights')
+            #logger.debug('\t%s Weights (after adding): %s',next_conv_op,str(weights[next_conv_op].get_shape().as_list()))
 
-            # currently no way to generally slice using gather
-            # need to do a transoformation to do this.
-            # change both weights and biase in the current op
-            w = tf.identity(weights[op])
-            w = tf.transpose(w,[3,0,1,2])
-            w = tf.gather_nd(w,[[idx] for idx in indices_of_filters_keep])
-            w = tf.transpose(w,[1,2,3,0])
-            logger.debug('Size after feature map reduction: %s,%s',op,str(w.get_shape().as_list()))
-            weights[op]= w
-            biases[op]= tf.gather(biases[op],indices_of_filters_keep)
+            cnn_hyperparameters[next_conv_op]['weights'][2]+=amount_to_add
 
-            # change out hyperparameter of op
-            cnn_hyperparameters[op]['weights'][3]-=amount_to_rmv
-            assert w.get_shape().as_list()==cnn_hyperparameters[op]['weights']
+    elif ai[0]=='remove':
 
-            if op==last_conv_id:
-                w = tf.identity(weights['fulcon_out'])
-                #w = tf.transpose(w,[1,0])
-                w = tf.gather_nd(w,[[idx] for idx in indices_of_filters_keep])
-                #w = tf.transpose(w,[1,0])
-                weights['fulcon_out'] = w
-                cnn_hyps['fulcon_out']['in']-=amount_to_rmv
-                logger.debug('Size after feature map reduction: fulcon_out,%s',str(w.get_shape().as_list()))
-            else:
-                # change in hyperparameter of next conv op
-                next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(op)+1:] if 'conv' in tmp_op][0]
-                assert op!=next_conv_op
+        # this is trickier than adding weights
+        # We remove the given number of filters
+        # which have the least rolling mean activation averaged over whole map
+        amount_to_rmv = ai[1]
+        assert 'conv' in op
 
-                # change only the weights in next conv_op
-                w = tf.identity(weights[next_conv_op])
-                w = tf.transpose(w,[2,0,1,3])
-                w = tf.gather_nd(w,[[idx] for idx in indices_of_filters_keep])
-                w = tf.transpose(w,[1,2,0,3])
-                logger.debug('Size after feature map reduction: %s,%s',next_conv_op,str(w.get_shape().as_list()))
-                weights[next_conv_op] = w
+        indices_of_filters_keep = (np.argsort(layer_activations).flatten()[amount_to_rmv:]).astype('int32')
 
-                cnn_hyperparameters[next_conv_op]['weights'][2]-=amount_to_rmv
-                assert w.get_shape().as_list()==cnn_hyperparameters[op]['weights']
+        # currently no way to generally slice using gather
+        # need to do a transoformation to do this.
+        # change both weights and biase in the current op
 
+        tf_new_weights[op]=tf.transpose(weights[op],[3,0,1,2])
+        tf_new_weights[op] = tf.gather_nd(tf_new_weights[op],[[idx] for idx in indices_of_filters_keep])
+        tf_new_weights[op] = tf.transpose(tf_new_weights[op],[1,2,3,0])
+        logger.debug('Size after feature map reduction: %s,%s',op,str(tf_new_weights[op].get_shape().as_list()))
+        tf_ops.append(tf.assign(weights[op],tf_new_weights[op],validate_shape=False,use_locking=True))
+        tf_new_biases[op]=tf.gather(biases[op],indices_of_filters_keep)
+        tf_ops.append(tf.assign(biases[op],tf_new_biases[si][op],validate_shape=False,use_locking=True))
+        changed_variables.extend([weights[op],biases[op]])
+
+        # change out hyperparameter of op
+        cnn_hyperparameters[op]['weights'][3]-=amount_to_rmv
+        assert tf_new_weights[si][op].get_shape().as_list()==cnn_hyperparameters[op]['weights']
+
+        if op==last_conv_id:
+
+            tf_new_weights['fulcon_out'] = tf.gather_nd(weights['fulcon_out'],[[idx] for idx in indices_of_filters_keep])
+            tf_ops.append(tf.assign(weights['fulcon_out'],tf_new_weights['fulcon_out'],validate_shape=False,use_locking=True))
+            changed_variables.append(weights['fulcon_out'])
+
+            cnn_hyps['fulcon_out']['in']-=amount_to_rmv
+            logger.debug('Size after feature map reduction: fulcon_out,%s',str(tf_new_weights[si]['fulcon_out'].get_shape().as_list()))
+
+        else:
+            # change in hyperparameter of next conv op
+            next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(op)+1:] if 'conv' in tmp_op][0]
+            assert op!=next_conv_op
+
+            # change only the weights in next conv_op
+
+            tf_new_weights[next_conv_op] = tf.transpose(weights[next_conv_op],[2,0,1,3])
+            tf_new_weights[next_conv_op] = tf.gather_nd(tf_new_weights[si][next_conv_op],[[idx] for idx in indices_of_filters_keep])
+            tf_new_weights[next_conv_op] = tf.transpose(tf_new_weights[si][next_conv_op],[1,2,0,3])
+
+            logger.debug('Size after feature map reduction: %s,%s',next_conv_op,str(tf_new_weights[si][next_conv_op].get_shape().as_list()))
+
+            tf_ops.append(tf.assign(weights[next_conv_op],tf_new_weights[next_conv_op],validate_shape=False,use_locking=True))
+            changed_variables.append(weights[next_conv_op])
+
+            cnn_hyperparameters[next_conv_op]['weights'][2]-=amount_to_rmv
+            logger.debug('')
+            assert tf_new_weights[si][next_conv_op].get_shape().as_list()==cnn_hyperparameters[next_conv_op]['weights']
+
+    return tf_ops,weights,biases,changed_variables
 
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
     global logger
+    num_labels = dataset_info['num_labels']
     col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
     logger.info('Processing files %s,%s'%(dataset_filename,label_filename))
     fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
                     offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*start_idx,shape=(size,col_count[0],col_count[1],col_count[2]))
 
     fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
-                    offset=np.dtype('int32').itemsize*1*size,shape=(size,1))
+                    offset=np.dtype('int32').itemsize*1*start_idx,shape=(size,1))
 
     train_dataset = fp1[:,:,:,:]
+    # labels is nx1 shape
     train_labels = fp2[:]
 
+    train_ohe_labels = (np.arange(num_labels) == train_labels[:]).astype(np.float32)
     del fp1,fp2
-    return train_dataset,train_labels
+
+    assert np.all(np.argmax(train_ohe_labels[:10],axis=1).flatten()==train_labels[:10].flatten())
+    return train_dataset,train_ohe_labels
 
 if __name__=='__main__':
 
@@ -412,21 +453,14 @@ if __name__=='__main__':
         dataset_size = 50000
 
         if behavior == 'non-stationary':
-            dataset_filename='data_non_station'+os.sep+'cifar-10-non-station-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'cifar-10-non-station-label.pkl'
+            dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
 
         test_size=10000
-        test_dataset_filename='data_non_station'+os.sep+'cifar-10-non-station-test-dataset.pkl'
-        test_label_filename = 'data_non_station'+os.sep+'cifar-10-non-station-test-label.pkl'
-        fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
-                        offset=np.dtype('float32').itemsize*image_size*image_size*num_channels*0,
-                        shape=(test_size,image_size,image_size,num_channels))
-        fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
-                        offset=np.dtype('int32').itemsize*0,shape=(test_size,1))
-        test_dataset = fp1[:,:,:,:]
-        test_labels = fp2[:]
+        test_dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'cifar-10-nonstation-test-labels.pkl'
 
     elif datatype=='imagenet-100':
         image_size = 224
@@ -443,22 +477,13 @@ if __name__=='__main__':
         test_size=5000
         test_dataset_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-dataset.pkl'
         test_label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-label.pkl'
-        fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
-                        offset=np.dtype('float32').itemsize*image_size*image_size*num_channels*0,
-                        shape=(test_size,image_size,image_size,num_channels))
-
-        fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
-                        offset=np.dtype('int32').itemsize*0,shape=(test_size,1))
-        test_dataset = fp1[:,:,:,:]
-        test_labels = fp2[:]
-
-    del fp1,fp2
 
     dataset_info['image_size']=image_size
     dataset_info['num_labels']=num_labels
     dataset_info['num_channels']=num_channels
     dataset_info['dataset_size']=dataset_size
     dataset_info['chunk_size']=chunk_size
+    dataset_info['num_labels']=num_labels
 
     logger = logging.getLogger('main_logger')
     logger.setLevel(logging_level)
@@ -471,18 +496,19 @@ if __name__=='__main__':
     memmap_idx = 0
     train_dataset,train_labels = None,None
 
+    test_dataset,test_labels = load_data_from_memmap(dataset_info,test_dataset_filename,test_label_filename,0,test_size)
+
     assert chunk_size%batch_size==0
     batches_in_chunk = chunk_size//batch_size
 
-    train_size = train_dataset.shape[0]
     logger.info('='*80)
-    logger.info('\tTrain Size: %d'%train_size)
+    logger.info('\tTrain Size: %d'%dataset_size)
     logger.info('='*80)
 
     policy_interval = 10 #number of batches to process for each policy iteration
 
     #cnn_string = "C,5,1,256#P,3,2,0#P,5,2,0#C,3,1,128#C,5,1,512#C,3,1,64#C,3,1,128#C,5,1,128#Terminate,0,0,0"
-    cnn_string = "C,5,1,256#P,5,2,0#Terminate,0,0,0"
+    cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
 
     # Resetting this every policy interval
     rolling_data_distribution = {}
@@ -494,10 +520,13 @@ if __name__=='__main__':
         prev_mean_distribution[li]=1.0/float(num_labels)
 
     graph = tf.Graph()
-    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.65)
+    #gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.65)
     with tf.Session(graph=graph,
-                    config=tf.ConfigProto(allow_soft_placement=True,gpu_options=gpu_options)) as session, \
+                    config=tf.ConfigProto(allow_soft_placement=True)) as session, \
             tf.device('/gpu:0'):
+
+        hardness = 0.5
+        hard_pool = Pool(size=12800,batch_size=batch_size,image_size=image_size,num_channels=num_channels,num_labels=num_labels,assert_test=False)
 
         cnn_ops,cnn_hyperparameters = get_ops_hyps_from_string(cnn_string)
         weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
@@ -521,18 +550,28 @@ if __name__=='__main__':
         tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TrainDataset')
         tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TrainLabels')
 
+        # Pool data
+        tf_pool_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='PoolDataset')
+        tf_pool_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='PoolLabels')
+
         # Valid data (Next train batch) Unseen
         tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='ValidDataset')
         tf_valid_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='ValidLabels')
 
+        # Test data (Global)
+        tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TestDataset')
+        tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TestLabels')
+
         logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
         loss = calc_loss(logits,tf_labels)
+        loss_vec = calc_loss_vector(logits,tf_labels)
         pred = predict_with_logits(logits)
         optimize = optimize_func(loss,global_step)
         inc_gstep = inc_global_step(global_step)
 
         # valid predict function
         pred_valid = predict_with_dataset(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+        pred_test = predict_with_dataset(tf_test_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
 
         tf.initialize_all_variables().run()
 
@@ -550,24 +589,32 @@ if __name__=='__main__':
         act_decay = 0.5
         current_states,current_actions = None,None
         prev_valid_accuracy,next_valid_accuracy = 0,0
+
         #TODO: Think about decaying learning rate (should or shouldn't)
         for batch_id in range(ceil(dataset_size//batch_size)-1):
+
+            for op in cnn_ops:
+                if 'pool' not in op:
+                    assert weights[op].name in [v.name for v in tf.trainable_variables()]
+
             chunk_batch_id = batch_id%batches_in_chunk
 
             if chunk_batch_id==0:
-                train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+1)
+                # We load 1 extra batch (chunk_size+1) because we always make the valid batch the batch_id+1
+                train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size)
                 memmap_idx += chunk_size
 
             batch_data = train_dataset[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :]
 
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-            _, activation_means, l, (_,updated_lr), predictions = session.run(
-                    [logits,act_means,loss,optimize,pred], feed_dict=feed_dict
+            _, activation_means, l,l_vec, (_,updated_lr), predictions = session.run(
+                    [logits,act_means,loss,loss_vec,optimize,pred], feed_dict=feed_dict
             )
             if np.isnan(l):
-                logger.critical('NaN detected: (batchID)'%chunk_batch_id)
-
+                logger.critical('NaN detected: (batchID) %d (last Cost) %.3f',chunk_batch_id,train_losses[-1])
+            if np.random.random()<0.1:
+                hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hardness)
             assert not np.isnan(l)
 
             # rolling activation mean update
@@ -589,7 +636,7 @@ if __name__=='__main__':
                 prev_valid_batch_id = np.random.randint(max(0,batch_id-50),batch_id)
             else:
                 prev_valid_batch_id = 0
-            logger.debug('Chose %d as previous validation batch_id',prev_valid_batch_id)
+
             batch_valid_data = train_dataset[prev_valid_batch_id*batch_size:(prev_valid_batch_id+1)*batch_size, :, :, :]
             batch_valid_labels = train_labels[prev_valid_batch_id*batch_size:(prev_valid_batch_id+1)*batch_size, :]
 
@@ -600,12 +647,25 @@ if __name__=='__main__':
 
             if batch_id%25==0:
                 mean_train_loss = np.mean(train_losses)
-                logger.info('='*40)
+                logger.info('='*60)
                 logger.info('\tBatch ID: %d'%batch_id)
                 logger.info('\tLearning rate: %.5f'%updated_lr)
                 logger.info('\tMinibatch Mean Loss: %.3f'%mean_train_loss)
                 logger.info('\tValidation Accuracy (Unseen): %.3f'%next_valid_accuracy)
                 logger.info('\tValidation Accuracy (Seen): %.3f'%prev_valid_accuracy)
+
+                test_accuracies = []
+                for test_batch_id in range(test_size//batch_size):
+                    batch_test_data = test_dataset[test_batch_id*batch_size:(test_batch_id+1)*batch_size, :, :, :]
+                    batch_test_labels = test_labels[test_batch_id*batch_size:(test_batch_id+1)*batch_size, :]
+
+                    feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
+                    test_predictions = session.run([pred_test],feed_dict=feed_test_dict)
+                    test_accuracies.append(accuracy(test_predictions[0], batch_test_labels))
+
+                logger.info('\tTest Accuracy: %.3f'%np.mean(test_accuracies))
+                logger.info('='*60)
+                logger.info('')
 
                 # reset variables
                 mean_train_loss = 0.0
@@ -640,10 +700,44 @@ if __name__=='__main__':
                         filter_dict[op_i]=0
 
                 current_states,current_actions = adapter.output_trajectory({'distMSE':distMSE,'filter_counts':filter_dict})
-                # where all magic happens
-                adapt_cnn(cnn_ops,cnn_hyperparameters,current_states,current_actions,rolling_ativation_means)
+                # where all magic happens (adding and removing filters)
+                for si,ai in zip(current_states,current_actions):
+                    op = cnn_ops[si[0]]
+                    if 'conv' in op:
+                        tf_ops,weights,biases,changed_vars = adapt_cnn_with_tf_ops(cnn_ops, cnn_hyperparameters,
+                                                                                   weights,biases, si, ai, rolling_ativation_means[op])
+                        # need to do this in order of states
+                        new_param_values = session.run(tf_ops)
+                        #all_tr_vars = tf.trainable_variables()
+                        #all_tr_var_names = [v.name for v in all_tr_vars]
+                        for var,value in zip(changed_vars,new_param_values):
+                            logger.debug('%s,%s',var.name,str(value.shape))
+                        for op,w in weights.items():
+                            logger.debug('%s,%s',op,str(w.get_shape().as_list()))
+                        #tf.initialize_variables(changed_vars).run()
+
+                # pooling takes place here
                 # calculating all the things again
                 logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+                pool_logits,_ = get_logits_with_ops(tf_pool_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+                pool_loss = calc_loss(pool_logits,tf_pool_labels)
+                optimize_with_variable,upd_lr = optimize_with_variable_func(pool_loss,global_step,[weights[op],biases[op]])
+
+                pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
+                for si,ai in zip(current_states,current_actions):
+                    if ai[0]=='finetune':
+                        op = cnn_ops[si[0]]
+                        logger.debug('Only tuning following variables...')
+                        logger.debug('\t%s,%s',weights[op].name,str(weights[op]))
+                        logger.debug('\t%s,%s',biases[op].name,str(biases[op]))
+                        assert weights[op].name in [v.name for v in tf.trainable_variables()]
+                        assert biases[op].name in [v.name for v in tf.trainable_variables()]
+
+                        for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+                            _, _, _ = session.run([pool_logits,pool_loss,optimize_with_variable],feed_dict=pool_feed_dict)
 
                 #reset rolling activation means because network changed
                 rolling_ativation_means = {}
