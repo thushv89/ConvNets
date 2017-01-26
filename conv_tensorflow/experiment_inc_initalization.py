@@ -267,10 +267,10 @@ def add_pool_layer(ksize,stride,type,pool_id):
 
 def get_logits(dataset):
     global final_2d_output,current_final_2d_output
-
+    outputs = []
     logger.info('Current set of operations: %s'%iconv_ops)
-    x = dataset
-    logger.debug('Received data for X(%s)...'%x.get_shape().as_list())
+    outputs.append(dataset)
+    logger.debug('Received data for X(%s)...'%outputs[-1].get_shape().as_list())
 
     logger.info('Performing the specified operations ...')
 
@@ -278,22 +278,22 @@ def get_logits(dataset):
     for op in iconv_ops:
         if 'conv' in op:
             logger.debug('\tConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
-            logger.debug('\t\tX before convolution:%s'%(x.get_shape().as_list()))
+            logger.debug('\t\tX before convolution:%s'%(outputs[-1].get_shape().as_list()))
             logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
-            x = tf.nn.conv2d(x, weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding'])
-            logger.debug('\t\t Relu with x(%s) and b(%s)'%(x.get_shape().as_list(),biases[op].get_shape().as_list()))
-            x = tf.nn.relu(x + biases[op])
-            logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+            outputs.append(tf.nn.conv2d(outputs[-1], weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding']))
+            logger.debug('\t\t Relu with x(%s) and b(%s)'%(outputs[-1].get_shape().as_list(),biases[op].get_shape().as_list()))
+            outputs[-1] = tf.nn.relu(outputs[-1] + biases[op])
+            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
 
         if 'pool' in op:
             logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
 
-            x = tf.nn.max_pool(x,ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
-            logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+            outputs.append(tf.nn.max_pool(outputs[-1],ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding']))
+            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
 
         if op=='loc_res_norm':
             print('\tLocal Response Normalization')
-            x = tf.nn.local_response_normalization(x, depth_radius=3, bias=None, alpha=1e-2, beta=0.75)
+            outputs.append(tf.nn.local_response_normalization(outputs[-1], depth_radius=3, bias=None, alpha=1e-2, beta=0.75))
 
         if 'fulcon' in op:
             break
@@ -302,7 +302,7 @@ def get_logits(dataset):
     # we need to reshape the output of last subsampling layer to
     # convert 4D output to a 2D input to the hidden layer
     # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
-    shape = x.get_shape().as_list()
+    shape = outputs[-1].get_shape().as_list()
     current_final_2d_output = (shape[1],shape[2])
 
     logger.debug("Req calculation, Actual calculation: (%d,%d), (%d,%d)"
@@ -310,13 +310,12 @@ def get_logits(dataset):
     assert final_2d_output == current_final_2d_output
     rows = shape[0]
 
-
     print('Unwrapping last convolution layer %s to %s hidden layer'%(shape,(rows,hyparams['fulcon_out']['in'])))
-    x = tf.reshape(x, [rows,hyparams['fulcon_out']['in']])
+    reshaped_output = tf.reshape(outputs[-1], [rows,hyparams['fulcon_out']['in']])
 
-    return tf.matmul(x, weights['fulcon_out']) + \
-           biases['fulcon_out']
+    outputs.append(tf.matmul(reshaped_output, weights['fulcon_out']) + biases['fulcon_out'])
 
+    return outputs
 
 def calc_loss(logits,labels):
     # Training computation.
@@ -362,7 +361,7 @@ def predict_with_logits(logits):
     return prediction
 
 def predict_with_dataset(dataset):
-    prediction = tf.nn.softmax(get_logits(dataset))
+    prediction = tf.nn.softmax(get_logits(dataset)[-1])
     return prediction
 
 def get_weight_stats():
@@ -374,6 +373,155 @@ def get_weight_stats():
             stats[op]= {'min':np.min(w_nd),'max':np.max(w_nd),'mean':np.mean(w_nd),'stddev':np.std(w_nd)}
 
     return stats
+
+def get_max_activations_with_tensor(activations):
+    return tf.reduce_mean(activations,[1,2],keep_dims=False)
+
+def get_deconv_input():
+    global weights,biases
+
+def get_outputs_with_switches(layer_id,tf_selected_dataset):
+    pool_switches = {}
+    outputs = []
+    logger.info('Current set of operations: %s'%iconv_ops)
+    outputs.append(tf_selected_dataset)
+    logger.debug('Received data for X(%s)...'%outputs[-1].get_shape().as_list())
+
+    logger.info('Performing the specified operations ...')
+
+    #need to calculate the output according to the layers we have
+    for op in iconv_ops:
+        if 'conv' in op:
+            logger.debug('\tConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
+            logger.debug('\t\tX before convolution:%s'%(outputs[-1].get_shape().as_list()))
+            logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
+            outputs.append(tf.nn.conv2d(outputs[-1], weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding']))
+            logger.debug('\t\t Relu with x(%s) and b(%s)'%(outputs[-1].get_shape().as_list(),biases[op].get_shape().as_list()))
+            outputs[-1] = tf.nn.relu(outputs[-1] + biases[op])
+            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
+
+            if op==layer_id:
+                break
+
+        if 'pool' in op:
+            logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
+            # whats the shape of switch? 4D (size b,w,h,d)
+            # TODO: Find the size of switch
+            pool_out,switch = tf.nn.max_pool_with_args(outputs[-1],ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
+            outputs.append(pool_out)
+            pool_switches[op] = switch
+            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
+
+        if op=='loc_res_norm':
+            print('\tLocal Response Normalization')
+            outputs.append(tf.nn.local_response_normalization(outputs[-1], depth_radius=3, bias=None, alpha=1e-2, beta=0.75))
+
+        if 'fulcon' in op:
+            break
+
+        return outputs,pool_switches
+
+def deconv_with_activation(layer_id,tf_activation,pool_switches):
+    outputs = []
+    logger.info('Current set of operations: %s'%iconv_ops)
+    outputs.append(tf_activation)
+    logger.debug('Received data for X(%s)...'%outputs[-1].get_shape().as_list())
+
+    logger.info('Performing the specified operations ...')
+
+    #need to calculate the output according to the layers we have
+    op_index = iconv_ops.index(layer_id)
+    for op in iconv_ops[:op_index+1].reverse():
+        if 'conv' in op:
+            # Deconvolution
+            logger.debug('\tDeConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
+            logger.debug('\t\tX before convolution:%s'%(outputs[-1].get_shape().as_list()))
+            logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
+            deconv_weights = tf.transpose(weights[op],[0,1,3,2])
+            outputs.append(tf.nn.conv2d_transpose(outputs[-1], deconv_weights, hyparams[op]['stride'], padding=hyparams[op]['padding']))
+            outputs[-1] = tf.nn.relu(outputs[-1])
+            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
+
+        if 'pool' in op:
+            # Unpooling
+            logger.debug('\tUnPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
+            op_switches = pool_switches[op]
+            outputs.append(pool_out)
+            pool_switches[op] = switch
+            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
+
+        if op=='loc_res_norm':
+            print('\tLocal Response Normalization')
+            outputs.append(tf.nn.local_response_normalization(outputs[-1], depth_radius=3, bias=None, alpha=1e-2, beta=0.75))
+
+        if 'fulcon' in op:
+            break
+
+def visualize_with_deconv(session,layer_id,all_x):
+    '''
+    DECONV works the following way.
+    # Pick a layer
+    # Pick a subset of feature maps or all the feature maps in the layer (if small)
+    # For each feature map
+    #     Pick the n images that maximally activate that feature map
+    #     For each image
+    #          Do back propagation for the given activations from that layer until the pixel input layer
+    '''
+
+    examples_per_featuremap = 10
+    images_for_featuremap = {} # a dictionary with featuremmap_id : an ndarray with size num_of_images_per_featuremap x image_size
+    mean_activations_for_featuremap = {} # this is a dictionary containing featuremap_id : [list of mean activations for each image in order]
+
+    layer_index = iconv_ops.index(layer_id)
+    tf_deconv_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
+    tf_selected_image = tf.placeholder(tf.float32, shape=(1, image_size, image_size, num_channels))
+
+    tf_activations = get_logits(tf_deconv_dataset)
+    # layer_index+1 because we have input as 0th index
+    tf_get_max_activations = get_max_activations_with_tensor(tf_activations[layer_index+1])
+
+    tf_outputs,tf_switches = get_outputs_with_switches(layer_id,tf_selected_image)
+
+    # activations for batch of data for a layer of size w(width),h(height),d(depth) will be = b x w x h x d
+    # reduce this to b x d by using reduce sum
+    image_shape = all_x.shape[1:]
+    for batch_id in range(all_x.shape[0]//batch_size):
+
+        batch_data = all_x[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
+        feed_dict = {tf_deconv_dataset:batch_data}
+        _,max_activations = session.run([tf_activations,tf_get_max_activations],feed_dict=feed_dict)
+        # max_activations will be b x d
+        max_image_ids = list(np.argmax(max_activations,axis=0).flatten())
+
+        for d_i,img_id in enumerate(max_image_ids):
+
+            if d_i not in mean_activations_for_featuremap:
+                mean_activations_for_featuremap[d_i] = [max_activations[d_i]]
+                images_for_featuremap[d_i] = np.reshape(batch_data[img_id,:,:,:],(1,image_shape[0],image_shape[1],image_shape[2]))
+            else:
+
+                if mean_activations_for_featuremap[d_i]> examples_per_featuremap:
+                    # delete the minimum
+                    min_idx = np.asscalar(np.argmin(mean_activations_for_featuremap[d_i]))
+                    del mean_activations_for_featuremap[d_i][min_idx]
+                    images_for_featuremap[d_i] = np.delete(images_for_featuremap[d_i],[min_idx],axis=0)
+
+                images_for_featuremap[d_i] = np.append(images_for_featuremap[d_i],batch_data[img_id,:,:,:],axis=0)
+                mean_activations_for_featuremap[d_i].append(max_activations[d_i])
+
+    for d_i,imgs_for_map in images_for_featuremap.items():
+
+        for image in imgs_for_map:
+            # propagate the image forward
+            img_activations,img_switches = session.run([tf_outputs,tf_switches],feed_dict={tf_selected_image:image})
+
+            # zero out d_i feature_map everything except the maximum activation
+            max_act_loc = np.argmax(img_activations[-1][0,:,:,d_i])
+            assert max_act_loc.size == 2
+            feature_activation = np.zeros_like(img_activations[-1],dtype=np.float32)
+            feature_activation[0,max_act_loc[0],max_act_loc[1],d_i] = img_activations[-1][0,max_act_loc[0],max_act_loc[1],d_i]
+
+            # backpropagate
 
 if __name__=='__main__':
     global logger
@@ -438,7 +586,7 @@ if __name__=='__main__':
 
         init_iconvnet() #initialize the initial conv net
 
-        logits = get_logits(tf_dataset)
+        logits = get_logits(tf_dataset)[-1]
         loss = calc_loss(logits,tf_labels)
         pred = predict_with_logits(logits)
         optimize = optimize_func(loss,global_step)
@@ -458,14 +606,14 @@ if __name__=='__main__':
                 add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],conv_id,True)
                 pool_id = 'pool_2'
                 add_pool_layer(hyparams[pool_id]['kernel'],hyparams[pool_id]['stride'],hyparams[pool_id]['type'],pool_id)
-                get_logits(tf_dataset)
+                get_logits(tf_dataset)[-1]
 
             elif epoch == 10 and incrementally_add_layers:
                 conv_id = 'conv_3'
                 add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],conv_id,True)
                 pool_id = 'pool_2'
                 add_pool_layer(hyparams[pool_id]['kernel'],hyparams[pool_id]['stride'],hyparams[pool_id]['type'],pool_id)
-                get_logits(tf_dataset)
+                get_logits(tf_dataset)[-1]
 
             for batch_id in range(ceil(train_size//batch_size)-1):
 
