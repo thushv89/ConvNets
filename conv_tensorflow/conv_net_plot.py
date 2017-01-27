@@ -74,9 +74,22 @@ beta = 5e-8
 
 #--------------------- SUBSAMPLING OPERATIONS and THERE PARAMETERS -------------------------------------------------#
 #conv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','incept_1','pool_3','fulcon_hidden_1','fulcon_hidden_2','fulcon_out']
-conv_architecture = 'LeNet5' # LeNet7 / LeNet5 / LeNet3
+conv_architecture = 'LeNet9' # LeNet7 / LeNet5 / LeNet3
 
-if conv_architecture == 'LeNet7':
+if conv_architecture == 'LeNet9':
+    conv_ops = [
+        'conv_1','pool_1',
+        'conv_2',
+        'conv_3','pool_1',
+        'conv_4',
+        'conv_5','pool_1',
+        'conv_6',
+        'conv_7','pool_1',
+        'conv_8',
+        'conv_9',
+        'pool_global','fulcon_out'
+                ]
+elif conv_architecture == 'LeNet7':
     conv_ops = [
         'conv_1','pool_1',
         'conv_2','pool_1',
@@ -107,7 +120,7 @@ else:
     raise NotImplementedError
 
 #number of feature maps for each convolution layer
-depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512,'conv_5':1024,'conv_6':1024,'conv_7':1024}
+depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512,'conv_5':1024,'conv_6':1024,'conv_7':1024,'conv_8':1024,'conv_9':1024}
 incept_orders = {'incept_1':['ipool_2x2','iconv_1x1','iconv_3x3','iconv_5x5']}
 
 maxout,maxout_bank_size = False,1
@@ -121,10 +134,16 @@ conv_4_hyparams = {'weights':[3,3,depth_conv['conv_3'],depth_conv['conv_4']],'st
 conv_5_hyparams = {'weights':[3,3,depth_conv['conv_4'],depth_conv['conv_5']],'stride':[1,1,1,1],'padding':'SAME'}
 conv_6_hyparams = {'weights':[3,3,depth_conv['conv_5'],depth_conv['conv_6']],'stride':[1,1,1,1],'padding':'SAME'}
 conv_7_hyparams = {'weights':[3,3,depth_conv['conv_6'],depth_conv['conv_7']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_8_hyparams = {'weights':[3,3,depth_conv['conv_7'],depth_conv['conv_8']],'stride':[1,1,1,1],'padding':'SAME'}
+conv_9_hyparams = {'weights':[3,3,depth_conv['conv_8'],depth_conv['conv_9']],'stride':[1,1,1,1],'padding':'SAME'}
+
 pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 pool_3_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
-if conv_architecture=='LeNet7':
+
+if conv_architecture=='LeNet9':
+    pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'VALID'}
+elif conv_architecture=='LeNet7':
     pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'VALID'}
 elif conv_architecture=='LeNet5':
     pool_global_hyparams = {'type':'avg','kernel':[1,14,14,1],'stride':[1,1,1,1],'padding':'VALID'}
@@ -139,7 +158,7 @@ hidden_1_hyparams = {'in':0,'out':1024}
 hidden_2_hyparams = {'in':1024,'out':512}
 out_hyparams = {'in':1024,'out':100}
 
-hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,'conv_4':conv_4_hyparams,'conv_5':conv_5_hyparams,'conv_6':conv_6_hyparams,'conv_7':conv_7_hyparams,
+hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,'conv_4':conv_4_hyparams,'conv_5':conv_5_hyparams,'conv_6':conv_6_hyparams,'conv_7':conv_7_hyparams,'conv_8':conv_8_hyparams,'conv_9':conv_9_hyparams,
            'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_3':pool_3_hyparams,'pool_global':pool_global_hyparams,
            'fulcon_hidden_1':hidden_1_hyparams,'fulcon_hidden_2': hidden_2_hyparams, 'fulcon_out':out_hyparams}
 

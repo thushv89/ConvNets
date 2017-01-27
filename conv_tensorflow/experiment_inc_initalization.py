@@ -380,12 +380,12 @@ def get_max_activations_with_tensor(activations):
 def get_deconv_input():
     global weights,biases
 
-def get_outputs_with_switches(layer_id,tf_selected_dataset):
+def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset):
     pool_switches = {}
-    outputs = []
+    outputs_fwd = []
     logger.info('Current set of operations: %s'%iconv_ops)
-    outputs.append(tf_selected_dataset)
-    logger.debug('Received data for X(%s)...'%outputs[-1].get_shape().as_list())
+    outputs_fwd.append(tf_selected_dataset)
+    logger.debug('Received data for X(%s)...'%outputs_fwd[-1].get_shape().as_list())
 
     logger.info('Performing the specified operations ...')
 
@@ -393,33 +393,83 @@ def get_outputs_with_switches(layer_id,tf_selected_dataset):
     for op in iconv_ops:
         if 'conv' in op:
             logger.debug('\tConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
-            logger.debug('\t\tX before convolution:%s'%(outputs[-1].get_shape().as_list()))
+            logger.debug('\t\tX before convolution:%s'%(outputs_fwd[-1].get_shape().as_list()))
             logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
-            outputs.append(tf.nn.conv2d(outputs[-1], weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding']))
-            logger.debug('\t\t Relu with x(%s) and b(%s)'%(outputs[-1].get_shape().as_list(),biases[op].get_shape().as_list()))
-            outputs[-1] = tf.nn.relu(outputs[-1] + biases[op])
-            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
+            outputs_fwd.append(tf.nn.conv2d(outputs_fwd[-1], weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding']))
+            logger.debug('\t\t Relu with x(%s) and b(%s)'%(outputs_fwd[-1].get_shape().as_list(),biases[op].get_shape().as_list()))
+            outputs_fwd[-1] = tf.nn.relu(outputs_fwd[-1] + biases[op])
+            logger.debug('\t\tX after %s:%s'%(op,outputs_fwd[-1].get_shape().as_list()))
 
             if op==layer_id:
                 break
 
         if 'pool' in op:
             logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
-            # whats the shape of switch? 4D (size b,w,h,d)
-            # TODO: Find the size of switch
-            pool_out,switch = tf.nn.max_pool_with_args(outputs[-1],ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
-            outputs.append(pool_out)
+            pool_out,switch = tf.nn.max_pool_with_argmax(outputs_fwd[-1],ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding'])
+            outputs_fwd.append(pool_out)
             pool_switches[op] = switch
-            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
+            logger.debug('\t\tX after %s:%s'%(op,outputs_fwd[-1].get_shape().as_list()))
 
         if op=='loc_res_norm':
             print('\tLocal Response Normalization')
-            outputs.append(tf.nn.local_response_normalization(outputs[-1], depth_radius=3, bias=None, alpha=1e-2, beta=0.75))
+            outputs_fwd.append(tf.nn.local_response_normalization(outputs_fwd[-1], depth_radius=3, bias=None, alpha=1e-2, beta=0.75))
 
         if 'fulcon' in op:
             break
 
-        return outputs,pool_switches
+    # outputs[-1] will have the required activation
+    # will be of size b x 1 x 1
+    preserved_activation_index = tf.argmax(outputs_fwd[-1][:,:,:,featuremap_id],axis=[1,2])
+    # transforming the indices to suit the tensor of size b x w x h x d
+
+    # size b x w x h x d
+    modified_activations = tf.zeros_like(outputs_fwd[-1])
+    modified_activations = tf.scatter_add(modified_activations[:,:,:,featuremap_id],preserved_activation_index)
+
+    outputs_bckwd = [modified_activations]
+    op_index = iconv_ops.index(layer_id)
+    for op in iconv_ops[:op_index+1].reverse():
+        if 'conv' in op:
+            # Deconvolution
+            logger.debug('\tDeConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
+            logger.debug('\t\tX before convolution:%s'%(outputs_bckwd[-1].get_shape().as_list()))
+            logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
+            deconv_weights = tf.transpose(weights[op],[0,1,3,2])
+            outputs_bckwd.append(tf.nn.conv2d_transpose(outputs_bckwd[-1], deconv_weights, hyparams[op]['stride'], padding=hyparams[op]['padding']))
+            outputs_bckwd[-1] = tf.nn.relu(outputs_bckwd[-1])
+            logger.debug('\t\tX after %s:%s'%(op,outputs_bckwd[-1].get_shape().as_list()))
+
+        if 'pool' in op:
+            # Unpooling
+            logger.debug('\tUnPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
+
+            # Unpooling
+
+            # Switch variable returns an array of size b x h x w x d. But only provide flattened indices
+            # Meaning that if you have an output of size 4x4 it will flatten it to a 16 element long array
+
+            # we're goin go make a batch_range which is like [0,0,...,0,1,1,...,1,...]
+            # so each unique number will have (h/stride * w/stride * d) elements
+            # first it will be of shape b x h/stride x w/stride x d
+            # but then we reshape it to b x (h/stride * w/stride * d)
+            tf_switches = pool_switches[op]
+            tf_batch_range = tf.reshape(tf.range(b,dtype=tf.int64),[b,1,1,1])
+            tf_ones_mask = tf.ones_like(tf_switches)
+            tf_multi_batch_range = tf_ones_mask * tf_batch_range
+
+            # here we have indices that looks like b*(h/stride)*(w/stride) x 2
+            tf_indices = tf.stack([tf.reshape(tf_multi_batch_range,[-1]),tf.reshape(tf_switches,[-1])],axis=1)
+
+            updates = tf.to_double(tf.gather_nd(tf.reshape(input,[b,w*h*d]),tf_indices),name='updates')
+
+            ref = tf.Variable(tf.zeros_like([b,w*h*d],dtype=tf.float64),dtype=tf.float64,name='ref')
+            
+            session.run(tf.variable_initializer([ref]))
+
+            updated_unpool = tf.scatter_nd(tf.to_int32(tf_indices),updates,tf.constant([b,w*h*d]),name='updated_unpool')
+            updated_unpool = tf.reshape(updated_unpool,[b,h,w,d])
+            unpool_input,_,unpool_out = session.run([input,updates,updated_unpool])
+            logger.debug('\t\tX after %s:%s'%(op,outputs_bckwd[-1].get_shape().as_list()))
 
 def deconv_with_activation(layer_id,tf_activation,pool_switches):
     outputs = []
@@ -480,8 +530,6 @@ def visualize_with_deconv(session,layer_id,all_x):
     # layer_index+1 because we have input as 0th index
     tf_get_max_activations = get_max_activations_with_tensor(tf_activations[layer_index+1])
 
-    tf_outputs,tf_switches = get_outputs_with_switches(layer_id,tf_selected_image)
-
     # activations for batch of data for a layer of size w(width),h(height),d(depth) will be = b x w x h x d
     # reduce this to b x d by using reduce sum
     image_shape = all_x.shape[1:]
@@ -511,17 +559,18 @@ def visualize_with_deconv(session,layer_id,all_x):
 
     for d_i,imgs_for_map in images_for_featuremap.items():
 
-        for image in imgs_for_map:
-            # propagate the image forward
-            img_activations,img_switches = session.run([tf_outputs,tf_switches],feed_dict={tf_selected_image:image})
+        # propagate the image forward
+        img_activations,img_switches = session.run([tf_outputs,tf_switches],feed_dict={tf_selected_image:imgs_for_map})
 
-            # zero out d_i feature_map everything except the maximum activation
+        # zero out d_i feature_map everything except the maximum activation
+        for b_i in range(img_activations[-1].shape[0]):
             max_act_loc = np.argmax(img_activations[-1][0,:,:,d_i])
             assert max_act_loc.size == 2
             feature_activation = np.zeros_like(img_activations[-1],dtype=np.float32)
             feature_activation[0,max_act_loc[0],max_act_loc[1],d_i] = img_activations[-1][0,max_act_loc[0],max_act_loc[1],d_i]
 
-            # backpropagate
+        # backpropagate
+
 
 if __name__=='__main__':
     global logger

@@ -127,7 +127,7 @@ if __name__=='__main__':
             else:
                 iterLogger.info('\n#Data Percentage,Epoch,Test Accuracy, Test Accuracy (Top-3)')
 
-            chunk_size = batch_size*200
+            chunk_size = batch_size*50
             train_size_clipped = int(train_size*data_percentage)
             chunks_in_train = train_size_clipped//chunk_size
             if abs(train_size_clipped - chunks_in_train*chunk_size) < 5*batch_size:
