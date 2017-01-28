@@ -20,6 +20,7 @@ import qlearner
 import learn_best_actions
 from data_pool import Pool
 import getopt
+from scipy.misc import imsave
 
 logger = None
 logging_level = logging.DEBUG
@@ -36,7 +37,7 @@ elif datatype=='notMNIST':
     num_labels = 10
     num_channels = 1 # grayscale
 
-batch_size = 16 # number of datapoints in a single batch
+batch_size = 128 # number of datapoints in a single batch
 
 
 start_lr = 0.001
@@ -62,7 +63,7 @@ test_dataset, test_labels = None,None
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
 
-incrementally_add_layers = True
+incrementally_add_layers = False
 
 if incrementally_add_layers:
     if use_local_res_norm:
@@ -374,20 +375,28 @@ def get_weight_stats():
 
     return stats
 
-def get_max_activations_with_tensor(activations):
-    return tf.reduce_mean(activations,[1,2],keep_dims=False)
+
+def find_max_activations_for_layer(activations):
+    # this should return the id of the image that had max activation for all feature maps
+
+    # this matrix of size b x d
+    max_activations_images = tf.reduce_max(activations,axis=[1,2])
+    img_id_with_max_activation = tf.argmax(max_activations_images, axis=0)
+    return max_activations_images,img_id_with_max_activation
 
 def get_deconv_input():
     global weights,biases
 
 def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset):
+    global weights,biases
+
     pool_switches = {}
     outputs_fwd = []
     logger.info('Current set of operations: %s'%iconv_ops)
     outputs_fwd.append(tf_selected_dataset)
     logger.debug('Received data for X(%s)...'%outputs_fwd[-1].get_shape().as_list())
 
-    logger.info('Performing the specified operations ...')
+    logger.info('Performing the forward pass ...')
 
     #need to calculate the output according to the layers we have
     for op in iconv_ops:
@@ -410,39 +419,65 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset):
             pool_switches[op] = switch
             logger.debug('\t\tX after %s:%s'%(op,outputs_fwd[-1].get_shape().as_list()))
 
-        if op=='loc_res_norm':
-            print('\tLocal Response Normalization')
-            outputs_fwd.append(tf.nn.local_response_normalization(outputs_fwd[-1], depth_radius=3, bias=None, alpha=1e-2, beta=0.75))
-
         if 'fulcon' in op:
             break
 
+    logger.info('Performing the backward pass ...\n')
+    logger.debug('\tInput Size (Non-Zeroed): %s',str(outputs_fwd[-1].get_shape().as_list()))
+    # b - batch size, h - height, w - width, d - number of filters
+    b,h,w,d = outputs_fwd[-1].get_shape().as_list()
+
     # outputs[-1] will have the required activation
     # will be of size b x 1 x 1
-    preserved_activation_index = tf.argmax(outputs_fwd[-1][:,:,:,featuremap_id],axis=[1,2])
-    # transforming the indices to suit the tensor of size b x w x h x d
 
-    # size b x w x h x d
-    modified_activations = tf.zeros_like(outputs_fwd[-1])
-    modified_activations = tf.scatter_add(modified_activations[:,:,:,featuremap_id],preserved_activation_index)
+    argmax_indices = tf.argmax(tf.reshape(outputs_fwd[-1],[b,h*w*d]),axis=1)
+    batch_range = tf.range(b,dtype=tf.int64)
+    nonzero_indices = tf.stack([batch_range,argmax_indices],axis=1)
+    updates = tf.gather_nd(tf.reshape(outputs_fwd[-1],[b,h*w*d]),nonzero_indices)
+    logger.debug('\tNon-zero indices shape: %s',nonzero_indices.get_shape().as_list())
+    logger.debug('\tNon-zero updates shape: %s',updates.get_shape().as_list())
+    # Creating the new activations (of size: b x w x h x d) with only the highest activations non-zero
+    # and rest set to zero
+    zeroed_activations = tf.scatter_nd(nonzero_indices,updates,tf.constant([b,h*w*d],dtype=tf.int64))
+    zeroed_activations = tf.reshape(zeroed_activations,[b,h,w,d])
 
-    outputs_bckwd = [modified_activations]
+    outputs_bckwd = [zeroed_activations]
     op_index = iconv_ops.index(layer_id)
-    for op in iconv_ops[:op_index+1].reverse():
+
+    logger.debug('Input Size (Zeroed): %s',str(outputs_bckwd[-1].get_shape().as_list()))
+
+    for op in reversed(iconv_ops[:op_index+1]):
         if 'conv' in op:
             # Deconvolution
-            logger.debug('\tDeConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
-            logger.debug('\t\tX before convolution:%s'%(outputs_bckwd[-1].get_shape().as_list()))
+            #deconv_weights = tf.transpose(weights[op],[0,1,3,2])
+            logger.debug('\tDeConvolving (%s) With Weights:%s Stride:%s'%(op,weights[op].get_shape().as_list(),hyparams[op]['stride']))
+            logger.debug('\t\tX before deconvolution:%s'%(outputs_bckwd[-1].get_shape().as_list()))
             logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
-            deconv_weights = tf.transpose(weights[op],[0,1,3,2])
-            outputs_bckwd.append(tf.nn.conv2d_transpose(outputs_bckwd[-1], deconv_weights, hyparams[op]['stride'], padding=hyparams[op]['padding']))
-            outputs_bckwd[-1] = tf.nn.relu(outputs_bckwd[-1])
+
+            output_shape = outputs_bckwd[-1].get_shape().as_list()
+            output_shape[1] *= hyparams[op]['stride'][1]
+            output_shape[2] *= hyparams[op]['stride'][2]
+            output_shape[3] = hyparams[op]['weights'][2]
+            logger.debug('\t\tExpected output shape: %s',output_shape)
+            outputs_bckwd.append(
+                    tf.nn.conv2d_transpose(outputs_bckwd[-1], filter=weights[op], strides=hyparams[op]['stride'],
+                                           padding=hyparams[op]['padding'],output_shape=tf.constant(output_shape))
+            )
+
             logger.debug('\t\tX after %s:%s'%(op,outputs_bckwd[-1].get_shape().as_list()))
 
         if 'pool' in op:
             # Unpooling
             logger.debug('\tUnPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
+            logger.debug('\t\tInput shape: %s',outputs_bckwd[-1].get_shape().as_list())
 
+            input_shape = outputs_bckwd[-1].get_shape().as_list()
+
+            output_shape = outputs_bckwd[-1].get_shape().as_list()
+            output_shape[1] *= hyparams[op]['stride'][1]
+            output_shape[2] *= hyparams[op]['stride'][2]
+
+            logger.debug('\t\tExpected output shape: %s',output_shape)
             # Unpooling
 
             # Switch variable returns an array of size b x h x w x d. But only provide flattened indices
@@ -460,54 +495,25 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset):
             # here we have indices that looks like b*(h/stride)*(w/stride) x 2
             tf_indices = tf.stack([tf.reshape(tf_multi_batch_range,[-1]),tf.reshape(tf_switches,[-1])],axis=1)
 
-            updates = tf.to_double(tf.gather_nd(tf.reshape(input,[b,w*h*d]),tf_indices),name='updates')
+            #updates = tf.to_float(tf.gather_nd(tf.reshape(outputs_bckwd[-1],[b,input_shape[1]*input_shape[2]*input_shape[3]]),tf_indices),name='updates_'+op)
+            updates = tf.reshape(outputs_bckwd[-1],[-1])
 
-            ref = tf.Variable(tf.zeros_like([b,w*h*d],dtype=tf.float64),dtype=tf.float64,name='ref')
+            ref = tf.Variable(tf.zeros([b,output_shape[1]*output_shape[2]*output_shape[3]],dtype=tf.float32),dtype=tf.float32,name='ref_'+op)
             
-            session.run(tf.variable_initializer([ref]))
+            session.run(tf.variables_initializer([ref]))
 
-            updated_unpool = tf.scatter_nd(tf.to_int32(tf_indices),updates,tf.constant([b,w*h*d]),name='updated_unpool')
-            updated_unpool = tf.reshape(updated_unpool,[b,h,w,d])
-            unpool_input,_,unpool_out = session.run([input,updates,updated_unpool])
+            updated_unpool = tf.scatter_nd(tf.to_int32(tf_indices),updates,tf.constant([b,output_shape[1]*output_shape[2]*output_shape[3]]),name='updated_unpool_'+op)
+
+            outputs_bckwd.append(tf.reshape(updated_unpool,[b,output_shape[1],output_shape[2],output_shape[3]]))
+
+            outputs_bckwd[-1] = tf.nn.relu(outputs_bckwd[-1])
+
             logger.debug('\t\tX after %s:%s'%(op,outputs_bckwd[-1].get_shape().as_list()))
 
-def deconv_with_activation(layer_id,tf_activation,pool_switches):
-    outputs = []
-    logger.info('Current set of operations: %s'%iconv_ops)
-    outputs.append(tf_activation)
-    logger.debug('Received data for X(%s)...'%outputs[-1].get_shape().as_list())
-
-    logger.info('Performing the specified operations ...')
-
-    #need to calculate the output according to the layers we have
-    op_index = iconv_ops.index(layer_id)
-    for op in iconv_ops[:op_index+1].reverse():
-        if 'conv' in op:
-            # Deconvolution
-            logger.debug('\tDeConvolving (%s) With Weights:%s Stride:%s'%(op,hyparams[op]['weights'],hyparams[op]['stride']))
-            logger.debug('\t\tX before convolution:%s'%(outputs[-1].get_shape().as_list()))
-            logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
-            deconv_weights = tf.transpose(weights[op],[0,1,3,2])
-            outputs.append(tf.nn.conv2d_transpose(outputs[-1], deconv_weights, hyparams[op]['stride'], padding=hyparams[op]['padding']))
-            outputs[-1] = tf.nn.relu(outputs[-1])
-            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
-
-        if 'pool' in op:
-            # Unpooling
-            logger.debug('\tUnPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
-            op_switches = pool_switches[op]
-            outputs.append(pool_out)
-            pool_switches[op] = switch
-            logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
-
-        if op=='loc_res_norm':
-            print('\tLocal Response Normalization')
-            outputs.append(tf.nn.local_response_normalization(outputs[-1], depth_radius=3, bias=None, alpha=1e-2, beta=0.75))
-
-        if 'fulcon' in op:
-            break
+    return outputs_fwd,outputs_bckwd
 
 def visualize_with_deconv(session,layer_id,all_x):
+    global logger, weights, biases
     '''
     DECONV works the following way.
     # Pick a layer
@@ -518,17 +524,19 @@ def visualize_with_deconv(session,layer_id,all_x):
     #          Do back propagation for the given activations from that layer until the pixel input layer
     '''
 
+    selected_featuremap_ids = list(np.random.randint(0,depth_conv[layer_id],(5,)))
+
     examples_per_featuremap = 10
     images_for_featuremap = {} # a dictionary with featuremmap_id : an ndarray with size num_of_images_per_featuremap x image_size
     mean_activations_for_featuremap = {} # this is a dictionary containing featuremap_id : [list of mean activations for each image in order]
 
     layer_index = iconv_ops.index(layer_id)
     tf_deconv_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-    tf_selected_image = tf.placeholder(tf.float32, shape=(1, image_size, image_size, num_channels))
+    tf_selected_image = tf.placeholder(tf.float32, shape=(examples_per_featuremap, image_size, image_size, num_channels))
 
     tf_activations = get_logits(tf_deconv_dataset)
     # layer_index+1 because we have input as 0th index
-    tf_get_max_activations = get_max_activations_with_tensor(tf_activations[layer_index+1])
+    tf_max_activations, tf_img_ids = find_max_activations_for_layer(tf_activations[layer_index+1])
 
     # activations for batch of data for a layer of size w(width),h(height),d(depth) will be = b x w x h x d
     # reduce this to b x d by using reduce sum
@@ -537,40 +545,53 @@ def visualize_with_deconv(session,layer_id,all_x):
 
         batch_data = all_x[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
         feed_dict = {tf_deconv_dataset:batch_data}
-        _,max_activations = session.run([tf_activations,tf_get_max_activations],feed_dict=feed_dict)
-        # max_activations will be b x d
-        max_image_ids = list(np.argmax(max_activations,axis=0).flatten())
 
-        for d_i,img_id in enumerate(max_image_ids):
+        # max_activations b x d, img_ids_for_max will be 1 x d
+        max_activations,img_ids_for_max = session.run([tf_max_activations,tf_img_ids],feed_dict=feed_dict)
+        if batch_id==0:
+            logger.debug('Max activations for batch %d size: %s',batch_id,str(max_activations.shape))
+            logger.debug('Image ID  for batch %d size: %s',batch_id,str(img_ids_for_max.shape))
+
+        for d_i in range(img_ids_for_max.shape[0]):
+
+            # we only run this for selected set of featurmaps
+            if d_i not in selected_featuremap_ids:
+                continue
+
+            img_id = np.asscalar(img_ids_for_max[d_i])
+
+            if d_i==selected_featuremap_ids[1]:
+                logger.debug('Found %d image id for depth %d',img_id,d_i)
 
             if d_i not in mean_activations_for_featuremap:
-                mean_activations_for_featuremap[d_i] = [max_activations[d_i]]
+                mean_activations_for_featuremap[d_i] = [np.asscalar(max_activations[img_id,d_i])]
                 images_for_featuremap[d_i] = np.reshape(batch_data[img_id,:,:,:],(1,image_shape[0],image_shape[1],image_shape[2]))
             else:
-
-                if mean_activations_for_featuremap[d_i]> examples_per_featuremap:
+                if len(mean_activations_for_featuremap[d_i])>= examples_per_featuremap:
                     # delete the minimum
-                    min_idx = np.asscalar(np.argmin(mean_activations_for_featuremap[d_i]))
+
+                    min_idx = np.asscalar(np.argmin(np.asarray(mean_activations_for_featuremap[d_i])))
+                    if d_i==selected_featuremap_ids[1]:
+                        logger.debug('Mean activations: %s',mean_activations_for_featuremap[d_i])
+                        logger.debug('\tFound minimum activation with %.2f at index %d',np.min(mean_activations_for_featuremap[d_i]),min_idx)
+
                     del mean_activations_for_featuremap[d_i][min_idx]
                     images_for_featuremap[d_i] = np.delete(images_for_featuremap[d_i],[min_idx],axis=0)
+                reshp_img = np.reshape(batch_data[img_id,:,:,:],(1,image_shape[0],image_shape[1],image_shape[2]))
+                images_for_featuremap[d_i] = np.append(images_for_featuremap[d_i],reshp_img,axis=0)
+                mean_activations_for_featuremap[d_i].append(np.asscalar(max_activations[img_id,d_i]))
 
-                images_for_featuremap[d_i] = np.append(images_for_featuremap[d_i],batch_data[img_id,:,:,:],axis=0)
-                mean_activations_for_featuremap[d_i].append(max_activations[d_i])
+    logger.info('Size of image set for feature map: %s',str(len(mean_activations_for_featuremap[selected_featuremap_ids[0]])))
 
-    for d_i,imgs_for_map in images_for_featuremap.items():
+    # TODO: run the following command for all the selected featuremap_id
+    all_deconv_outputs = []
+    for d_i in selected_featuremap_ids:
+        tf_fwd_outputs, tf_bck_outputs = deconv_featuremap_with_data(layer_id,d_i,tf_selected_image)
+        fwd_outputs, deconv_outputs = session.run([tf_fwd_outputs,tf_bck_outputs],
+                                                  feed_dict={tf_selected_image:images_for_featuremap[d_i]})
+        all_deconv_outputs.append(deconv_outputs[-1])
 
-        # propagate the image forward
-        img_activations,img_switches = session.run([tf_outputs,tf_switches],feed_dict={tf_selected_image:imgs_for_map})
-
-        # zero out d_i feature_map everything except the maximum activation
-        for b_i in range(img_activations[-1].shape[0]):
-            max_act_loc = np.argmax(img_activations[-1][0,:,:,d_i])
-            assert max_act_loc.size == 2
-            feature_activation = np.zeros_like(img_activations[-1],dtype=np.float32)
-            feature_activation[0,max_act_loc[0],max_act_loc[1],d_i] = img_activations[-1][0,max_act_loc[0],max_act_loc[1],d_i]
-
-        # backpropagate
-
+    return all_deconv_outputs
 
 if __name__=='__main__':
     global logger
@@ -601,7 +622,6 @@ if __name__=='__main__':
     fileHandler = logging.FileHandler('test_log'+log_suffix+'.log', mode='w')
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     test_logger.addHandler(fileHandler)
-
 
     (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels) = load_data.reformat_data_cifar10(data_filename)
     train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
@@ -646,9 +666,9 @@ if __name__=='__main__':
         pred_valid = predict_with_dataset(tf_valid_dataset)
         pred_test = predict_with_dataset(tf_test_dataset)
 
-        tf.initialize_all_variables().run()
+        tf.global_variables_initializer().run()
 
-        for epoch in range(51):
+        for epoch in range(6):
 
             if epoch==5 and incrementally_add_layers:
                 conv_id = 'conv_2'
@@ -721,3 +741,10 @@ if __name__=='__main__':
 
                 test_logger.info('%d,%.2f,%.2f',epoch,mean_valid_accuracy,mean_test_accuracy)
 
+        all_images = visualize_with_deconv(session,'conv_3',valid_dataset)
+
+        d_i = 0
+        for images in all_images:
+            for img_i in range(images.shape[0]):
+                imsave('backprop_img_'+str(d_i)+'_'+str(img_i)+'.png', images[img_i,:,:,:])
+            d_i += 1
