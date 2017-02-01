@@ -66,7 +66,7 @@ test_dataset, test_labels = None,None
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
 
-incrementally_add_layers = False
+incrementally_add_layers = True
 
 if incrementally_add_layers:
     if use_local_res_norm:
@@ -388,9 +388,6 @@ def find_max_activations_for_layer(activations):
     max_activations_images = tf.reduce_max(activations,axis=[1,2])
     img_id_with_max_activation = tf.argmax(max_activations_images, axis=0)
     return max_activations_images,img_id_with_max_activation
-
-def get_deconv_input():
-    global weights,biases
 
 def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guided_backprop=False):
     global weights,biases
