@@ -154,6 +154,7 @@ def init_iconvnet():
         'fulcon_out',num_labels
     ))
 
+
 def append_new_layer_id(layer_id):
     global iconv_ops
     out_id = iconv_ops.pop(-1)

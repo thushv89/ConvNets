@@ -3,7 +3,10 @@ __author__ = 'Thushan Ganegedara'
 '''==================================================================
 #   This is an experiment to check if incrementally adding layers   #
 #   help to reach higher accuracy quicker than starting with all    #
-#   the layers at once.                                             #
+#   the layers at once.
+#   Version 2 uses a 1x1 pooling layer so you don't need both
+#   conv_balance and pool_balance. pool_balance is enough.
+#   and you directly change the weights to fully connected layer
 =================================================================='''
 
 import tensorflow as tf
@@ -30,18 +33,18 @@ logging_format = '[%(funcName)s] %(message)s'
 backprop_feature_dir = 'backprop_features'
 
 #type of data training
-datatype = 'cifar-10'
-if datatype=='cifar-10':
+dataset_type = 'cifar-10'
+
+if dataset_type=='cifar-10':
     image_size = 32
     num_labels = 10
     num_channels = 3 # rgb
-elif datatype=='notMNIST':
-    image_size = 28
-    num_labels = 10
-    num_channels = 1 # grayscale
+elif dataset_type=='imagenet-100':
+    image_size = 224
+    num_labels = 100
+    num_channels = 3
 
 batch_size = 128 # number of datapoints in a single batch
-
 
 start_lr = 0.001
 decay_learning_rate = True
@@ -55,7 +58,6 @@ include_l2_loss = False
 # keep beta small (0.2 is too much >0.002 seems to be fine)
 beta = 1e-1
 
-use_local_res_norm = True
 summary_frequency = 5
 assert_true = True
 
@@ -68,53 +70,77 @@ time_stamp = 0 #use this to indicate when the layer was added
 
 incrementally_add_layers = True
 
+
 if incrementally_add_layers:
-    if use_local_res_norm:
-        iconv_ops = ['conv_1','pool_1','loc_res_norm','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
-    else:
-        iconv_ops = ['conv_1','pool_1','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
+    # ops will give the order of layers
+    if dataset_type=='cifar-10':
+        iconv_ops = ['conv_1','pool_balance','fulcon_out']
+    elif dataset_type == 'imagenet-100':
+        iconv_ops = ['conv_1','pool_global','fulcon_out']
+
 else:
-    if use_local_res_norm:
-        iconv_ops = ['conv_1','pool_1','loc_res_norm','conv_2','pool_2','loc_res_norm','conv_3','pool_2','loc_res_norm','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
-    else:
-        iconv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','conv_balance','pool_balance','fulcon_out'] #ops will give the order of layers
+    # ops will give the order of layers
+    if dataset_type=='cifar-10':
+        iconv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','conv_balance','pool_balance','fulcon_out']
+    elif dataset_type == 'imagenet-100':
+        iconv_ops = ['conv_1','pool_1','conv_2','pool_1',
+                     'conv_3','pool_1','conv_4',
+                     'conv_5','pool_1','conv_6',
+                     'conv_7','pool_global','fulcon_out']
 
-depth_conv = {'conv_1':128,'conv_2':256,'conv_3':512,'conv_balance':1024}
-
-final_2d_output = (4,4)
+final_2d_output = (1,1)
 current_final_2d_output = (0,0)
 
-conv_1_hyparams = {'weights':[5,5,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
-conv_2_hyparams = {'weights':[5,5,int(depth_conv['conv_1']),depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
-conv_3_hyparams = {'weights':[5,5,int(depth_conv['conv_2']),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+if dataset_type == 'cifar-10':
+    depth_conv = {'conv_1':128,'conv_2':256,'conv_3':512,'conv_balance':1024}
+    conv_1_hyparams = {'weights':[5,5,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_2_hyparams = {'weights':[5,5,int(depth_conv['conv_1']),depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_3_hyparams = {'weights':[5,5,int(depth_conv['conv_2']),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
 
-if incrementally_add_layers:
-    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_1']),depth_conv['conv_balance']],'stride':[1,1,1,1],'padding':'SAME'}
-else:
-    conv_balance_hyparams = {'weights':[1,1,int(depth_conv['conv_3']),depth_conv['conv_balance']],'stride':[1,1,1,1],'padding':'SAME'}
+    pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
+    pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 
-pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
-pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
-if incrementally_add_layers:
-    pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,4,4,1],'padding':'SAME'}
-else:
-    pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,1,1,1],'padding':'SAME'}
-out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_balance'],'out':10}
+    if incrementally_add_layers:
+        pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,4,4,1],'padding':'VALID'}
+        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_1'],'out':num_labels}
+    else:
+        pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,1,1,1],'padding':'VALID'}
+        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_3'],'out':num_labels}
 
-hyparams = {'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams, 'conv_balance':conv_balance_hyparams,
-           'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_balance':pool_balance_hyparams,
-           'fulcon_out':out_hyparams}
+    hyparams = {
+        'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,
+        'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_balance':pool_balance_hyparams,
+        'fulcon_out':out_hyparams
+    }
 
+elif dataset_type == 'imagenet-100':
+
+    depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512,'conv_5':1024,'conv_6':1024,'conv_7':1024}
+
+    conv_1_hyparams = {'weights':[7,7,num_channels,depth_conv['conv_1']],'stride':[1,2,2,1],'padding':'SAME'}
+    conv_2_hyparams = {'weights':[3,3,depth_conv['conv_1'],depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_3_hyparams = {'weights':[3,3,depth_conv['conv_2'],depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_4_hyparams = {'weights':[3,3,depth_conv['conv_3'],depth_conv['conv_4']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_5_hyparams = {'weights':[3,3,depth_conv['conv_4'],depth_conv['conv_5']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_6_hyparams = {'weights':[3,3,depth_conv['conv_5'],depth_conv['conv_6']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_7_hyparams = {'weights':[3,3,depth_conv['conv_6'],depth_conv['conv_7']],'stride':[1,1,1,1],'padding':'SAME'}
+
+    pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
+    pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
+    pool_3_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
+
+    if incrementally_add_layers:
+        pool_global_hyparams = {'type':'avg','kernel':[1,112,112,1],'stride':[1,1,1,1],'padding':'VALID'}
+        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_1'],'out':num_labels}
+    else:
+        pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'VALID'}
+        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_'],'out':num_labels}
 
 conv_depths = {} # store the in and out depth of each convolutional layer
 conv_order  = {} # layer order (in terms of convolutional layer) in the full structure
 
 weights,biases = {},{}
 
-research_parameters = {
-    'init_weights_with_existing':False,'seperate_cp_best_actions':False,
-    'freeze_threshold':3000,'use_valid_pool':False,'fixed_fulcon':False
-}
 
 def accuracy(predictions, labels):
     assert predictions.shape[0]==labels.shape[0]
@@ -122,8 +148,9 @@ def accuracy(predictions, labels):
             / predictions.shape[0])
 
 def init_iconvnet():
+    global dataset_type
 
-    print('Initializing the iConvNet...')
+    print('Initializing the iConvNet for %s...'%dataset_type)
 
     # Convolutional layers
     for op in iconv_ops:
@@ -159,53 +186,44 @@ def append_new_layer_id(layer_id):
     global iconv_ops
     out_id = iconv_ops.pop(-1)
     pool_balance_id = iconv_ops.pop(-1)
-    conv_balance_id = iconv_ops.pop(-1)
     iconv_ops.append(layer_id)
-    iconv_ops.append(conv_balance_id)
     iconv_ops.append(pool_balance_id)
     iconv_ops.append(out_id)
 
-def update_balance_layer(new_in_depth):
+def update_fulcon_layer():
     '''
     If a convolutional layer (intermediate) is removed. This function will
      Correct the dimention mismatch either by adding more weights or removing
     :param to_d: the depth to be updated to
     :return:
     '''
-    balance_layer_id = 'conv_balance'
-    current_in_depth = hyparams[balance_layer_id]['weights'][2]
-    conv_weights = hyparams[balance_layer_id]['weights']
 
-    logger.info("Need to update the layer %s in_depth from %d to %d"%(balance_layer_id,current_in_depth,new_in_depth))
-    hyparams[balance_layer_id]['weights'] =[conv_weights[0],conv_weights[1],new_in_depth,conv_weights[3]]
+    last_conv_op = None
+    for rev_op in reversed(iconv_ops):
+        if 'conv' in rev_op:
+            last_conv_op = rev_op
+            break
 
-    if new_in_depth<current_in_depth:
-        logger.info("\tRequired to remove %d depth layers"%(current_in_depth-new_in_depth))
-        # update hyperparameters
-        logger.debug('\tNew weights should be: %s'%hyparams[balance_layer_id]['weights'])
-        # update weights
-        weights[balance_layer_id] = tf.slice(weights[balance_layer_id],
-                                                  [0,0,0,0],[conv_weights[0],conv_weights[1],new_in_depth,conv_weights[3]]
-                                                  )
-        # no need to update biase
-    elif new_in_depth>current_in_depth:
-        logger.info("\tRequired to add %d depth layers"%(new_in_depth-current_in_depth))
+    new_fulcon_in = hyparams[last_conv_op][3]
 
-        conv_new_weights = tf.Variable(tf.truncated_normal(
-            [conv_weights[0],conv_weights[1],new_in_depth-current_in_depth,conv_weights[3]],
-            stddev=2./(conv_weights[0]*conv_weights[1])
-        ))
-        tf.initialize_variables([conv_new_weights]).run()
-        weights[balance_layer_id] = tf.concat(2,[weights[balance_layer_id],conv_new_weights])
-    else:
-        logger.info('\tNo modifications done...')
-        return
+    logger.info("Need to update the fulcon_out from %d to %d"%(hyparams['fulcon_out']['in'],new_fulcon_in))
 
-    new_shape = weights[balance_layer_id].get_shape().as_list()
-    logger.info('Shape of new weights after the modification: %s'%new_shape)
+    # need to remove neurons
+    if hyparams['fulcon_out']['in']>new_fulcon_in:
+        amount_to_rm = hyparams['fulcon_out']['in'] - new_fulcon_in
+        new_weights = tf.slice(weights['fulcon_out'],[0,0],[new_fulcon_in,num_labels])
+        weights['fulcon_out'] = new_weights
 
-    assert np.all(np.asarray(new_shape)>0)
-    assert new_shape == hyparams[balance_layer_id]['weights']
+    # need to add neurons
+    elif hyparams['fulcon_out']['in']<new_fulcon_in:
+        amount_to_add = new_fulcon_in - hyparams['fulcon_out']['in']
+
+        adding_weights = tf.truncated_normal([amount_to_add,num_labels],stddev=0.02)
+        new_weights = tf.concat(0,[weights['fulcon_out'],adding_weights])
+        weights['fulcon_out'] = new_weights
+
+    # update fulcon_out in
+    hyparams['fulcon_out']['in'] = new_fulcon_in
 
 def add_conv_layer(w,stride,conv_id,init_random):
     '''
@@ -218,16 +236,11 @@ def add_conv_layer(w,stride,conv_id,init_random):
 
     hyparams[conv_id]={'weights':w,'stride':stride,'padding':'SAME'}
 
-    if research_parameters['init_weights_with_existing']:
+    logger.debug('Initializing %s random ...'%conv_id)
+    weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
+    biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
 
-        raise NotImplementedError
-
-    if not research_parameters['init_weights_with_existing']:
-        logger.debug('Initializing %s random ...'%conv_id)
-        weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
-        biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
-
-        tf.initialize_variables([weights[conv_id],biases[conv_id]]).run()
+    tf.initialize_variables([weights[conv_id],biases[conv_id]]).run()
 
     # add the new conv_op to ordered operation list
     append_new_layer_id(conv_id)
@@ -241,9 +254,9 @@ def add_conv_layer(w,stride,conv_id,init_random):
 
     assert prev_conv_op != conv_id
 
-    if hyparams[prev_conv_op]['weights'][3]!=hyparams[conv_id]['weights'][3]:
-        print('Out Weights of (Previous) %s (%d) and (New) %s (%d) do not match'%(prev_conv_op,hyparams[prev_conv_op]['weights'][3],conv_id,hyparams[conv_id]['weights'][3]))
-        update_balance_layer(hyparams[conv_id]['weights'][3])
+
+    print('Updating the fulcon layer (if needed)')
+    update_fulcon_layer()
 
     if stride[1]>1 or stride[2]>1:
         raise NotImplementedError
@@ -262,8 +275,6 @@ def add_pool_layer(ksize,stride,type,pool_id):
     hyparams[pool_id] = {'type':type,'kernel':ksize,'stride':stride,'padding':'SAME'}
 
     append_new_layer_id(pool_id)
-    if use_local_res_norm:
-        append_new_layer_id('loc_res_norm')
 
     if stride[1]>1 or stride[2]>1:
         print('Before changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][1],hyparams['pool_balance']['stride'][2]))
@@ -324,6 +335,7 @@ def get_logits(dataset):
 
     return outputs
 
+
 def calc_loss(logits,labels):
     # Training computation.
     if include_l2_loss:
@@ -334,8 +346,10 @@ def calc_loss(logits,labels):
 
     return loss
 
+
 def calc_loss_vector(logits,labels):
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
+
 
 def optimize_func(loss,global_step):
     # Optimizer.
@@ -347,20 +361,15 @@ def optimize_func(loss,global_step):
     optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
     return optimizer,learning_rate
 
-def clip_weights_with_threshold(max_threshold):
-    global weights
-    for op,w in weights.items():
-        if 'conv' in op:
-            weights[op] = tf.clip_by_value(weights[op], -max_threshold, max_threshold, name=None)
-        elif 'fulcon' in op:
-            weights[op] = tf.clip_by_value(weights[op], -max_threshold, max_threshold, name=None)
 
 def optimize_with_fixed_lr_func(loss,learning_rate):
     optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
     return optimizer
 
+
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
+
 
 def predict_with_logits(logits):
     # Predictions for the training, validation, and test data.
