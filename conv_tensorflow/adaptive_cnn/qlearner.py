@@ -428,7 +428,7 @@ class AdaCNNAdaptingQLearner(object):
                     elif action[0]=='remove':
                         next_filter_count =data['filter_counts'][ni]-action[1]
 
-                self.rl_logger.debug('Finally Selected action: %s'%str(action))
+            self.rl_logger.debug('Finally Selected action: %s'%str(action))
 
             prev_actions.append(action)
             prev_states.append(state)

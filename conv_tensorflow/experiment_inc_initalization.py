@@ -55,7 +55,7 @@ include_l2_loss = False
 # keep beta small (0.2 is too much >0.002 seems to be fine)
 beta = 1e-1
 
-use_local_res_norm = True
+use_local_res_norm = False
 summary_frequency = 5
 assert_true = True
 

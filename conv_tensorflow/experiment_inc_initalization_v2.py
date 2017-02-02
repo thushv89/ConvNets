@@ -25,6 +25,7 @@ from data_pool import Pool
 import getopt
 from scipy.misc import imsave
 from skimage.transform import rotate
+import load_data
 
 logger = None
 logging_level = logging.DEBUG
@@ -33,16 +34,22 @@ logging_format = '[%(funcName)s] %(message)s'
 backprop_feature_dir = 'backprop_features'
 
 #type of data training
-dataset_type = 'cifar-10'
+dataset_type = 'imagenet-100'
 
 if dataset_type=='cifar-10':
     image_size = 32
     num_labels = 10
     num_channels = 3 # rgb
+    train_size = 40000
+    valid_size = 10000
+    test_size = 10000
+
 elif dataset_type=='imagenet-100':
     image_size = 224
     num_labels = 100
     num_channels = 3
+    train_size = 128099
+    valid_size = 5000
 
 batch_size = 128 # number of datapoints in a single batch
 
@@ -74,48 +81,57 @@ incrementally_add_layers = True
 if incrementally_add_layers:
     # ops will give the order of layers
     if dataset_type=='cifar-10':
-        iconv_ops = ['conv_1','pool_balance','fulcon_out']
+        iconv_ops = ['conv_1','pool_1','pool_global','fulcon_out']
     elif dataset_type == 'imagenet-100':
-        iconv_ops = ['conv_1','pool_global','fulcon_out']
+        iconv_ops = ['conv_1','pool_1','pool_global','fulcon_out']
 
 else:
     # ops will give the order of layers
     if dataset_type=='cifar-10':
-        iconv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','pool_2','conv_balance','pool_balance','fulcon_out']
+        iconv_ops = ['conv_1','pool_1','conv_2','pool_2','conv_3','conv_4','pool_global','fulcon_out']
     elif dataset_type == 'imagenet-100':
-        iconv_ops = ['conv_1','pool_1','conv_2','pool_1',
-                     'conv_3','pool_1','conv_4',
-                     'conv_5','pool_1','conv_6',
+        iconv_ops = ['conv_1','pool_1','conv_2','pool_2',
+                     'conv_3','pool_3','conv_4',
+                     'conv_5','pool_5','conv_6',
                      'conv_7','pool_global','fulcon_out']
 
 final_2d_output = (1,1)
-current_final_2d_output = (0,0)
 
 if dataset_type == 'cifar-10':
-    depth_conv = {'conv_1':128,'conv_2':256,'conv_3':512,'conv_balance':1024}
+    depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512}
     conv_1_hyparams = {'weights':[5,5,num_channels,depth_conv['conv_1']],'stride':[1,1,1,1],'padding':'SAME'}
     conv_2_hyparams = {'weights':[5,5,int(depth_conv['conv_1']),depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
-    conv_3_hyparams = {'weights':[5,5,int(depth_conv['conv_2']),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_3_hyparams = {'weights':[3,3,int(depth_conv['conv_2']),depth_conv['conv_3']],'stride':[1,1,1,1],'padding':'SAME'}
+    conv_4_hyparams = {'weights':[3,3,int(depth_conv['conv_3']),depth_conv['conv_4']],'stride':[1,1,1,1],'padding':'SAME'}
 
     pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
-    pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 
     if incrementally_add_layers:
-        pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,4,4,1],'padding':'VALID'}
+        current_final_2d_output = (image_size/pool_1_hyparams['stride'][1], pool_1_hyparams['stride'][2])
+        global_kernel_size = [1,int(current_final_2d_output[0]/final_2d_output[0]),
+                                                       int(current_final_2d_output[1]/final_2d_output[1]),1]
+        global_stride = global_kernel_size
+        pool_global_hyparams = {'type':'avg','kernel':global_kernel_size,
+                                'stride':global_stride,'padding':'VALID'}
+
         out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_1'],'out':num_labels}
+
     else:
-        pool_balance_hyparams = {'type':'avg','kernel':[1,2,2,1],'stride':[1,1,1,1],'padding':'VALID'}
+        pool_global_hyparams = {'type':'avg','kernel':[1,8,8,1],'stride':[1,1,1,1],'padding':'VALID'}
         out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_3'],'out':num_labels}
 
     hyparams = {
-        'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams, 'conv_3':conv_3_hyparams,
-        'pool_1': pool_1_hyparams, 'pool_2':pool_2_hyparams, 'pool_balance':pool_balance_hyparams,
+        'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams,
+        'conv_3':conv_3_hyparams, 'conv_4':conv_4_hyparams,
+        'pool_1': pool_1_hyparams, 'pool_2': pool_1_hyparams,
+        'pool_3':pool_1_hyparams,
+        'pool_global':pool_global_hyparams,
         'fulcon_out':out_hyparams
     }
 
 elif dataset_type == 'imagenet-100':
 
-    depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512,'conv_5':1024,'conv_6':1024,'conv_7':1024}
+    depth_conv = {'conv_1':256,'conv_2':512,'conv_3':1024,'conv_4':1024,'conv_5':1024,'conv_6':2048,'conv_7':2048}
 
     conv_1_hyparams = {'weights':[7,7,num_channels,depth_conv['conv_1']],'stride':[1,2,2,1],'padding':'SAME'}
     conv_2_hyparams = {'weights':[3,3,depth_conv['conv_1'],depth_conv['conv_2']],'stride':[1,1,1,1],'padding':'SAME'}
@@ -130,17 +146,33 @@ elif dataset_type == 'imagenet-100':
     pool_3_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 
     if incrementally_add_layers:
-        pool_global_hyparams = {'type':'avg','kernel':[1,112,112,1],'stride':[1,1,1,1],'padding':'VALID'}
+        current_final_2d_output = (image_size / conv_1_hyparams['stride'][1], image_size / conv_1_hyparams['stride'][2])
+        pool_global_hyparams = {'type':'avg','kernel':[1,current_final_2d_output[0],current_final_2d_output[1],1],'stride':[1,1,1,1],'padding':'VALID'}
         out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_1'],'out':num_labels}
     else:
         pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'VALID'}
         out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_'],'out':num_labels}
+
+    hyparams = {
+        'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams,
+        'conv_3': conv_3_hyparams, 'conv_4': conv_4_hyparams,
+        'conv_5': conv_5_hyparams, 'conv_6': conv_6_hyparams,
+        'conv_7':conv_7_hyparams,
+        'pool_1': pool_1_hyparams, 'pool_2': pool_1_hyparams,
+        'pool_3': pool_1_hyparams, 'pool_4': pool_1_hyparams,
+        'pool_5': pool_1_hyparams,
+        'pool_global': pool_global_hyparams,
+        'fulcon_out': out_hyparams
+    }
 
 conv_depths = {} # store the in and out depth of each convolutional layer
 conv_order  = {} # layer order (in terms of convolutional layer) in the full structure
 
 weights,biases = {},{}
 
+print('Hyperparametesr defined ')
+print(hyparams)
+print()
 
 def accuracy(predictions, labels):
     assert predictions.shape[0]==labels.shape[0]
@@ -191,6 +223,7 @@ def append_new_layer_id(layer_id):
     iconv_ops.append(out_id)
 
 def update_fulcon_layer():
+    global final_2d_output
     '''
     If a convolutional layer (intermediate) is removed. This function will
      Correct the dimention mismatch either by adding more weights or removing
@@ -204,7 +237,7 @@ def update_fulcon_layer():
             last_conv_op = rev_op
             break
 
-    new_fulcon_in = hyparams[last_conv_op][3]
+    new_fulcon_in = final_2d_output[0] * final_2d_output[1] * hyparams[last_conv_op]['weights'][3]
 
     logger.info("Need to update the fulcon_out from %d to %d"%(hyparams['fulcon_out']['in'],new_fulcon_in))
 
@@ -273,14 +306,7 @@ def add_pool_layer(ksize,stride,type,pool_id):
     '''
     global layer_count,hyparams
     hyparams[pool_id] = {'type':type,'kernel':ksize,'stride':stride,'padding':'SAME'}
-
     append_new_layer_id(pool_id)
-
-    if stride[1]>1 or stride[2]>1:
-        print('Before changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][1],hyparams['pool_balance']['stride'][2]))
-        hyparams['pool_balance']['stride'][1] = np.max([1,hyparams['pool_balance']['stride'][1]-stride[1]])
-        hyparams['pool_balance']['stride'][2] = np.max([1,hyparams['pool_balance']['stride'][2]-stride[2]])
-        print('After changing pool_balance layer %d,%d'%(hyparams['pool_balance']['stride'][1],hyparams['pool_balance']['stride'][2]))
 
 
 def get_logits(dataset):
@@ -304,9 +330,23 @@ def get_logits(dataset):
             logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
 
         if 'pool' in op:
-            logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
 
-            outputs.append(tf.nn.max_pool(outputs[-1],ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],padding=hyparams[op]['padding']))
+            if op =='pool_global':
+                shape = outputs[-1].get_shape().as_list()
+                current_final_2d_output = (int(shape[1]/final_2d_output[0]), int(shape[2]/final_2d_output[1]))
+
+                hyparams['pool_global']['kernel'] = [1, current_final_2d_output[0], current_final_2d_output[1], 1]
+                hyparams['pool_global']['stride'] = [1, current_final_2d_output[0], current_final_2d_output[1], 1]
+
+            logger.debug('\t%s Pooling (%s) with Kernel:%s Stride:%s' % (
+                hyparams[op]['type'], op, hyparams[op]['kernel'], hyparams[op]['stride']))
+
+            if hyparams[op]['type']=='max':
+                outputs.append(tf.nn.max_pool(outputs[-1],ksize=hyparams[op]['kernel'],strides=hyparams[op]['stride'],
+                                              padding=hyparams[op]['padding']))
+            elif hyparams[op]['type']=='avg':
+                outputs.append(tf.nn.avg_pool(outputs[-1], ksize=hyparams[op]['kernel'], strides=hyparams[op]['stride'],
+                                              padding=hyparams[op]['padding']))
             logger.debug('\t\tX after %s:%s'%(op,outputs[-1].get_shape().as_list()))
 
         if op=='loc_res_norm':
@@ -316,16 +356,13 @@ def get_logits(dataset):
         if 'fulcon' in op:
             break
 
-
     # we need to reshape the output of last subsampling layer to
     # convert 4D output to a 2D input to the hidden layer
     # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
     shape = outputs[-1].get_shape().as_list()
-    current_final_2d_output = (shape[1],shape[2])
 
     logger.debug("Req calculation, Actual calculation: (%d,%d), (%d,%d)"
                  %(final_2d_output[0],final_2d_output[1],current_final_2d_output[0],current_final_2d_output[1]))
-    assert final_2d_output == current_final_2d_output
     rows = shape[0]
 
     print('Unwrapping last convolution layer %s to %s hidden layer'%(shape,(rows,hyparams['fulcon_out']['in'])))
@@ -503,7 +540,7 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
                     previous_conv_op = before_op
                     break
 
-            logger.debug('Detected previous conv op %s',previous_conv_op)
+            logger.debug('\tDetected previous conv op %s',previous_conv_op)
 
             # Unpooling operation and Rectification
             logger.debug('\tUnPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
@@ -585,10 +622,9 @@ def visualize_with_deconv(session,layer_id,all_x,guided_backprop=False):
     for batch_id in range(all_x.shape[0]//batch_size):
 
         batch_data = all_x[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
-        feed_dict = {tf_deconv_dataset:batch_data}
 
         # max_activations b x d, img_ids_for_max will be 1 x d
-        max_activations,img_ids_for_max = session.run([tf_max_activations,tf_img_ids],feed_dict=feed_dict)
+        max_activations,img_ids_for_max = session.run([tf_max_activations,tf_img_ids],feed_dict={tf_deconv_dataset:batch_data})
         if batch_id==0:
             logger.debug('Max activations for batch %d size: %s',batch_id,str(max_activations.shape))
             logger.debug('Image ID  for batch %d size: %s',batch_id,str(img_ids_for_max.shape))
@@ -635,19 +671,56 @@ def visualize_with_deconv(session,layer_id,all_x,guided_backprop=False):
         all_images.append(images_for_featuremap[d_i])
     return all_deconv_outputs, all_images
 
+# this method takes either the full dataset or a chunk
+# if the dataset is too large and train with that
+
+tf_train_logits,tf_train_loss,tf_train_pred,tf_optimize,tf_inc_gstep = None,None,None,None,None
+
+
+def train_with_dataset(session, tf_train_dataset, tf_train_labels, chunk_dataset, chunk_labels):
+    global tf_train_logits,tf_train_loss,tf_train_pred,tf_optimize,tf_inc_gstep
+    global logger
+
+    logger.debug('Loaded data of size: %s, %s', chunk_dataset.shape[0],chunk_labels.shape[0])
+
+    if tf_train_logits is None or tf_train_loss is None or tf_train_pred is None or \
+                    tf_optimize is None or tf_inc_gstep is None:
+        tf_train_logits = get_logits(tf_train_dataset)[-1]
+        tf_train_loss = calc_loss(tf_train_logits, tf_train_labels)
+        tf_train_pred = predict_with_logits(tf_train_logits)
+        tf_optimize = optimize_func(tf_train_loss, global_step)
+
+    train_accuracy_log = []
+    train_loss_log = []
+
+    for batch_id in range(ceil(chunk_dataset.shape[0] // batch_size) - 1):
+        batch_data = chunk_dataset[batch_id * batch_size:(batch_id + 1) * batch_size, :, :, :]
+        batch_labels = chunk_labels[batch_id * batch_size:(batch_id + 1) * batch_size, :]
+
+        train_feed_dict = {tf_train_dataset: batch_data, tf_train_labels: batch_labels}
+        _, l, (_, updated_lr), predictions = session.run(
+            [tf_train_logits, tf_train_loss, tf_optimize, tf_train_pred], feed_dict=train_feed_dict
+        )
+
+        train_accuracy_log.append(accuracy(predictions, batch_labels))
+        train_loss_log.append(l)
+
+    return {'train_accuracy':np.mean(train_accuracy_log),
+            'train_loss':np.mean(train_loss_log),
+            'updated_lr':updated_lr}
+
+
 if __name__=='__main__':
     global logger
 
     try:
         opts,args = getopt.getopt(
-            sys.argv[1:],"",['data=',"log_suffix="])
+            sys.argv[1:],"",["log_suffix="])
     except getopt.GetoptError as err:
-        print('<filename>.py --data= --log_suffix=')
+        print('<filename>.py --log_suffix=')
 
     if len(opts)!=0:
         for opt,arg in opts:
-            if opt == '--data':
-                data_filename = arg
             if opt == '--log_suffix':
                 log_suffix = arg
 
@@ -665,28 +738,24 @@ if __name__=='__main__':
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     test_logger.addHandler(fileHandler)
 
-    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels) = load_data.reformat_data_cifar10(data_filename)
-    train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
-
     graph = tf.Graph()
 
     valid_accuracy_log = []
-    train_accuracy_log = []
-    train_loss_log = []
     test_accuracy_log = []
 
-    with tf.Session(graph=graph) as session:
+    with tf.Session(graph=graph,config = tf.ConfigProto(allow_soft_placement=True)) as session:
 
         #global step is used to decay the learning rate
         global_step = tf.Variable(0, trainable=False)
 
         logger.info('Input data defined...\n')
-        # Input train data
-        tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-        tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
-        tf_pool_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
-        tf_pool_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
+        tf_train_dataset = tf.placeholder(tf.float32,
+                                          shape=(batch_size, image_size, image_size, num_channels),
+                                          name='train_dataset')
+        tf_train_labels = tf.placeholder(tf.float32,
+                                         shape=(batch_size, num_labels),
+                                         name='train_labels')
 
         # Valid data
         tf_valid_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels))
@@ -697,12 +766,7 @@ if __name__=='__main__':
 
         init_iconvnet() #initialize the initial conv net
 
-        logits = get_logits(tf_dataset)[-1]
-        loss = calc_loss(logits,tf_labels)
-        pred = predict_with_logits(logits)
-        optimize = optimize_func(loss,global_step)
-        inc_gstep = inc_global_step(global_step)
-        loss_vector = calc_loss_vector(logits,tf_labels)
+        tf_inc_gstep = inc_global_step(global_step)
 
         # valid predict function
         pred_valid = predict_with_dataset(tf_valid_dataset)
@@ -710,49 +774,113 @@ if __name__=='__main__':
 
         tf.global_variables_initializer().run()
 
+        # initial loading
+        if dataset_type=='imagenet-100':
+            chunk_size = batch_size * 50
+            train_size_clipped = train_size
+            chunks_in_train = train_size_clipped // chunk_size
+            if abs(train_size_clipped - chunks_in_train * chunk_size) < 5 * batch_size:
+                train_size_clipped = chunks_in_train * chunk_size
+                print('Clipped size is slightly off from factor of chunk size. Using %d as train size' % train_size_clipped)
+
+            print('Running for %d data points' % train_size_clipped)
+
+            train_dataset_filename = 'imagenet_small' + os.sep + 'imagenet_small_train_dataset'
+            train_label_filename = 'imagenet_small' + os.sep + 'imagenet_small_train_labels'
+
+            valid_dataset_fname = 'imagenet_small' + os.sep + 'imagenet_small_valid_dataset'
+            valid_label_fname = 'imagenet_small' + os.sep + 'imagenet_small_valid_labels'
+
+            fp1 = np.memmap(valid_dataset_fname, dtype=np.float32, mode='r',
+                            offset=np.dtype('float32').itemsize * 0,
+                            shape=(valid_size, image_size, image_size, num_channels))
+            fp2 = np.memmap(valid_label_fname, dtype=np.int32, mode='r',
+                            offset=np.dtype('int32').itemsize * 0, shape=(valid_size, 1))
+            valid_dataset = fp1[:, :, :, :]
+            valid_labels = fp2[:]
+
+            to_add_ops = ['conv_2', 'pool_2',
+                          'conv_3', 'pool_3', 'conv_4',
+                          'conv_5', 'pool_5', 'conv_6',
+                          'conv_7']
+
+        elif dataset_type=='cifar-10':
+            train_size_clipped = batch_size*(train_size//batch_size)
+            to_add_ops = ['conv_2', 'pool_2', 'conv_3', 'conv_4']
+
+        chunk_train_dataset, chunk_train_labels = None, None
         for epoch in range(31):
+            filled_size = 0
 
-            if epoch==5 and incrementally_add_layers:
-                conv_id = 'conv_2'
-                add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],conv_id,True)
-                pool_id = 'pool_2'
-                add_pool_layer(hyparams[pool_id]['kernel'],hyparams[pool_id]['stride'],hyparams[pool_id]['type'],pool_id)
-                get_logits(tf_dataset)[-1]
+            train_chunk_accuracy_log = []
+            train_chunk_error_log = []
 
-            elif epoch == 10 and incrementally_add_layers:
-                conv_id = 'conv_3'
-                add_conv_layer(hyparams[conv_id]['weights'],hyparams[conv_id]['stride'],conv_id,True)
-                pool_id = 'pool_2'
-                add_pool_layer(hyparams[pool_id]['kernel'],hyparams[pool_id]['stride'],hyparams[pool_id]['type'],pool_id)
-                get_logits(tf_dataset)[-1]
+            if len(to_add_ops)>0 and (epoch+1)%5==0 and incrementally_add_layers:
 
-            for batch_id in range(ceil(train_size//batch_size)-1):
+                to_conv_id = to_add_ops[0]
+                logger.info('Adding convolution layer %s',to_conv_id)
+                add_conv_layer(hyparams[to_conv_id]['weights'],hyparams[to_conv_id]['stride'],to_conv_id,True)
+                del to_add_ops[0]
 
-                batch_data = train_dataset[batch_id*batch_size:(batch_id+1)*batch_size, :, :, :]
-                batch_labels = train_labels[batch_id*batch_size:(batch_id+1)*batch_size, :]
+                if len(to_add_ops)>0 and 'pool' in to_add_ops[0]:
+                    to_pool_id = to_add_ops[0]
+                    logger.info('Adding pooling layer %s', to_conv_id)
+                    add_pool_layer(hyparams[to_pool_id]['kernel'],hyparams[to_pool_id]['stride'],hyparams[to_pool_id]['type'],to_pool_id)
+                    del to_add_ops[0]
+                # update logits after adding new layer
+                get_logits(tf_valid_dataset)
 
-                batch_start_time = time.clock()
-                feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
-                _, l, l_vec, (_,updated_lr), predictions = session.run(
-                        [logits,loss,loss_vector,optimize,pred], feed_dict=feed_dict
-                )
+            # need to have code to run the training for all the data points
+            # we use a while loop to support loading data at once and as chunks both
+            while filled_size < train_size_clipped:
 
-                #print(l)
-                #print(get_weight_stats())
-                assert not np.isnan(l)
-                train_accuracy_log.append(accuracy(predictions, batch_labels))
-                train_loss_log.append(l)
+                if dataset_type == 'imagenet-100':
 
-            _ = session.run([inc_gstep])
+                    start_memmap, end_memmap = load_data.get_next_memmap_indices((train_dataset_filename, train_label_filename),
+                                                                       chunk_size, train_size_clipped)
+                    # Loading data from memmap
+                    logger.info('Processing files %s,%s' % (train_dataset_filename, train_label_filename))
+                    logger.debug('\tFrom index %d to %d',start_memmap,end_memmap)
+                    fp1 = np.memmap(train_dataset_filename, dtype=np.float32, mode='r',
+                                    offset=np.dtype('float32').itemsize * image_size * image_size * num_channels * start_memmap,
+                                    shape=(end_memmap - start_memmap, image_size, image_size, num_channels))
+
+                    fp2 = np.memmap(train_label_filename, dtype=np.int32, mode='r',
+                                    offset=np.dtype('int32').itemsize * 1 * start_memmap,
+                                    shape=(end_memmap - start_memmap, 1))
+
+                    chunk_train_dataset = fp1[:, :, :, :]
+                    chunk_train_labels = fp2[:]
+
+                    chunk_train_dataset, chunk_train_labels = load_data.reformat_data_imagenet_with_memmap_array(
+                        chunk_train_dataset,chunk_train_labels,silent=True
+                    )
+
+                elif dataset_type == 'cifar-10':
+                    data_filename = '..'+os.sep+'data' + os.sep + 'cifar-10.pickle'
+
+                    if chunk_train_labels is None and chunk_train_labels is None:
+                        (train_dataset, train_labels), \
+                        (valid_dataset, valid_labels), \
+                        (test_dataset, test_labels) = load_data.reformat_data_cifar10(data_filename)
+
+                        chunk_train_dataset,chunk_train_labels = train_dataset,train_labels
+
+                train_stats = train_with_dataset(session,tf_train_dataset,tf_train_labels,chunk_train_dataset,chunk_train_labels)
+                train_chunk_accuracy_log.append(train_stats['train_accuracy'])
+                train_chunk_error_log.append(train_stats['train_loss'])
+                filled_size += chunk_train_dataset.shape[0]
+
+            _ = session.run([tf_inc_gstep])
 
             logger.info('\tGlobal Step %d' %global_step.eval())
-            logger.info('\tMean loss at epoch %d: %.5f' % (epoch, np.mean(train_loss_log)))
-            logger.debug('\tLearning rate: %.5f'%updated_lr)
-            logger.info('\tMinibatch accuracy: %.2f%%\n' % np.mean(train_accuracy_log))
+            logger.info('\tMean loss at epoch %d: %.5f' % (epoch, np.mean(train_chunk_error_log)))
+            logger.debug('\tLearning rate: %.5f'%train_stats['updated_lr'])
+            logger.info('\tMinibatch accuracy: %.2f%%\n' % np.mean(train_chunk_accuracy_log))
             train_accuracy_log = []
             train_loss_log = []
 
-            if epoch > 0 and epoch % summary_frequency == 0:
+            if (epoch +1) % summary_frequency == 0:
                 for valid_batch_id in range(ceil(valid_size//batch_size)-1):
                     # validation batch
                     batch_valid_data = valid_dataset[(valid_batch_id)*batch_size:(valid_batch_id+1)*batch_size, :, :, :]
@@ -762,29 +890,33 @@ if __name__=='__main__':
                     valid_predictions = session.run([pred_valid],feed_dict=valid_feed_dict)
                     valid_accuracy_log.append(accuracy(valid_predictions[0],batch_valid_labels))
 
-                for test_batch_id in range(ceil(test_size//batch_size)-1):
-                    # test batch
-                    batch_test_data = test_dataset[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :, :, :]
-                    batch_test_labels = test_labels[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :]
+                # only cifar-10 has a test dataset
+                if dataset_type=='cifar-10':
+                    for test_batch_id in range(ceil(test_size//batch_size)-1):
+                        # test batch
+                        batch_test_data = test_dataset[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :, :, :]
+                        batch_test_labels = test_labels[(test_batch_id)*batch_size:(test_batch_id+1)*batch_size, :]
 
-                    test_feed_dict = {tf_test_dataset:batch_test_data,tf_test_labels:batch_test_labels}
-                    test_predictions = session.run([pred_test],feed_dict=test_feed_dict)
-                    test_accuracy_log.append(accuracy(test_predictions[0],batch_test_labels))
+                        test_feed_dict = {tf_test_dataset:batch_test_data,tf_test_labels:batch_test_labels}
+                        test_predictions = session.run([pred_test],feed_dict=test_feed_dict)
+                        test_accuracy_log.append(accuracy(test_predictions[0],batch_test_labels))
 
                 logger.info('\n==================== Epoch: %d ====================='%epoch)
                 logger.debug('\tGlobal step: %d'%global_step.eval())
                 logger.debug('\tCurrent Ops: %s'%iconv_ops)
                 mean_valid_accuracy = np.mean(valid_accuracy_log)
-                mean_test_accuracy = np.mean(test_accuracy_log)
+                mean_test_accuracy = np.mean(test_accuracy_log) if len(test_accuracy_log)>0 else 0.0
                 logger.debug('\tMean Valid accuracy: %.2f%%' %mean_valid_accuracy)
-                logger.debug('\tMean Test accuracy: %.2f%%\n' %mean_test_accuracy)
+                if dataset_type == 'cifar-10':
+                    logger.debug('\tMean Test accuracy: %.2f%%\n' %mean_test_accuracy)
                 valid_accuracy_log = []
                 test_accuracy_log = []
 
                 test_logger.info('%d,%.2f,%.2f',epoch,mean_valid_accuracy,mean_test_accuracy)
 
-        layer_ids = ['conv_2','conv_3']
-        rotate_required = True
+        layer_ids = ['conv_2','conv_3','conv_4']
+        rotate_required = True # cifar-10 training set has rotated images so we rotate them to original orientation
+
         for lid in layer_ids:
             all_deconvs,all_images = visualize_with_deconv(session,lid,valid_dataset,True)
             d_i = 0

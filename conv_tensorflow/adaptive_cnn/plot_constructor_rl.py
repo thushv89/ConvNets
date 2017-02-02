@@ -8,7 +8,7 @@ import numpy as np
 constructor_dir = 'constructor_rl'
 
 Q = {}
-for i in range(10,21,10):
+for i in range(200,201,10):
     with open(constructor_dir+os.sep+'Q_'+str(i)+'.pickle','rb') as f:
         Q[i] = pickle.load(f)
 
@@ -28,7 +28,7 @@ if __name__ == '__main__':
     #ax3 = axarr[2]
 
     x_axis = np.arange(max_depth)
-    q_10 =  Q[20]
+    q_10 =  Q[200]
     # {action => {layer_depth => list_of_q_values}}
     list_q_for_action_by_depth = {}
     for state,action_dict in q_10.items():
@@ -69,7 +69,31 @@ if __name__ == '__main__':
                 order_q_for_action_by_depth[a].append(0.0)
 
     print()
+    group_q_by_action_type = {}
     for a,q_list in order_q_for_action_by_depth.items():
+        if  a[0]=='C':
+            if 'conv' not in group_q_by_action_type:
+                group_q_by_action_type['conv'] = np.asarray(q_list).reshape(1,-1)
+            else:
+                group_q_by_action_type['conv'] = np.append(group_q_by_action_type['conv'],np.asarray(q_list).reshape(1,-1),axis=0)
+        elif a[0]=='P':
+            if 'pool' not in group_q_by_action_type:
+                group_q_by_action_type['pool'] = np.asarray(q_list).reshape(1,-1)
+            else:
+                group_q_by_action_type['pool'] = np.append(group_q_by_action_type['pool'],np.asarray(q_list).reshape(1,-1),axis=0)
+        elif a[0]=='Terminate':
+                group_q_by_action_type['terminate'] = np.asarray(q_list).reshape(1,-1)
+        else:
+            print(a)
+            raise NotImplementedError
+
+
+    for a_type,q_list in group_q_by_action_type.items():
+        ax1.plot(x_axis, np.mean(q_list,axis=0), label=a_type)
+    ax1.set_xlabel('Layer Depth')
+    ax1.set_ylabel('Average Q value by action type')
+
+    '''for a,q_list in order_q_for_action_by_depth.items():
         if np.random.random()>0.67:
             ax1.plot(x_axis, q_list, label=a)
         elif np.random.random()<0.33:
@@ -77,7 +101,7 @@ if __name__ == '__main__':
         else:
             ax1.plot(x_axis, q_list,'-*', label=a)
         print('Action %s'%str(a))
-        print('\t',q_list)
+        print('\t',q_list)'''
 
     ax1.legend(fontsize=12)
     #fig.subplots_adjust(wspace=.2,hspace=0.4,bottom=0.2)
