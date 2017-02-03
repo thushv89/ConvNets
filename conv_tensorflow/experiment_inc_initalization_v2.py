@@ -65,7 +65,8 @@ include_l2_loss = False
 # keep beta small (0.2 is too much >0.002 seems to be fine)
 beta = 1e-1
 
-summary_frequency = 5
+summary_frequency = 1
+incrementing_frequence = 1
 assert_true = True
 
 train_dataset, train_labels = None,None
@@ -678,6 +679,19 @@ tf_train_logits,tf_train_loss,tf_train_pred,tf_optimize,tf_inc_gstep = None,None
 
 
 def train_with_dataset(session, tf_train_dataset, tf_train_labels, chunk_dataset, chunk_labels):
+    '''
+    This method takes a set of training data and labels and train the model
+    on that data. This method is used as a way to accomodate both loading the
+    data at once and loading as small chunks (imagent)
+
+    :param session: Tensorflow session
+    :param tf_train_dataset: Training dataset placeholder
+    :param tf_train_labels: Training labels placeholder
+    :param chunk_dataset: Actual dataset (ndarray)
+    :param chunk_labels:  Actual one-hot labels (ndarray)
+    :return: None
+
+    '''
     global tf_train_logits,tf_train_loss,tf_train_pred,tf_optimize,tf_inc_gstep
     global logger
 
@@ -715,14 +729,17 @@ if __name__=='__main__':
 
     try:
         opts,args = getopt.getopt(
-            sys.argv[1:],"",["log_suffix="])
+            sys.argv[1:],"",["output_dir="])
     except getopt.GetoptError as err:
-        print('<filename>.py --log_suffix=')
+        print('<filename>.py --output_dir=')
 
     if len(opts)!=0:
         for opt,arg in opts:
-            if opt == '--log_suffix':
-                log_suffix = arg
+            if opt == '--output_dir':
+                output_dir = arg
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
 
     logger = logging.getLogger('main_logger')
     logger.setLevel(logging_level)
@@ -732,11 +749,25 @@ if __name__=='__main__':
     logger.addHandler(console)
 
     # Value logger will log info used to calculate policies
-    test_logger = logging.getLogger('test_logger')
-    test_logger.setLevel(logging.INFO)
-    fileHandler = logging.FileHandler('test_log'+log_suffix+'.log', mode='w')
-    fileHandler.setFormatter(logging.Formatter('%(message)s'))
-    test_logger.addHandler(fileHandler)
+    training_stat_logger = logging.getLogger('stat_logger')
+    training_stat_logger.setLevel(logging.INFO)
+    statfileHandler = logging.FileHandler(output_dir+os.sep+'training_log.log', mode='w')
+    statfileHandler.setFormatter(logging.Formatter('%(message)s'))
+    training_stat_logger.addHandler(statfileHandler)
+
+    # Value logger will log info used to calculate policies
+    cnnnet_logger = logging.getLogger('cnnnet_logger')
+    cnnnet_logger.setLevel(logging.INFO)
+    cnnfileHandler = logging.FileHandler(output_dir + os.sep + 'cnn_log.log', mode='w')
+    cnnfileHandler.setFormatter(logging.Formatter('%(message)s'))
+    cnnnet_logger.addHandler(cnnfileHandler)
+
+    cnnnet_logger.info('CNN Hyperparameters')
+    for k,v in hyparams.items():
+        cnnnet_logger.info('%s: %s',k,v)
+    cnnnet_logger.info('')
+    cnnnet_logger.info('CNN Operations in order (Beginning)')
+    cnnnet_logger.info('%s\n',iconv_ops)
 
     graph = tf.Graph()
 
@@ -799,6 +830,10 @@ if __name__=='__main__':
             valid_dataset = fp1[:, :, :, :]
             valid_labels = fp2[:]
 
+            valid_dataset, valid_labels = load_data.reformat_data_imagenet_with_memmap_array(
+                valid_dataset, valid_labels, silent=True
+            )
+
             to_add_ops = ['conv_2', 'pool_2',
                           'conv_3', 'pool_3', 'conv_4',
                           'conv_5', 'pool_5', 'conv_6',
@@ -809,13 +844,22 @@ if __name__=='__main__':
             to_add_ops = ['conv_2', 'pool_2', 'conv_3', 'conv_4']
 
         chunk_train_dataset, chunk_train_labels = None, None
+
+        weight_saver = tf.train.Saver(weights)
+        bias_saver = tf.train.Saver(biases)
+
         for epoch in range(31):
             filled_size = 0
 
             train_chunk_accuracy_log = []
             train_chunk_error_log = []
 
-            if len(to_add_ops)>0 and (epoch+1)%5==0 and incrementally_add_layers:
+            if len(to_add_ops)>0 and epoch>0 and \
+                                    (epoch+1)%incrementing_frequence==0 and incrementally_add_layers:
+
+                # save weights
+                weight_saver.save(session, output_dir + os.sep + 'cnn-weights', epoch+1)
+                bias_saver.save(session, output_dir + os.sep + 'cnn-biases', epoch+1)
 
                 to_conv_id = to_add_ops[0]
                 logger.info('Adding convolution layer %s',to_conv_id)
@@ -827,6 +871,8 @@ if __name__=='__main__':
                     logger.info('Adding pooling layer %s', to_conv_id)
                     add_pool_layer(hyparams[to_pool_id]['kernel'],hyparams[to_pool_id]['stride'],hyparams[to_pool_id]['type'],to_pool_id)
                     del to_add_ops[0]
+
+                cnnnet_logger.info('Epoch: %d, CNN Operations changed to: %s',epoch, iconv_ops)
                 # update logits after adding new layer
                 get_logits(tf_valid_dataset)
 
@@ -871,12 +917,21 @@ if __name__=='__main__':
                 train_chunk_error_log.append(train_stats['train_loss'])
                 filled_size += chunk_train_dataset.shape[0]
 
+                training_stat_logger.info('#Training statistics for Epoch %d, Data points (%d-%d)',epoch,filled_size-chunk_train_dataset.shape[0],filled_size)
+                training_stat_logger.info('#Mean Accuracy, Mean Loss')
+                training_stat_logger.info('%.4f,%.4f\n',train_stats['train_accuracy'],train_stats['train_loss'])
+
             _ = session.run([tf_inc_gstep])
 
             logger.info('\tGlobal Step %d' %global_step.eval())
             logger.info('\tMean loss at epoch %d: %.5f' % (epoch, np.mean(train_chunk_error_log)))
             logger.debug('\tLearning rate: %.5f'%train_stats['updated_lr'])
             logger.info('\tMinibatch accuracy: %.2f%%\n' % np.mean(train_chunk_accuracy_log))
+
+            training_stat_logger.info('# Training statistics for Epoch %d',epoch)
+            training_stat_logger.info('#Mean loss, Mean accuracy, Learning rate')
+            training_stat_logger.info('%.4f,%.4f,%.6f\n',np.mean(train_chunk_error_log),np.mean(train_chunk_accuracy_log),train_stats['updated_lr'])
+
             train_accuracy_log = []
             train_loss_log = []
 
@@ -912,9 +967,19 @@ if __name__=='__main__':
                 valid_accuracy_log = []
                 test_accuracy_log = []
 
-                test_logger.info('%d,%.2f,%.2f',epoch,mean_valid_accuracy,mean_test_accuracy)
+                training_stat_logger.info('\n#Validation and Test accuracies for epoch %d',epoch)
+                training_stat_logger.info('%.2f,%.2f',mean_valid_accuracy,mean_test_accuracy)
 
-        layer_ids = ['conv_2','conv_3','conv_4']
+        weight_saver.save(session,output_dir+os.sep+'cnn-weights',epoch+1)
+        bias_saver.save(session, output_dir + os.sep + 'cnn-biases', epoch+1)
+
+        # Visualization
+        layer_ids = [op for op in iconv_ops if 'conv' in op and op!='conv_1']
+
+        if not os.path.exists(output_dir+os.sep+backprop_feature_dir):
+            os.makedirs(output_dir+os.sep+backprop_feature_dir)
+            backprop_feature_dir = output_dir+os.sep+backprop_feature_dir
+
         rotate_required = True # cifar-10 training set has rotated images so we rotate them to original orientation
 
         for lid in layer_ids:
