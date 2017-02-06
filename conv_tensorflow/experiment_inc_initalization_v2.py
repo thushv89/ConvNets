@@ -48,12 +48,12 @@ elif dataset_type=='imagenet-100':
     image_size = 224
     num_labels = 100
     num_channels = 3
-    train_size = 128099
+    train_size = 128099//2
     valid_size = 5000
 
 batch_size = 128 # number of datapoints in a single batch
 
-start_lr = 0.001
+start_lr = 0.002
 decay_learning_rate = True
 
 #dropout seems to be making it impossible to learn
@@ -65,7 +65,14 @@ include_l2_loss = False
 # keep beta small (0.2 is too much >0.002 seems to be fine)
 beta = 1e-1
 
-summary_frequency = 1
+# we use early stoppling like mechanisim to decay the learning rate
+# if the validation accuracy plateus then we decay the learning rate by 0.9
+# if we don't see an improvement of the validation accuracy after no_improvement_cap epochs
+# we terminate the loop
+
+validation_frequency = 1
+valid_drop_cap = 3
+no_improvement_cap = 10
 incrementing_frequence = 1
 assert_true = True
 
@@ -194,18 +201,18 @@ def init_iconvnet():
                 weights[op]=tf.Variable(
                     tf.truncated_normal(hyparams[op]['weights'],
                                         stddev=2./(hyparams[op]['weights'][0]*hyparams[op]['weights'][1])
-                                        )
+                                        , name='w_' + op)
                 )
-                biases[op] = tf.Variable(tf.constant(np.random.random()*1e-6,shape=[hyparams[op]['weights'][3]]))
+                biases[op] = tf.Variable(tf.constant(np.random.random()*1e-6,shape=[hyparams[op]['weights'][3]]),name='b_'+op)
 
     # Fully connected classifier
     weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
         [hyparams['fulcon_out']['in'],hyparams['fulcon_out']['out']],
         stddev=2./hyparams['fulcon_out']['in']
-    ))
+    ),name='w_fulcon_out')
     biases['fulcon_out'] = tf.Variable(tf.constant(
         np.random.random()*0.01,shape=[hyparams['fulcon_out']['out']]
-    ))
+    ),name='b_fulcon_out')
 
     print('Weights for %s initialized with size %d,%d'%(
         'fulcon_out',hyparams['fulcon_out']['in'], num_labels
@@ -252,12 +259,16 @@ def update_fulcon_layer():
     elif hyparams['fulcon_out']['in']<new_fulcon_in:
         amount_to_add = new_fulcon_in - hyparams['fulcon_out']['in']
 
-        adding_weights = tf.truncated_normal([amount_to_add,num_labels],stddev=0.02)
+        adding_weights = tf.Variable(tf.truncated_normal([amount_to_add,num_labels],stddev=0.02))
+        tf.variables_initializer([adding_weights]).run()
         new_weights = tf.concat(0,[weights['fulcon_out'],adding_weights])
         weights['fulcon_out'] = new_weights
 
+
+
     # update fulcon_out in
     hyparams['fulcon_out']['in'] = new_fulcon_in
+
 
 def add_conv_layer(w,stride,conv_id,init_random):
     '''
@@ -274,7 +285,7 @@ def add_conv_layer(w,stride,conv_id,init_random):
     weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
     biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
 
-    tf.initialize_variables([weights[conv_id],biases[conv_id]]).run()
+    tf.variables_initializer([weights[conv_id],biases[conv_id]]).run()
 
     # add the new conv_op to ordered operation list
     append_new_layer_id(conv_id)
@@ -392,17 +403,16 @@ def calc_loss_vector(logits,labels):
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
-        learning_rate = tf.maximum(tf.constant(start_lr*0.1),tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.99))
+        learning_rate = tf.maximum(tf.constant(start_lr*0.1),
+                                   tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.9)
+                                   )
     else:
         learning_rate = start_lr
 
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+    optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
+    #optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
     return optimizer,learning_rate
 
-
-def optimize_with_fixed_lr_func(loss,learning_rate):
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
-    return optimizer
 
 
 def inc_global_step(global_step):
@@ -676,7 +686,7 @@ def visualize_with_deconv(session,layer_id,all_x,guided_backprop=False):
 # if the dataset is too large and train with that
 
 tf_train_logits,tf_train_loss,tf_train_pred,tf_optimize,tf_inc_gstep = None,None,None,None,None
-
+momentum = None
 
 def train_with_dataset(session, tf_train_dataset, tf_train_labels, chunk_dataset, chunk_labels):
     '''
@@ -703,6 +713,9 @@ def train_with_dataset(session, tf_train_dataset, tf_train_labels, chunk_dataset
         tf_train_loss = calc_loss(tf_train_logits, tf_train_labels)
         tf_train_pred = predict_with_logits(tf_train_logits)
         tf_optimize = optimize_func(tf_train_loss, global_step)
+
+        # required for the momentum optimizer
+        tf.global_variables_initializer().run()
 
     train_accuracy_log = []
     train_loss_log = []
@@ -777,7 +790,7 @@ if __name__=='__main__':
     with tf.Session(graph=graph,config = tf.ConfigProto(allow_soft_placement=True)) as session:
 
         #global step is used to decay the learning rate
-        global_step = tf.Variable(0, trainable=False)
+        global_step = tf.Variable(0, trainable=False,name='global_step')
 
         logger.info('Input data defined...\n')
 
@@ -804,6 +817,10 @@ if __name__=='__main__':
         pred_test = predict_with_dataset(tf_test_dataset)
 
         tf.global_variables_initializer().run()
+
+        uninit_vars = session.run(tf.report_uninitialized_variables(list(weights.values()).extend(biases.values()), name='report_uninitialized_variables'))
+        if len(uninit_vars)>0:
+            raise AssertionError
 
         # initial loading
         if dataset_type=='imagenet-100':
@@ -848,12 +865,16 @@ if __name__=='__main__':
         weight_saver = tf.train.Saver(weights)
         bias_saver = tf.train.Saver(biases)
 
+        prev_valid_accuracy = 0.0
+        valid_drop_count = 0
+        no_improvement_count = 0
         for epoch in range(31):
             filled_size = 0
 
             train_chunk_accuracy_log = []
             train_chunk_error_log = []
 
+            # changing the structure of the network
             if len(to_add_ops)>0 and epoch>0 and \
                                     (epoch+1)%incrementing_frequence==0 and incrementally_add_layers:
 
@@ -876,8 +897,14 @@ if __name__=='__main__':
                 # update logits after adding new layer
                 get_logits(tf_valid_dataset)
 
+                op_variables = [v.name  for v in tf.trainable_variables()]
+                for tmp_op in iconv_ops:
+                    if 'conv' in tmp_op or 'fulcon' in tmp_op:
+                        logger.info('Checking if variables of %s are trainable',tmp_op)
+                        assert 'w_'+tmp_op in op_variables and 'b_'+tmp_op in op_variables
             # need to have code to run the training for all the data points
             # we use a while loop to support loading data at once and as chunks both
+            # 1 loop = 1 traverse through the full dataset (1 training epoch)
             while filled_size < train_size_clipped:
 
                 if dataset_type == 'imagenet-100':
@@ -918,24 +945,22 @@ if __name__=='__main__':
                 filled_size += chunk_train_dataset.shape[0]
 
                 training_stat_logger.info('#Training statistics for Epoch %d, Data points (%d-%d)',epoch,filled_size-chunk_train_dataset.shape[0],filled_size)
-                training_stat_logger.info('#Mean Accuracy, Mean Loss')
-                training_stat_logger.info('%.4f,%.4f\n',train_stats['train_accuracy'],train_stats['train_loss'])
+                training_stat_logger.info('#Mean Loss, Mean Accuracy')
+                training_stat_logger.info('%.4f, %.4f\n',train_stats['train_loss'],train_stats['train_accuracy'])
 
-            _ = session.run([tf_inc_gstep])
-
-            logger.info('\tGlobal Step %d' %global_step.eval())
+            logger.info('\tGlobal Step %d' % global_step.eval())
             logger.info('\tMean loss at epoch %d: %.5f' % (epoch, np.mean(train_chunk_error_log)))
             logger.debug('\tLearning rate: %.5f'%train_stats['updated_lr'])
             logger.info('\tMinibatch accuracy: %.2f%%\n' % np.mean(train_chunk_accuracy_log))
 
-            training_stat_logger.info('# Training statistics for Epoch %d',epoch)
+            training_stat_logger.info('\n# Training statistics for Epoch %d',epoch)
             training_stat_logger.info('#Mean loss, Mean accuracy, Learning rate')
             training_stat_logger.info('%.4f,%.4f,%.6f\n',np.mean(train_chunk_error_log),np.mean(train_chunk_accuracy_log),train_stats['updated_lr'])
 
             train_accuracy_log = []
             train_loss_log = []
 
-            if (epoch +1) % summary_frequency == 0:
+            if (epoch +1) % validation_frequency == 0:
                 for valid_batch_id in range(ceil(valid_size//batch_size)-1):
                     # validation batch
                     batch_valid_data = valid_dataset[(valid_batch_id)*batch_size:(valid_batch_id+1)*batch_size, :, :, :]
@@ -957,15 +982,35 @@ if __name__=='__main__':
                         test_accuracy_log.append(accuracy(test_predictions[0],batch_test_labels))
 
                 logger.info('\n==================== Epoch: %d ====================='%epoch)
-                logger.debug('\tGlobal step: %d'%global_step.eval())
+                logger.info('\tGlobal step: %d'%global_step.eval())
                 logger.debug('\tCurrent Ops: %s'%iconv_ops)
                 mean_valid_accuracy = np.mean(valid_accuracy_log)
                 mean_test_accuracy = np.mean(test_accuracy_log) if len(test_accuracy_log)>0 else 0.0
-                logger.debug('\tMean Valid accuracy: %.2f%%' %mean_valid_accuracy)
+                logger.info('\tMean Valid accuracy: %.2f%%' %mean_valid_accuracy)
                 if dataset_type == 'cifar-10':
-                    logger.debug('\tMean Test accuracy: %.2f%%\n' %mean_test_accuracy)
+                    logger.info('\tMean Test accuracy: %.2f%%\n' %mean_test_accuracy)
+
                 valid_accuracy_log = []
                 test_accuracy_log = []
+
+                if prev_valid_accuracy>mean_valid_accuracy:
+                    valid_drop_count += 1
+                    logger.info('Incrementing valid_drop to %d',valid_drop_count)
+                else:
+                    logger.info('Resetting valid_drop and no_improvement variables')
+                    valid_drop_count = 0
+                    no_improvement_count = 0
+
+                if valid_drop_count>valid_drop_cap:
+                    _ = session.run([tf_inc_gstep])
+                    no_improvement_count += 1
+
+                if no_improvement_count>no_improvement_cap:
+                    logger.info('Validation accuracy has not improved in %d epochs',no_improvement_count)
+                    logger.info('Breaking the loop')
+                    break
+
+                prev_valid_accuracy = mean_valid_accuracy
 
                 training_stat_logger.info('\n#Validation and Test accuracies for epoch %d',epoch)
                 training_stat_logger.info('%.2f,%.2f',mean_valid_accuracy,mean_test_accuracy)

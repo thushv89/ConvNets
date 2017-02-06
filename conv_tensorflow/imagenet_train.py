@@ -79,7 +79,7 @@ if __name__=='__main__':
 
     decay_step = 1
     ''' ======== Learning rate Information ==========
-    0.0001 (7 Layer network) (Loss > 10 after 1st Epoch)
+    0.0001 (7 Layer network) (Loss < 10 after 1st Epoch)
     Keep last 2D output small (14x14 vs 7x7) seems to increase accuracy drastically
     Keep the initialization stddev < 0.02 otherwise loss explodes
     Local Response Normalization worsen the results
