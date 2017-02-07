@@ -34,13 +34,13 @@ logging_format = '[%(funcName)s] %(message)s'
 backprop_feature_dir = 'backprop_features'
 
 #type of data training
-dataset_type = 'imagenet-100'
+dataset_type = 'cifar-10'
 
 if dataset_type=='cifar-10':
     image_size = 32
     num_labels = 10
     num_channels = 3 # rgb
-    train_size = 40000
+    train_size = 40000//2
     valid_size = 10000
     test_size = 10000
 
@@ -53,7 +53,10 @@ elif dataset_type=='imagenet-100':
 
 batch_size = 128 # number of datapoints in a single batch
 
-start_lr = 0.002
+incrementally_add_layers = False
+
+# for cifar-10 start_lr 0.01/0.001 didn't work when starting with full network
+start_lr = 0.01 if incrementally_add_layers else 0.0001
 decay_learning_rate = True
 
 #dropout seems to be making it impossible to learn
@@ -71,9 +74,9 @@ beta = 1e-1
 # we terminate the loop
 
 validation_frequency = 1
-valid_drop_cap = 3
+valid_drop_cap = 2
 no_improvement_cap = 10
-incrementing_frequence = 1
+incrementing_frequence = 3
 assert_true = True
 
 train_dataset, train_labels = None,None
@@ -83,7 +86,7 @@ test_dataset, test_labels = None,None
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
 
-incrementally_add_layers = True
+
 
 
 if incrementally_add_layers:
@@ -103,7 +106,7 @@ else:
                      'conv_5','pool_5','conv_6',
                      'conv_7','pool_global','fulcon_out']
 
-final_2d_output = (1,1)
+final_2d_output = (2,2)
 
 if dataset_type == 'cifar-10':
     depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512}
@@ -126,7 +129,7 @@ if dataset_type == 'cifar-10':
 
     else:
         pool_global_hyparams = {'type':'avg','kernel':[1,8,8,1],'stride':[1,1,1,1],'padding':'VALID'}
-        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_3'],'out':num_labels}
+        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_4'],'out':num_labels}
 
     hyparams = {
         'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams,
@@ -134,7 +137,8 @@ if dataset_type == 'cifar-10':
         'pool_1': pool_1_hyparams, 'pool_2': pool_1_hyparams,
         'pool_3':pool_1_hyparams,
         'pool_global':pool_global_hyparams,
-        'fulcon_out':out_hyparams
+        'fulcon_out':out_hyparams,
+        'final_2d_output':final_2d_output
     }
 
 elif dataset_type == 'imagenet-100':
@@ -159,7 +163,7 @@ elif dataset_type == 'imagenet-100':
         out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_1'],'out':num_labels}
     else:
         pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'VALID'}
-        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_'],'out':num_labels}
+        out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_7'],'out':num_labels}
 
     hyparams = {
         'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams,
@@ -201,8 +205,8 @@ def init_iconvnet():
                 weights[op]=tf.Variable(
                     tf.truncated_normal(hyparams[op]['weights'],
                                         stddev=2./(hyparams[op]['weights'][0]*hyparams[op]['weights'][1])
-                                        , name='w_' + op)
-                )
+                                        )
+                ,name='w_' + op)
                 biases[op] = tf.Variable(tf.constant(np.random.random()*1e-6,shape=[hyparams[op]['weights'][3]]),name='b_'+op)
 
     # Fully connected classifier
@@ -252,19 +256,18 @@ def update_fulcon_layer():
     # need to remove neurons
     if hyparams['fulcon_out']['in']>new_fulcon_in:
         amount_to_rm = hyparams['fulcon_out']['in'] - new_fulcon_in
-        new_weights = tf.slice(weights['fulcon_out'],[0,0],[new_fulcon_in,num_labels])
+        new_weights = tf.Variable(tf.slice(weights['fulcon_out'],[0,0],[new_fulcon_in,num_labels]),name='w_fulcon_out')
+        tf.variables_initializer([new_weights]).run()
         weights['fulcon_out'] = new_weights
 
     # need to add neurons
     elif hyparams['fulcon_out']['in']<new_fulcon_in:
         amount_to_add = new_fulcon_in - hyparams['fulcon_out']['in']
 
-        adding_weights = tf.Variable(tf.truncated_normal([amount_to_add,num_labels],stddev=0.02))
-        tf.variables_initializer([adding_weights]).run()
-        new_weights = tf.concat(0,[weights['fulcon_out'],adding_weights])
+        adding_weights = tf.truncated_normal([amount_to_add,num_labels],stddev=0.02)
+        new_weights = tf.Variable(tf.concat(0,[weights['fulcon_out'],adding_weights]),name='w_fulcon_out')
+        tf.variables_initializer([new_weights]).run()
         weights['fulcon_out'] = new_weights
-
-
 
     # update fulcon_out in
     hyparams['fulcon_out']['in'] = new_fulcon_in
@@ -409,6 +412,9 @@ def optimize_func(loss,global_step):
     else:
         learning_rate = start_lr
 
+    # Using SGD as the optimizer caused the incrementally adding layers to result in higher accuracy
+    # compared to starting with all the layers
+    # Using SGD with momentum alleviates this
     optimizer = tf.train.MomentumOptimizer(learning_rate=learning_rate, momentum=0.9).minimize(loss)
     #optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
     return optimizer,learning_rate
@@ -581,7 +587,7 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
 
             updates = tf.reshape(outputs_bckwd[-1],[-1])
 
-            ref = tf.Variable(tf.zeros([b,output_shape[1]*output_shape[2]*output_shape[3]],dtype=tf.float32),dtype=tf.float32,name='ref_'+op)
+            ref = tf.Variable(tf.zeros([b,output_shape[1]*output_shape[2]*output_shape[3]],dtype=tf.float32),dtype=tf.float32,name='ref_'+op,trainable=False)
             
             session.run(tf.variables_initializer([ref]))
 
@@ -779,8 +785,26 @@ if __name__=='__main__':
     for k,v in hyparams.items():
         cnnnet_logger.info('%s: %s',k,v)
     cnnnet_logger.info('')
+
+    cnnnet_logger.info('Batch size: %d',batch_size)
+    cnnnet_logger.info('Incrementally Add Layers: %s',incrementally_add_layers)
+    cnnnet_logger.info('Learning rate: %.5f',start_lr)
+    cnnnet_logger.info('Decay Learning Rate: %s',decay_learning_rate)
+    cnnnet_logger.info('Dropout: %.3f',dropout_rate)
+    cnnnet_logger.info('Use Dropout: %s',use_dropout)
+    cnnnet_logger.info('Include L2 Loss: %s',include_l2_loss)
+    cnnnet_logger.info('Beta: %.3f',beta)
+    cnnnet_logger.info('Validation Frequency: %d',validation_frequency)
+    cnnnet_logger.info('Valid Drop Cap: %d',valid_drop_cap)
+    cnnnet_logger.info('No Improvement Cap: %d',no_improvement_cap)
+    cnnnet_logger.info('Incrementing Layer Frequency : %d',incrementing_frequence)
+
+
     cnnnet_logger.info('CNN Operations in order (Beginning)')
     cnnnet_logger.info('%s\n',iconv_ops)
+
+    with open(output_dir + os.sep + 'ops_hyperparameters.pickle', 'wb') as f:
+        pickle.dump({'depth_conv':depth_conv,'op_list':iconv_ops,'hyperparameters':hyparams}, f, pickle.HIGHEST_PROTOCOL)
 
     graph = tf.Graph()
 
@@ -809,7 +833,9 @@ if __name__=='__main__':
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels))
 
         init_iconvnet() #initialize the initial conv net
-
+        op_variables = [v.name for v in tf.trainable_variables()]
+        logger.info(op_variables)
+        logger.info('='*80)
         tf_inc_gstep = inc_global_step(global_step)
 
         # valid predict function
@@ -865,7 +891,7 @@ if __name__=='__main__':
         weight_saver = tf.train.Saver(weights)
         bias_saver = tf.train.Saver(biases)
 
-        prev_valid_accuracy = 0.0
+        max_valid_accuracy = 0.0
         valid_drop_count = 0
         no_improvement_count = 0
         for epoch in range(31):
@@ -897,11 +923,37 @@ if __name__=='__main__':
                 # update logits after adding new layer
                 get_logits(tf_valid_dataset)
 
+                # here we make a few checks
+                # first check is all the weights and biases of the ops are trainable
                 op_variables = [v.name  for v in tf.trainable_variables()]
+                logger.info('Trainable Variables: %s',op_variables)
+
                 for tmp_op in iconv_ops:
                     if 'conv' in tmp_op or 'fulcon' in tmp_op:
+                        trainable_error_weights, trainable_error_biases = True, True
                         logger.info('Checking if variables of %s are trainable',tmp_op)
-                        assert 'w_'+tmp_op in op_variables and 'b_'+tmp_op in op_variables
+                        for v in op_variables:
+                            if v.startswith('w_'+tmp_op):
+                                trainable_error_weights = False
+                                break
+                        for v in op_variables:
+                            if v.startswith('b_'+tmp_op):
+                                trainable_error_biases = False
+                                break
+
+                        if trainable_error_weights or trainable_error_biases:
+                            raise AssertionError
+
+
+                # second check of the size of weights fulcon_out  == final_2d_ouput[0] * [1] * depth[last_conv]
+                last_conv_op = None
+                for tmp_op in iconv_ops:
+                    if 'conv' in tmp_op:
+                        last_conv_op = tmp_op
+                logger.info('Got fulcon_out size: %d',weights['fulcon_out'].get_shape().as_list()[0])
+                assert weights['fulcon_out'].get_shape().as_list()[0] == final_2d_output[0]*final_2d_output[1]*depth_conv[last_conv_op]
+                assert hyparams['fulcon_out']['in'] == final_2d_output[0]*final_2d_output[1]*depth_conv[last_conv_op]
+
             # need to have code to run the training for all the data points
             # we use a while loop to support loading data at once and as chunks both
             # 1 loop = 1 traverse through the full dataset (1 training epoch)
@@ -993,7 +1045,7 @@ if __name__=='__main__':
                 valid_accuracy_log = []
                 test_accuracy_log = []
 
-                if prev_valid_accuracy>mean_valid_accuracy:
+                if max_valid_accuracy>mean_valid_accuracy:
                     valid_drop_count += 1
                     logger.info('Incrementing valid_drop to %d',valid_drop_count)
                 else:
@@ -1010,7 +1062,8 @@ if __name__=='__main__':
                     logger.info('Breaking the loop')
                     break
 
-                prev_valid_accuracy = mean_valid_accuracy
+                if mean_valid_accuracy>max_valid_accuracy:
+                    max_valid_accuracy = mean_valid_accuracy
 
                 training_stat_logger.info('\n#Validation and Test accuracies for epoch %d',epoch)
                 training_stat_logger.info('%.2f,%.2f',mean_valid_accuracy,mean_test_accuracy)
@@ -1018,6 +1071,7 @@ if __name__=='__main__':
         weight_saver.save(session,output_dir+os.sep+'cnn-weights',epoch+1)
         bias_saver.save(session, output_dir + os.sep + 'cnn-biases', epoch+1)
 
+        del chunk_train_dataset,chunk_train_labels
         # Visualization
         layer_ids = [op for op in iconv_ops if 'conv' in op and op!='conv_1']
 
@@ -1025,7 +1079,7 @@ if __name__=='__main__':
             os.makedirs(output_dir+os.sep+backprop_feature_dir)
             backprop_feature_dir = output_dir+os.sep+backprop_feature_dir
 
-        rotate_required = True # cifar-10 training set has rotated images so we rotate them to original orientation
+        rotate_required = True if dataset_type=='cifar-10' else False # cifar-10 training set has rotated images so we rotate them to original orientation
 
         for lid in layer_ids:
             all_deconvs,all_images = visualize_with_deconv(session,lid,valid_dataset,True)

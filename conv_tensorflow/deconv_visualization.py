@@ -4,6 +4,10 @@ import os
 import getopt
 import sys
 import logging
+from six.moves import cPickle as pickle
+import load_data
+from scipy.misc import imsave
+from skimage.transform import rotate
 
 __author__ = 'Thushan Ganegedara'
 
@@ -35,15 +39,138 @@ examples_per_featuremap = 10
 
 batch_size = 128
 
-dataset_type = 'cifar-10' # cifar-10 or imagenet-100
+dataset_type = 'imagenet-100' # cifar-10 or imagenet-100
 
 if dataset_type=='cifar-10':
     image_size = 32
     num_labels = 10
+    num_channels = 3
+    valid_size = 10000
 elif dataset_type == 'imagenet-100':
     image_size = 224
     num_labels = 100
+    num_channels = 3
+    valid_size = 5000
 
+output_dir = 'imagenet-100-inc'
+
+iconv_ops = None
+hyparams = None
+depth_conv = None
+
+weights,biases = {},{}
+
+valid_dataset_filename = None
+valid_dataset = None
+
+
+def load_valid_dataset(dataset_type):
+    if dataset_type=='cifar-10':
+        valid_dataset_filename = '..' + os.sep + 'data' + os.sep + 'cifar-10.pickle'
+
+        (train_dataset, train_labels), \
+        (valid_dataset, valid_labels), \
+        (test_dataset, test_labels) = load_data.reformat_data_cifar10(valid_dataset_filename)
+
+        del train_dataset,train_labels,test_dataset,test_labels
+
+    elif dataset_type=='imagenet-100':
+        valid_dataset_fname = 'imagenet_small' + os.sep + 'imagenet_small_valid_dataset'
+        valid_label_fname = 'imagenet_small' + os.sep + 'imagenet_small_valid_labels'
+
+        fp1 = np.memmap(valid_dataset_fname, dtype=np.float32, mode='r',
+                        offset=np.dtype('float32').itemsize * 0,
+                        shape=(valid_size, image_size, image_size, num_channels))
+        fp2 = np.memmap(valid_label_fname, dtype=np.int32, mode='r',
+                        offset=np.dtype('int32').itemsize * 0, shape=(valid_size, 1))
+        valid_dataset = fp1[:, :, :, :]
+        valid_labels = fp2[:]
+
+        valid_dataset, valid_labels = load_data.reformat_data_imagenet_with_memmap_array(
+            valid_dataset, valid_labels, silent=True
+        )
+
+    del valid_labels
+    return valid_dataset
+
+def restore_weights_and_biases_and_hyperparameters(
+        session,weights_filename,biases_filename):
+    global iconv_ops,hyparams,depth_conv
+    global weights,biases
+
+    '''with open(output_dir + os.sep + 'ops_hyperparameters.pickle', 'rb') as f:
+        param_dict = pickle.load(f)
+    iconv_ops = param_dict['op_list']
+    hyparams = param_dict['hyperparameters']'''
+    iconv_ops = ['conv_1', 'pool_1', 'conv_2', 'pool_2',
+                 'conv_3', 'pool_3', 'conv_4',
+                 'conv_5', 'pool_5', 'conv_6',
+                 'pool_global', 'fulcon_out']
+
+    depth_conv = {'conv_1': 256, 'conv_2': 512, 'conv_3': 1024, 'conv_4': 1024, 'conv_5': 1024, 'conv_6': 2048,
+                  'conv_7': 2048}
+
+    final_2d_output = (1, 1)
+
+    conv_1_hyparams = {'weights': [7, 7, num_channels, depth_conv['conv_1']], 'stride': [1, 2, 2, 1], 'padding': 'SAME'}
+    conv_2_hyparams = {'weights': [3, 3, depth_conv['conv_1'], depth_conv['conv_2']], 'stride': [1, 1, 1, 1],
+                       'padding': 'SAME'}
+    conv_3_hyparams = {'weights': [3, 3, depth_conv['conv_2'], depth_conv['conv_3']], 'stride': [1, 1, 1, 1],
+                       'padding': 'SAME'}
+    conv_4_hyparams = {'weights': [3, 3, depth_conv['conv_3'], depth_conv['conv_4']], 'stride': [1, 1, 1, 1],
+                       'padding': 'SAME'}
+    conv_5_hyparams = {'weights': [3, 3, depth_conv['conv_4'], depth_conv['conv_5']], 'stride': [1, 1, 1, 1],
+                       'padding': 'SAME'}
+    conv_6_hyparams = {'weights': [3, 3, depth_conv['conv_5'], depth_conv['conv_6']], 'stride': [1, 1, 1, 1],
+                       'padding': 'SAME'}
+    conv_7_hyparams = {'weights': [3, 3, depth_conv['conv_6'], depth_conv['conv_7']], 'stride': [1, 1, 1, 1],
+                       'padding': 'SAME'}
+
+    pool_1_hyparams = {'type': 'max', 'kernel': [1, 3, 3, 1], 'stride': [1, 2, 2, 1], 'padding': 'SAME'}
+
+    pool_global_hyparams = {'type': 'avg', 'kernel': [1, 7, 7, 1], 'stride': [1, 1, 1, 1], 'padding': 'VALID'}
+    out_hyparams = {'in': final_2d_output[0] * final_2d_output[1] * depth_conv['conv_7'], 'out': num_labels}
+
+    hyparams = {
+        'conv_1': conv_1_hyparams, 'conv_2': conv_2_hyparams,
+        'conv_3': conv_3_hyparams, 'conv_4': conv_4_hyparams,
+        'conv_5': conv_5_hyparams, 'conv_6': conv_6_hyparams,
+        'conv_7': conv_7_hyparams,
+        'pool_1': pool_1_hyparams, 'pool_2': pool_1_hyparams,
+        'pool_3': pool_1_hyparams, 'pool_4': pool_1_hyparams,
+        'pool_5': pool_1_hyparams,
+        'pool_global': pool_global_hyparams,
+        'fulcon_out': out_hyparams
+    }
+
+    # restoring weights and biases
+    logger.info('Restoring weights %s',weights_filename)
+    weight_saver = tf.train.import_meta_graph(weights_filename+'.meta')
+    weight_saver.restore(sess=session,save_path=weights_filename)
+
+    logger.info('Restoring biases %s', biases_filename)
+    biases_saver = tf.train.import_meta_graph(biases_filename + '.meta')
+    biases_saver.restore(sess=session,save_path=biases_filename)
+
+    op_variables = [[v.name,v] for v in tf.trainable_variables()]
+
+    # create weights and biases dictionaries
+    for op in iconv_ops:
+        if 'conv' in op or 'fulcon' in op:
+            for vname, v in op_variables:
+                if vname.startswith('w_'+op):
+                    weights[op] = v
+                elif vname.startswith('b_'+op):
+                    biases[op] = v
+
+    logger.info('Restored Variables:')
+    logger.info('=' * 60)
+    logger.info('Weights')
+    logger.info(weights)
+    logger.info('=' * 60)
+    logger.info('Biases')
+    logger.info(biases)
+    logger.info('=' * 60)
 
 def get_logits(dataset):
     '''
@@ -91,9 +218,6 @@ def get_logits(dataset):
     shape = outputs[-1].get_shape().as_list()
     current_final_2d_output = (shape[1],shape[2])
 
-    logger.debug("Req calculation, Actual calculation: (%d,%d), (%d,%d)"
-                 %(final_2d_output[0],final_2d_output[1],current_final_2d_output[0],current_final_2d_output[1]))
-    assert final_2d_output == current_final_2d_output
     rows = shape[0]
 
     print('Unwrapping last convolution layer %s to %s hidden layer'%(shape,(rows,hyparams['fulcon_out']['in'])))
@@ -358,25 +482,70 @@ def visualize_with_deconv(session,layer_id,all_x,guided_backprop=False):
         all_images.append(images_for_featuremap[d_i])
     return all_deconv_outputs, all_images
 
+backprop_feature_dir = None
 
 if __name__=='__main__':
 
     try:
         opts,args = getopt.getopt(
-            sys.argv[1:],"",['data=',"log_suffix="])
+            sys.argv[1:],"",["backprop_dir="])
     except getopt.GetoptError as err:
-        print('<filename>.py --data=<dataset_filename> --log_suffix=')
+        print('<filename>.py --backprop_dir=')
 
     if len(opts)!=0:
         for opt,arg in opts:
-            if opt == '--data':
-                data_filename = arg
-            if opt == '--log_suffix':
-                log_suffix = arg
+            if opt == '--backprop_dir':
+                backprop_feature_dir = arg
 
-    logger = logging.getLogger('main_logger')
-    logger.setLevel(logging_level)
+    logger = logging.getLogger('deconv_logger')
+    logger.setLevel(logging.INFO)
     console = logging.StreamHandler(sys.stdout)
-    console.setFormatter(logging.Formatter(logging_format))
-    console.setLevel(logging_level)
+    console.setFormatter(logging.Formatter('[%(funcName)s] %(message)s'))
+    console.setLevel(logging.INFO)
     logger.addHandler(console)
+
+    graph = tf.Graph()
+    gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=0.7)
+    with tf.Session(graph=graph, config=tf.ConfigProto(allow_soft_placement=True,gpu_options=gpu_options)) as session:
+
+        restore_weights_and_biases_and_hyperparameters(
+            session,output_dir + os.sep + 'cnn-weights-7',output_dir + os.sep + 'cnn-biases-7')
+        layer_ids = [op for op in iconv_ops if 'conv' in op and op != 'conv_1']
+
+        if not os.path.exists(output_dir + os.sep + backprop_feature_dir):
+            os.makedirs(output_dir + os.sep + backprop_feature_dir)
+            backprop_feature_dir = output_dir + os.sep + backprop_feature_dir
+
+        rotate_required = True if dataset_type == 'cifar-10' else False  # cifar-10 training set has rotated images so we rotate them to original orientation
+
+        for lid in layer_ids:
+            all_deconvs, all_images = visualize_with_deconv(session, lid, valid_dataset, True)
+            d_i = 0
+            for deconv_di, images_di in zip(all_deconvs, all_images):
+                local_dir = backprop_feature_dir + os.sep + lid + '_' + str(d_i)
+                if not os.path.exists(local_dir):
+                    os.mkdir(local_dir)
+
+                # saving deconv images
+                for img_i in range(deconv_di.shape[0]):
+                    if rotate_required:
+                        local_img = (deconv_di[img_i, :, :, :] - np.min(deconv_di[img_i, :, :, :])).astype('uint16')
+                        local_img = rotate(local_img, 270)
+                    else:
+                        local_img = deconv_di[img_i, :, :, :]
+                    imsave(local_dir + os.sep + 'deconv_' + lid + '_' + str(d_i) + '_' + str(img_i) + '.png', local_img)
+
+                # saving original images
+                for img_i in range(images_di.shape[0]):
+                    if rotate_required:
+                        images_di[img_i, :, :, :] = images_di[img_i, :, :, :] - np.min(images_di[img_i, :, :, :])
+                        images_di[img_i, :, :, :] = images_di[img_i, :, :, :] * 255.0 / np.max(
+                            images_di[img_i, :, :, :])
+                        local_img = images_di[img_i, :, :, :].astype('uint16')
+
+                        local_img = rotate(local_img, 270)
+                    else:
+                        local_img = images_di[img_i, :, :, :]
+                    imsave(local_dir + os.sep + 'image_' + lid + '_' + str(d_i) + '_' + str(img_i) + '.png', local_img)
+
+                d_i += 1
