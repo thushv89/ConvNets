@@ -27,6 +27,18 @@ from scipy.misc import imsave
 from skimage.transform import rotate
 import load_data
 
+from tensorflow.python.framework import ops
+from tensorflow.python.ops import gen_nn_ops
+@ops.RegisterGradient("MaxPoolWithArgmax")
+def _MaxPoolWithArgmaxGrad(op, grad, some_other_arg):
+  return gen_nn_ops._max_pool_grad(op.inputs[0],
+                                   op.outputs[0],
+                                   grad,
+                                   op.get_attr("ksize"),
+                                   op.get_attr("strides"),
+                                   padding=op.get_attr("padding"),
+                                   data_format='NHWC')
+
 logger = None
 logging_level = logging.DEBUG
 logging_format = '[%(funcName)s] %(message)s'
@@ -512,22 +524,28 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
 
     # single out only the maximally activated neuron and set the zeros
     argmax_indices = tf.argmax(tf.reshape(layer_activations_2,[b,h*w*d]),axis=1)
-    batch_range = tf.range(b,dtype=tf.int64)
-    nonzero_indices = tf.stack([batch_range,argmax_indices],axis=1)
+    batch_range = tf.range(b,dtype=tf.int32)
+    nonzero_indices = tf.stack([batch_range,tf.to_int32(argmax_indices)],axis=1)
     updates = tf.gather_nd(tf.reshape(layer_activations_2,[b,h*w*d]),nonzero_indices)
+
+    # this will be of size H_minus_1 (some type of b x h x w x d)
+    dh_over_dH_minus_1 = tf.gradients(updates,outputs_fwd[-2])[0]
     logger.debug('\tNon-zero indices shape: %s',nonzero_indices.get_shape().as_list())
     logger.debug('\tNon-zero updates shape: %s',updates.get_shape().as_list())
+    logger.debug('\tdh/dX shape: %s',dh_over_dH_minus_1.get_shape().as_list())
+
+    # OBSOLETE
     # Creating the new activations (of size: b x w x h x d)
     # with only the highest activation of given feature map ID non-zero and rest set to zero
-    zeroed_activations = tf.scatter_nd(nonzero_indices,updates,tf.constant([b,h*w*d],dtype=tf.int64))
-    zeroed_activations = tf.reshape(zeroed_activations,[b,h,w,d])
+    #zeroed_derivatives = tf.scatter_nd(nonzero_indices,tf.to_int32(dh_over_dH_minus_1),tf.constant([b,h*w*d],dtype=tf.int32))
+    #zeroed_derivatives = tf.reshape(zeroed_derivatives,[b,h,w,d])
 
-    outputs_bckwd = [zeroed_activations]
-    op_index = iconv_ops.index(layer_id)
+    outputs_bckwd = [dh_over_dH_minus_1] # this will be the output of the previous layer to layer_id
+    prev_op_index = iconv_ops.index(layer_id)-1
 
     logger.debug('Input Size (Zeroed): %s',str(outputs_bckwd[-1].get_shape().as_list()))
 
-    for op in reversed(iconv_ops[:op_index+1]):
+    for op in reversed(iconv_ops[:prev_op_index+1]):
         if 'conv' in op:
 
             # Deconvolution
@@ -578,12 +596,12 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
             # first it will be of shape b x h/stride x w/stride x d
             # but then we reshape it to b x (h/stride * w/stride * d)
             tf_switches = pool_switches[op]
-            tf_batch_range = tf.reshape(tf.range(b,dtype=tf.int64),[b,1,1,1])
-            tf_ones_mask = tf.ones_like(tf_switches)
+            tf_batch_range = tf.reshape(tf.range(b,dtype=tf.int32),[b,1,1,1])
+            tf_ones_mask = tf.ones_like(tf_switches,dtype=tf.int32)
             tf_multi_batch_range = tf_ones_mask * tf_batch_range
 
             # here we have indices that looks like b*(h/stride)*(w/stride) x 2
-            tf_indices = tf.stack([tf.reshape(tf_multi_batch_range,[-1]),tf.reshape(tf_switches,[-1])],axis=1)
+            tf_indices = tf.stack([tf.reshape(tf_multi_batch_range,[-1]),tf.reshape(tf.to_int32(tf_switches),[-1])],axis=1)
 
             updates = tf.reshape(outputs_bckwd[-1],[-1])
 
@@ -894,7 +912,7 @@ if __name__=='__main__':
         max_valid_accuracy = 0.0
         valid_drop_count = 0
         no_improvement_count = 0
-        for epoch in range(31):
+        for epoch in range(2):
             filled_size = 0
 
             train_chunk_accuracy_log = []
@@ -1075,14 +1093,15 @@ if __name__=='__main__':
         # Visualization
         layer_ids = [op for op in iconv_ops if 'conv' in op and op!='conv_1']
 
+        backprop_feature_dir = output_dir+os.sep+backprop_feature_dir
         if not os.path.exists(output_dir+os.sep+backprop_feature_dir):
-            os.makedirs(output_dir+os.sep+backprop_feature_dir)
-            backprop_feature_dir = output_dir+os.sep+backprop_feature_dir
+            os.makedirs(backprop_feature_dir)
+
 
         rotate_required = True if dataset_type=='cifar-10' else False # cifar-10 training set has rotated images so we rotate them to original orientation
 
         for lid in layer_ids:
-            all_deconvs,all_images = visualize_with_deconv(session,lid,valid_dataset,True)
+            all_deconvs,all_images = visualize_with_deconv(session,lid,valid_dataset,False)
             d_i = 0
             for deconv_di, images_di in zip(all_deconvs,all_images):
                 local_dir = backprop_feature_dir + os.sep + lid + '_' + str(d_i)
