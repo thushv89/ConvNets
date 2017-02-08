@@ -46,7 +46,7 @@ logging_format = '[%(funcName)s] %(message)s'
 backprop_feature_dir = 'backprop_features'
 
 #type of data training
-dataset_type = 'cifar-10'
+dataset_type = 'imagenet-100'
 
 if dataset_type=='cifar-10':
     image_size = 32
@@ -68,7 +68,7 @@ batch_size = 128 # number of datapoints in a single batch
 incrementally_add_layers = False
 
 # for cifar-10 start_lr 0.01/0.001 didn't work when starting with full network
-start_lr = 0.01 if incrementally_add_layers else 0.0001
+start_lr = 0.1 if incrementally_add_layers else 0.01
 decay_learning_rate = True
 
 #dropout seems to be making it impossible to learn
@@ -97,9 +97,6 @@ test_dataset, test_labels = None,None
 
 layer_count = 0 #ordering of layers
 time_stamp = 0 #use this to indicate when the layer was added
-
-
-
 
 if incrementally_add_layers:
     # ops will give the order of layers
@@ -216,7 +213,7 @@ def init_iconvnet():
                 print('\t\tBias:%d'%hyparams[op]['weights'][3])
                 weights[op]=tf.Variable(
                     tf.truncated_normal(hyparams[op]['weights'],
-                                        stddev=2./(hyparams[op]['weights'][0]*hyparams[op]['weights'][1])
+                                        stddev=min(0.02,2./(hyparams[op]['weights'][0]*hyparams[op]['weights'][1]))
                                         )
                 ,name='w_' + op)
                 biases[op] = tf.Variable(tf.constant(np.random.random()*1e-6,shape=[hyparams[op]['weights'][3]]),name='b_'+op)
@@ -297,7 +294,7 @@ def add_conv_layer(w,stride,conv_id,init_random):
     hyparams[conv_id]={'weights':w,'stride':stride,'padding':'SAME'}
 
     logger.debug('Initializing %s random ...'%conv_id)
-    weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./(w[0]*w[1])),name='w_'+conv_id)
+    weights[conv_id]= tf.Variable(tf.truncated_normal(w,stddev=2./min(0.02,w[0]*w[1])),name='w_'+conv_id)
     biases[conv_id] = tf.Variable(tf.constant(np.random.random()*0.01,shape=[w[3]]),name='b_'+conv_id)
 
     tf.variables_initializer([weights[conv_id],biases[conv_id]]).run()
@@ -477,6 +474,7 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
 
     logger.info('Performing the forward pass ...')
 
+    output_fwd_for_layer = None
     #need to calculate the output according to the layers we have
     for op in iconv_ops:
         if 'conv' in op:
@@ -485,15 +483,17 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
             logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
             outputs_fwd.append(tf.nn.conv2d(outputs_fwd[-1], weights[op], hyparams[op]['stride'], padding=hyparams[op]['padding']))
             logger.debug('\t\t Relu with x(%s) and b(%s)'%(outputs_fwd[-1].get_shape().as_list(),biases[op].get_shape().as_list()))
+
+            # should happend before RELU application
+            if guided_backprop:
+                activation_masks[op] = tf.greater(outputs_fwd[-1],tf.constant(0,dtype=tf.float32))
+                assert activation_masks[op].get_shape().as_list() == outputs_fwd[-1].get_shape().as_list()
+
             outputs_fwd[-1] = tf.nn.relu(outputs_fwd[-1] + biases[op])
             logger.debug('\t\tX after %s:%s'%(op,outputs_fwd[-1].get_shape().as_list()))
 
-            if guided_backprop:
-                activation_masks[op] = tf.not_equal(outputs_fwd[-1],tf.constant(0,dtype=tf.float32))
-                assert activation_masks[op].get_shape().as_list() == outputs_fwd[-1].get_shape().as_list()
-
             if op==layer_id:
-                break
+                output_fwd_for_layer = outputs_fwd[-1]
 
         if 'pool' in op:
             logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,hyparams[op]['kernel'],hyparams[op]['stride']))
@@ -505,22 +505,32 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
         if 'fulcon' in op:
             break
 
+    shape = outputs_fwd[-1].get_shape().as_list()
+    rows = shape[0]
+
+    print('Unwrapping last convolution layer %s to %s hidden layer' % (shape, (rows, hyparams['fulcon_out']['in'])))
+    reshaped_output = tf.reshape(outputs_fwd[-1], [rows, hyparams['fulcon_out']['in']])
+
+    outputs_fwd.append(tf.matmul(reshaped_output, weights['fulcon_out']) + biases['fulcon_out'])
+
     logger.info('Performing the backward pass ...\n')
     logger.debug('\tInput Size (Non-Zeroed): %s',str(outputs_fwd[-1].get_shape().as_list()))
+
+    # b h w d parameters of the required layer
     # b - batch size, h - height, w - width, d - number of filters
-    b,h,w,d = outputs_fwd[-1].get_shape().as_list()
+    b,h,w,d = output_fwd_for_layer.get_shape().as_list()
 
     # outputs[-1] will have the required activation
     # will be of size b x 1 x 1
 
     # we create a tensor from the activations of the layer which only has non-zeros
     # for the selected feature map (layer_activations_2)
-    layer_activations = tf.transpose(outputs_fwd[-1],[3,0,1,2])
+    layer_activations = tf.transpose(output_fwd_for_layer,[3,0,1,2])
     layer_indices = tf.constant([[featuremap_id]])
     layer_updates = tf.expand_dims(layer_activations[featuremap_id,:,:,:],0)
     layer_activations_2 = tf.scatter_nd(layer_indices,layer_updates,tf.constant(layer_activations.get_shape().as_list()))
     layer_activations_2 = tf.transpose(layer_activations_2,[1,2,3,0])
-    assert outputs_fwd[-1].get_shape().as_list() == layer_activations_2.get_shape().as_list()
+    assert output_fwd_for_layer.get_shape().as_list() == layer_activations_2.get_shape().as_list()
 
     # single out only the maximally activated neuron and set the zeros
     argmax_indices = tf.argmax(tf.reshape(layer_activations_2,[b,h*w*d]),axis=1)
@@ -528,20 +538,23 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
     nonzero_indices = tf.stack([batch_range,tf.to_int32(argmax_indices)],axis=1)
     updates = tf.gather_nd(tf.reshape(layer_activations_2,[b,h*w*d]),nonzero_indices)
 
-    # this will be of size H_minus_1 (some type of b x h x w x d)
-    dh_over_dH_minus_1 = tf.gradients(updates,outputs_fwd[-2])[0]
+    # OBSOLETE At the Moment
+    # this will be of size layer_id (some type of b x h x w x d)
+    dOut_over_dh = tf.gradients(outputs_fwd[-1],output_fwd_for_layer)[0]
+    deriv_updates = tf.gather_nd(tf.reshape(dOut_over_dh,[b,h*w*d]),nonzero_indices)
+
     logger.debug('\tNon-zero indices shape: %s',nonzero_indices.get_shape().as_list())
     logger.debug('\tNon-zero updates shape: %s',updates.get_shape().as_list())
-    logger.debug('\tdh/dX shape: %s',dh_over_dH_minus_1.get_shape().as_list())
+    logger.debug('\tdOut/dh shape: %s',dOut_over_dh.get_shape().as_list())
 
     # OBSOLETE
-    # Creating the new activations (of size: b x w x h x d)
-    # with only the highest activation of given feature map ID non-zero and rest set to zero
-    #zeroed_derivatives = tf.scatter_nd(nonzero_indices,tf.to_int32(dh_over_dH_minus_1),tf.constant([b,h*w*d],dtype=tf.int32))
-    #zeroed_derivatives = tf.reshape(zeroed_derivatives,[b,h,w,d])
+    # Creating the new gradient tensor (of size: b x w x h x d) for deconv
+    # with only the gradient for highest activation of given feature map ID non-zero and rest set to zero
+    zeroed_derivatives = tf.scatter_nd(nonzero_indices,updates,tf.constant([b,h*w*d],dtype=tf.int32))
+    zeroed_derivatives = tf.reshape(zeroed_derivatives,[b,h,w,d])
 
-    outputs_bckwd = [dh_over_dH_minus_1] # this will be the output of the previous layer to layer_id
-    prev_op_index = iconv_ops.index(layer_id)-1
+    outputs_bckwd = [zeroed_derivatives] # this will be the output of the previous layer to layer_id
+    prev_op_index = iconv_ops.index(layer_id)
 
     logger.debug('Input Size (Zeroed): %s',str(outputs_bckwd[-1].get_shape().as_list()))
 
@@ -549,7 +562,6 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
         if 'conv' in op:
 
             # Deconvolution
-
             logger.debug('\tDeConvolving (%s) With Weights:%s Stride:%s'%(op,weights[op].get_shape().as_list(),hyparams[op]['stride']))
             logger.debug('\t\tX before deconvolution:%s'%(outputs_bckwd[-1].get_shape().as_list()))
             logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
@@ -613,13 +625,14 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
 
             outputs_bckwd.append(tf.reshape(updated_unpool,[b,output_shape[1],output_shape[2],output_shape[3]]))
 
-            outputs_bckwd[-1] = tf.nn.relu(outputs_bckwd[-1])
-
+            # should happen before RELU
             if guided_backprop and previous_conv_op is not None:
                 logger.info('Output-bckwd: %s',outputs_bckwd[-1].get_shape().as_list())
                 logger.info('Activation mask %s',activation_masks[previous_conv_op].get_shape().as_list())
                 assert outputs_bckwd[-1].get_shape().as_list() == activation_masks[previous_conv_op].get_shape().as_list()
                 outputs_bckwd[-1] = outputs_bckwd[-1] * tf.to_float(activation_masks[previous_conv_op])
+
+            outputs_bckwd[-1] = tf.nn.relu(outputs_bckwd[-1])
 
             logger.debug('\t\tX after %s:%s'%(op,outputs_bckwd[-1].get_shape().as_list()))
 
@@ -673,25 +686,35 @@ def visualize_with_deconv(session,layer_id,all_x,guided_backprop=False):
             img_id = np.asscalar(img_ids_for_max[d_i])
 
             if d_i==selected_featuremap_ids[1]:
-                logger.debug('Found %d image id for depth %d',img_id,d_i)
+                logger.debug('Found %d image_id for depth %d',img_id,d_i)
 
             if d_i not in mean_activations_for_featuremap:
                 mean_activations_for_featuremap[d_i] = [np.asscalar(max_activations[img_id,d_i])]
                 images_for_featuremap[d_i] = np.reshape(batch_data[img_id,:,:,:],(1,image_shape[0],image_shape[1],image_shape[2]))
+
+                # appending the maximum
+                reshp_img = np.reshape(batch_data[img_id, :, :, :], (1, image_shape[0], image_shape[1], image_shape[2]))
+                images_for_featuremap[d_i] = np.append(images_for_featuremap[d_i], reshp_img, axis=0)
+                mean_activations_for_featuremap[d_i].append(np.asscalar(max_activations[img_id, d_i]))
+
             else:
                 if len(mean_activations_for_featuremap[d_i])>= examples_per_featuremap:
                     # delete the minimum
+                    # if minimum is less then the oncoming one
+                    if np.min(mean_activations_for_featuremap[d_i]) < np.asscalar(max_activations[img_id,d_i]):
+                        min_idx = np.asscalar(np.argmin(np.asarray(mean_activations_for_featuremap[d_i])))
+                        if d_i==selected_featuremap_ids[1]:
+                            logger.debug('Mean activations: %s',mean_activations_for_featuremap[d_i])
+                            logger.debug('\tFound minimum activation with %.2f at index %d',np.min(mean_activations_for_featuremap[d_i]),min_idx)
 
-                    min_idx = np.asscalar(np.argmin(np.asarray(mean_activations_for_featuremap[d_i])))
-                    if d_i==selected_featuremap_ids[1]:
-                        logger.debug('Mean activations: %s',mean_activations_for_featuremap[d_i])
-                        logger.debug('\tFound minimum activation with %.2f at index %d',np.min(mean_activations_for_featuremap[d_i]),min_idx)
+                        # deleting the minimum
+                        del mean_activations_for_featuremap[d_i][min_idx]
+                        images_for_featuremap[d_i] = np.delete(images_for_featuremap[d_i],[min_idx],axis=0)
 
-                    del mean_activations_for_featuremap[d_i][min_idx]
-                    images_for_featuremap[d_i] = np.delete(images_for_featuremap[d_i],[min_idx],axis=0)
-                reshp_img = np.reshape(batch_data[img_id,:,:,:],(1,image_shape[0],image_shape[1],image_shape[2]))
-                images_for_featuremap[d_i] = np.append(images_for_featuremap[d_i],reshp_img,axis=0)
-                mean_activations_for_featuremap[d_i].append(np.asscalar(max_activations[img_id,d_i]))
+                        # appending the maximum
+                        reshp_img = np.reshape(batch_data[img_id,:,:,:],(1,image_shape[0],image_shape[1],image_shape[2]))
+                        images_for_featuremap[d_i] = np.append(images_for_featuremap[d_i],reshp_img,axis=0)
+                        mean_activations_for_featuremap[d_i].append(np.asscalar(max_activations[img_id,d_i]))
 
     logger.info('Size of image set for feature map: %s',str(len(mean_activations_for_featuremap[selected_featuremap_ids[0]])))
 
@@ -1094,7 +1117,7 @@ if __name__=='__main__':
         layer_ids = [op for op in iconv_ops if 'conv' in op and op!='conv_1']
 
         backprop_feature_dir = output_dir+os.sep+backprop_feature_dir
-        if not os.path.exists(output_dir+os.sep+backprop_feature_dir):
+        if not os.path.exists(backprop_feature_dir):
             os.makedirs(backprop_feature_dir)
 
 
