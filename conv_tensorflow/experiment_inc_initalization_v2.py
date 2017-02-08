@@ -60,12 +60,14 @@ elif dataset_type=='imagenet-100':
     image_size = 224
     num_labels = 100
     num_channels = 3
-    train_size = 128099//2
+    train_size = 128099
     valid_size = 5000
 
 batch_size = 128 # number of datapoints in a single batch
 
 incrementally_add_layers = False
+save_weights_periodic = True if dataset_type=='imagenet-100' else False
+save_period  = 5
 
 # for cifar-10 start_lr 0.01/0.001 didn't work when starting with full network
 start_lr = 0.1 if incrementally_add_layers else 0.01
@@ -115,7 +117,7 @@ else:
                      'conv_5','pool_5','conv_6',
                      'conv_7','pool_global','fulcon_out']
 
-final_2d_output = (2,2)
+final_2d_output = (1,1)
 
 if dataset_type == 'cifar-10':
     depth_conv = {'conv_1':64,'conv_2':128,'conv_3':256,'conv_4':512}
@@ -130,7 +132,7 @@ if dataset_type == 'cifar-10':
         current_final_2d_output = (image_size/pool_1_hyparams['stride'][1], pool_1_hyparams['stride'][2])
         global_kernel_size = [1,int(current_final_2d_output[0]/final_2d_output[0]),
                                                        int(current_final_2d_output[1]/final_2d_output[1]),1]
-        global_stride = global_kernel_size
+        global_stride = global_kernel_size if final_2d_output!=(1,1) else [1,1,1,1]
         pool_global_hyparams = {'type':'avg','kernel':global_kernel_size,
                                 'stride':global_stride,'padding':'VALID'}
 
@@ -163,15 +165,19 @@ elif dataset_type == 'imagenet-100':
     conv_7_hyparams = {'weights':[3,3,depth_conv['conv_6'],depth_conv['conv_7']],'stride':[1,1,1,1],'padding':'SAME'}
 
     pool_1_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
-    pool_2_hyparams = {'type':'max','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
     pool_3_hyparams = {'type':'avg','kernel':[1,3,3,1],'stride':[1,2,2,1],'padding':'SAME'}
 
     if incrementally_add_layers:
         current_final_2d_output = (image_size / conv_1_hyparams['stride'][1], image_size / conv_1_hyparams['stride'][2])
         pool_global_hyparams = {'type':'avg','kernel':[1,current_final_2d_output[0],current_final_2d_output[1],1],'stride':[1,1,1,1],'padding':'VALID'}
         out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_1'],'out':num_labels}
+
     else:
-        pool_global_hyparams = {'type':'avg','kernel':[1,7,7,1],'stride':[1,1,1,1],'padding':'VALID'}
+        current_final_2d_output = (7,7)
+        global_kernel_size = [1, int(current_final_2d_output[0] / final_2d_output[0]),
+                              int(current_final_2d_output[1] / final_2d_output[1]), 1]
+        global_stride = global_kernel_size if final_2d_output != (1, 1) else [1, 1, 1, 1]
+        pool_global_hyparams = {'type':'avg','kernel':global_kernel_size,'stride':global_stride,'padding':'VALID'}
         out_hyparams = {'in':final_2d_output[0]*final_2d_output[1]*depth_conv['conv_7'],'out':num_labels}
 
     hyparams = {
@@ -360,7 +366,10 @@ def get_logits(dataset):
                 current_final_2d_output = (int(shape[1]/final_2d_output[0]), int(shape[2]/final_2d_output[1]))
 
                 hyparams['pool_global']['kernel'] = [1, current_final_2d_output[0], current_final_2d_output[1], 1]
-                hyparams['pool_global']['stride'] = [1, current_final_2d_output[0], current_final_2d_output[1], 1]
+                if current_final_2d_output==(1,1):
+                    hyparams['pool_global']['stride'] = [1,1,1,1]
+                else:
+                    hyparams['pool_global']['stride'] = [1, current_final_2d_output[0], current_final_2d_output[1], 1]
 
             logger.debug('\t%s Pooling (%s) with Kernel:%s Stride:%s' % (
                 hyparams[op]['type'], op, hyparams[op]['kernel'], hyparams[op]['stride']))
@@ -935,7 +944,7 @@ if __name__=='__main__':
         max_valid_accuracy = 0.0
         valid_drop_count = 0
         no_improvement_count = 0
-        for epoch in range(2):
+        for epoch in range(31):
             filled_size = 0
 
             train_chunk_accuracy_log = []
@@ -1109,12 +1118,16 @@ if __name__=='__main__':
                 training_stat_logger.info('\n#Validation and Test accuracies for epoch %d',epoch)
                 training_stat_logger.info('%.2f,%.2f',mean_valid_accuracy,mean_test_accuracy)
 
+                if save_weights_periodic and (epoch+1)%save_period==0:
+                    weight_saver.save(session, output_dir + os.sep + 'cnn-weights', epoch + 1)
+                    bias_saver.save(session, output_dir + os.sep + 'cnn-biases', epoch + 1)
+
         weight_saver.save(session,output_dir+os.sep+'cnn-weights',epoch+1)
         bias_saver.save(session, output_dir + os.sep + 'cnn-biases', epoch+1)
 
         del chunk_train_dataset,chunk_train_labels
         # Visualization
-        layer_ids = [op for op in iconv_ops if 'conv' in op and op!='conv_1']
+        '''layer_ids = [op for op in iconv_ops if 'conv' in op and op!='conv_1']
 
         backprop_feature_dir = output_dir+os.sep+backprop_feature_dir
         if not os.path.exists(backprop_feature_dir):
@@ -1152,4 +1165,4 @@ if __name__=='__main__':
                         local_img = images_di[img_i,:,:,:]
                     imsave(local_dir + os.sep + 'image_' + lid +'_'+str(d_i)+'_'+str(img_i)+'.png', local_img)
 
-                d_i += 1
+                d_i += 1'''
