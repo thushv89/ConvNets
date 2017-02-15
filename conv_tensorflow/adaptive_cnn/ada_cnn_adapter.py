@@ -23,11 +23,11 @@ from collections import Counter
 ##################################################################
 
 logger = None
-logging_level = logging.DEBUG
+logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-start_lr = 0.00001
+start_lr = 0.001
 decay_learning_rate = False
 dropout_rate = 0.25
 use_dropout = False
@@ -37,6 +37,7 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 
+adapt_structure = False
 
 def get_final_x(cnn_ops,cnn_hyps):
     '''
@@ -77,10 +78,10 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
             weights[op] = tf.Variable(tf.truncated_normal(
                 cnn_hyps[op]['weights'],
                 stddev=2./max(50,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
-            ),name=op+'_weights',dtype=tf.float32)
+            ),validate_shape = False, expected_shape = cnn_hyps[op]['weights'],name=op+'_weights',dtype=tf.float32)
             biases[op] = tf.Variable(tf.constant(
                 np.random.random()*0.001,shape=[cnn_hyps[op]['weights'][3]]
-            ),name=op+'_bias',dtype=tf.float32)
+            ),validate_shape = False, expected_shape = [cnn_hyps[op]['weights'][3]],name=op+'_bias',dtype=tf.float32)
 
             logger.debug('Weights for %s initialized with size %s',op,str(cnn_hyps[op]['weights']))
             logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['weights'][3])
@@ -89,10 +90,10 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
             weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
                 [cnn_hyps[op]['in'],cnn_hyps[op]['out']],
                 stddev=2./cnn_hyps[op]['in']
-            ),name=op+'_weights',dtype=tf.float32)
+            ), validate_shape = False, expected_shape = [cnn_hyps[op]['in'],cnn_hyps[op]['out']], name=op+'_weights',dtype=tf.float32)
             biases[op] = tf.Variable(tf.constant(
                 np.random.random()*0.001,shape=[cnn_hyps[op]['out']]
-            ),name=op+'_bias',dtype=tf.float32)
+            ), validate_shape = False, expected_shape = [cnn_hyps[op]['out']], name=op+'_bias',dtype=tf.float32)
 
             logger.debug('Weights for %s initialized with size %d,%d',
                 op,cnn_hyps[op]['in'],cnn_hyps[op]['out'])
@@ -102,23 +103,23 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
 
 
 def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
-    logger.info('Current set of operations: %s'%cnn_ops)
+    logger.debug('Current set of operations: %s'%cnn_ops)
     act_means = {}
     x = dataset
     logger.debug('Received data for X(%s)...'%x.get_shape().as_list())
 
-    logger.info('Performing the specified operations ...')
+    logger.debug('Adjusting the logit calculation ...')
 
     #need to calculate the output according to the layers we have
     for op in cnn_ops:
         if 'conv' in op:
             logger.debug('\tConvolving (%s) With Weights:%s Stride:%s'%(op,cnn_hyps[op]['weights'],cnn_hyps[op]['stride']))
-            logger.debug('\t\tX before convolution:%s'%(x.get_shape().as_list()))
-            logger.debug('\t\tWeights: %s',weights[op].get_shape().as_list())
+            #logger.debug('\t\tX before convolution:%s'%(x.get_shape().as_list()))
+            logger.debug('\t\tWeights: %s',tf.shape(weights[op]).eval())
             x = tf.nn.conv2d(x, weights[op], cnn_hyps[op]['stride'], padding=cnn_hyps[op]['padding'])
-            logger.debug('\t\t Relu with x(%s) and b(%s)'%(x.get_shape().as_list(),biases[op].get_shape().as_list()))
+            #logger.debug('\t\t Relu with x(%s) and b(%s)'%(tf.shape(x).eval(),tf.shape(biases[op]).eval()))
             x = tf.nn.relu(x + biases[op])
-            logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+            #logger.debug('\t\tX after %s:%s'%tf.shape(weights[op]).eval())
             act_means[op]=tf.reduce_mean(x,[0,1,2])
 
         if 'pool' in op:
@@ -128,7 +129,7 @@ def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
             elif cnn_hyps[op]['type'] is 'avg':
                 x = tf.nn.avg_pool(x,ksize=cnn_hyps[op]['kernel'],strides=cnn_hyps[op]['stride'],padding=cnn_hyps[op]['padding'])
 
-            logger.debug('\t\tX after %s:%s'%(op,x.get_shape().as_list()))
+            #logger.debug('\t\tX after %s:%s'%(op,tf.shape(x).eval()))
 
         if 'fulcon' in op:
             break
@@ -136,15 +137,13 @@ def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
     # we need to reshape the output of last subsampling layer to
     # convert 4D output to a 2D input to the hidden layer
     # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
-    shape = x.get_shape().as_list()
-    rows = shape[0]
+
 
     fin_x = get_final_x(cnn_ops,cnn_hyps)
-    logger.debug("My calculation, TensorFlow calculation: %d, %d"%(fin_x,shape[1]))
-    assert fin_x == shape[1]
 
-    print('Unwrapping last convolution layer %s to %s hidden layer'%(shape,(rows,cnn_hyps['fulcon_out']['in'])))
-    x = tf.reshape(x, [rows,cnn_hyps['fulcon_out']['in']])
+    #print('Unwrapping last convolution layer %s to %s hidden layer'%(shape,(batch_size,cnn_hyps['fulcon_out']['in'])))
+    print('fulcon in : %d'%cnn_hyps['fulcon_out']['in'])
+    x = tf.reshape(x, [batch_size,cnn_hyps['fulcon_out']['in']])
 
     return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out'],act_means
 
@@ -160,29 +159,32 @@ def calc_loss(logits,labels):
     return loss
 
 
-
 def calc_loss_vector(logits,labels):
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
+
 
 def optimize_func(loss,global_step):
     # Optimizer.
     if decay_learning_rate:
         learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.95)
     else:
-        learning_rate = tf.Variable(start_lr,dtype=tf.float32,name='learning_rate')
+        learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
 
-    optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss)
+
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=start_lr).minimize(loss)
     return optimizer,learning_rate
+
 
 def optimize_with_variable_func(loss,global_step,variables):
     # Optimizer.
     if decay_learning_rate:
         learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.95)
     else:
-        learning_rate = tf.Variable(start_lr,dtype=tf.float32,name='learning_rate')
+        learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
 
-    optimizer = tf.train.MomentumOptimizer(learning_rate,momentum=0.9).minimize(loss,var_list=variables)
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss,var_list=variables)
     return optimizer,learning_rate
+
 
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
@@ -271,7 +273,7 @@ def get_ops_hyps_from_string(net_string):
 def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
     global logger,weights,biases
 
-    tf_ops = []
+    update_ops = []
     tf_new_weights = {} # tensors to add for each 'add' action
     tf_new_biases = {}
     changed_variables = []
@@ -295,7 +297,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         assert 'conv' in op
 
         # change both weights and biase in the current op
-        logger.debug('Concatting %s(old) and %s(new)',str(weights[op].get_shape().as_list()),
+        logger.debug('Concatting %s(old) and %s(new)',str(tf.shape(weights[op]).eval()),
                      str([cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2],amount_to_add]))
         tf_new_weights[op] = tf.concat(3,[weights[op],
                                             tf.truncated_normal([cnn_hyps[op]['weights'][0],
@@ -304,15 +306,17 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         tf_new_biases[op]= tf.concat(0,[biases[op],tf.truncated_normal([amount_to_add],stddev=0.001)])
 
         logger.debug('Summary of changes to weights of %s ...',op)
-        logger.debug('\tNew Weights: %s',str(tf_new_weights[op].get_shape().as_list()))
+        logger.debug('\tNew Weights: %s',str(tf.shape(tf_new_weights[op]).eval()))
 
-        weights[op] = tf.assign(weights[op],tf_new_weights[op],validate_shape=False,use_locking=True)
-        biases[op] = tf.assign(biases[op],tf_new_biases[op],validate_shape=False,use_locking=True)
+        update_ops.append(tf.assign(weights[op], tf_new_weights[op], validate_shape=False))
+        update_ops.append(tf.assign(biases[op], tf_new_biases[op], validate_shape = False))
 
         changed_variables.extend([weights[op],biases[op]])
         changed_ops.append(op)
         # change out hyperparameter of op
         cnn_hyps[op]['weights'][3]+=amount_to_add
+        #weights[op].set_shape(cnn_hyps[op]['weights'])
+        #biases[op].set_shape([cnn_hyps[op]['weights'][3]])
         assert cnn_hyps[op]['weights'][2]==tf_new_weights[op].get_shape().as_list()[2]
 
         # ================ Changes to next_op ===============
@@ -324,15 +328,16 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             tf_new_weights['fulcon_out'] = tf.concat(0,[weights['fulcon_out'],tf.truncated_normal([amount_to_add,num_labels],stddev=0.02)])
 
             logger.debug('Summary of changes to weights of fulcon_out')
-            logger.debug('\tCurrent Weights: %s',str(weights['fulcon_out'].get_shape().as_list()))
-            logger.debug('\tNew Weights: %s',str(tf_new_weights['fulcon_out'].get_shape().as_list()))
+            logger.debug('\tCurrent Weights: %s',str(tf.shape(weights['fulcon_out']).eval()))
+            logger.debug('\tNew Weights: %s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
 
-            tf_ops.append(tf.assign(weights['fulcon_out'],tf_new_weights['fulcon_out'],validate_shape=False,use_locking=True))
+            update_ops.append(tf.assign(weights['fulcon_out'], tf_new_weights['fulcon_out'], validate_shape= False))
 
             changed_variables.append(weights['fulcon_out'])
             changed_ops.append('fulcon_out')
 
             cnn_hyps['fulcon_out']['in']+=amount_to_add
+            #weights['fulcon_out'].set_shape(cnn_hyps['fulcon_out']['in'])
             logger.debug('%s in: %d','fulcon_out',cnn_hyperparameters['fulcon_out']['in'])
         else:
 
@@ -345,18 +350,19 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
                                           tf.truncated_normal([cnn_hyps[next_conv_op]['weights'][0],cnn_hyps[next_conv_op]['weights'][1],
                                                                amount_to_add,cnn_hyps[next_conv_op]['weights'][3]],stddev=0.02)])
             logger.debug('Summary of changes to weights of %s',next_conv_op)
-            logger.debug('\tCurrent Weights: %s',str(weights[next_conv_op].get_shape().as_list()))
-            logger.debug('\tNew Weights: %s',str(tf_new_weights[next_conv_op].get_shape().as_list()))
+            logger.debug('\tCurrent Weights: %s',str(tf.shape(weights[next_conv_op]).eval()))
+            logger.debug('\tNew Weights: %s',str(tf.shape(tf_new_weights[next_conv_op]).eval()))
 
-            tf_ops.append(tf.assign(weights[next_conv_op],tf_new_weights[next_conv_op],validate_shape=False,use_locking=True))
+            update_ops.append(tf.assign(weights[next_conv_op], tf_new_weights[next_conv_op], validate_shape=False))
 
             changed_variables.append(weights[next_conv_op])
             changed_ops.append(next_conv_op)
 
             cnn_hyps[next_conv_op]['weights'][2]+=amount_to_add
-            assert cnn_hyps[next_conv_op]['weights'][2]==tf_new_weights[next_conv_op].get_shape().as_list()[2]
+            #weights[next_conv_op].set_shape(cnn_hyps[next_conv_op]['weights'])
+            assert cnn_hyps[next_conv_op]['weights'][2]==tf.shape(tf_new_weights[next_conv_op]).eval()[2]
 
-    '''elif ai[0]=='remove':
+    elif ai[0]=='remove':
 
         # this is trickier than adding weights
         # We remove the given number of filters
@@ -373,29 +379,33 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         tf_new_weights[op]=tf.transpose(weights[op],[3,0,1,2])
         tf_new_weights[op] = tf.gather_nd(tf_new_weights[op],[[idx] for idx in indices_of_filters_keep])
         tf_new_weights[op] = tf.transpose(tf_new_weights[op],[1,2,3,0])
-        logger.debug('Size after feature map reduction: %s,%s',op,str(tf_new_weights[op].get_shape().as_list()))
-        #weights[op] = tf.assign(weights[op],tf_new_weights[op],validate_shape=False,use_locking=True,name=op+'_weights')
-        #tf_ops.append(weights[op])
+        logger.debug('Size after feature map reduction: %s,%s',op,tf.shape(tf_new_weights[op]).eval())
+        update_ops.append(tf.assign(weights[op],tf_new_weights[op],validate_shape=False))
+
         tf_new_biases[op]=tf.gather(biases[op],indices_of_filters_keep)
-        #biases[op] = tf.assign(biases[op],tf_new_biases[si][op],validate_shape=False,use_locking=True,name=op+'_biases')
-        #tf_ops.append(biases[op])
+        update_ops.append(tf.assign(biases[op],tf_new_biases[op],validate_shape=False))
+
         changed_variables.extend([weights[op],biases[op]])
         changed_ops.append(op)
 
         # change out hyperparameter of op
         cnn_hyps[op]['weights'][3]-=amount_to_rmv
-        print(tf_new_weights[op].get_shape().as_list())
-        print(cnn_hyperparameters[op]['weights'])
-        assert tf_new_weights[op].get_shape().as_list()==cnn_hyperparameters[op]['weights']
+
+        #weights[op].set_shape(cnn_hyps[op]['weights'])
+        #biases[op].set_shape([cnn_hyps[op]['weights'][3]])
+        assert tf.shape(tf_new_weights[op]).eval()[3]==cnn_hyperparameters[op]['weights'][3]
 
         if op==last_conv_id:
 
             tf_new_weights['fulcon_out'] = tf.gather_nd(weights['fulcon_out'],[[idx] for idx in indices_of_filters_keep])
+
+            update_ops.append(tf.assign(weights['fulcon_out'],tf_new_weights['fulcon_out'],validate_shape=False))
+
             changed_variables.append(weights['fulcon_out'])
             changed_ops.append('fulcon_out')
 
             cnn_hyps['fulcon_out']['in']-=amount_to_rmv
-            logger.debug('Size after feature map reduction: fulcon_out,%s',str(tf_new_weights['fulcon_out'].get_shape().as_list()))
+            logger.debug('Size after feature map reduction: fulcon_out,%s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
 
         else:
             # change in hyperparameter of next conv op
@@ -408,15 +418,16 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             tf_new_weights[next_conv_op] = tf.gather_nd(tf_new_weights[next_conv_op],[[idx] for idx in indices_of_filters_keep])
             tf_new_weights[next_conv_op] = tf.transpose(tf_new_weights[next_conv_op],[1,2,0,3])
 
-            logger.debug('Size after feature map reduction: %s,%s',next_conv_op,str(tf_new_weights[next_conv_op].get_shape().as_list()))
+            logger.debug('Size after feature map reduction: %s,%s',next_conv_op,str(tf.shape(tf_new_weights[next_conv_op]).eval()))
+            update_ops.append(tf.assign(weights[next_conv_op],tf_new_weights[next_conv_op],validate_shape=False))
             changed_variables.append(weights[next_conv_op])
             changed_ops.append(next_conv_op)
 
             cnn_hyps[next_conv_op]['weights'][2]-=amount_to_rmv
             logger.debug('')
-            assert tf_new_weights[next_conv_op].get_shape().as_list()==cnn_hyperparameters[next_conv_op]['weights']'''
+            assert tf.shape(tf_new_weights[next_conv_op]).eval()[2] ==cnn_hyperparameters[next_conv_op]['weights'][2]
 
-    return tf_ops,changed_variables,changed_ops
+    return update_ops,changed_variables,changed_ops
 
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
     global logger
@@ -512,8 +523,8 @@ if __name__=='__main__':
     policy_interval = 10 #number of batches to process for each policy iteration
 
     #cnn_string = "C,5,1,256#P,3,2,0#P,5,2,0#C,3,1,128#C,5,1,512#C,3,1,64#C,3,1,128#C,5,1,128#Terminate,0,0,0"
-    #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
-    cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
+    cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
+    #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
     # Resetting this every policy interval
     rolling_data_distribution = {}
@@ -568,6 +579,9 @@ if __name__=='__main__':
         tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TestDataset')
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TestLabels')
 
+        init_op = tf.global_variables_initializer()
+        _ = session.run(init_op)
+
         logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
         loss = calc_loss(logits,tf_labels)
         loss_vec = calc_loss_vector(logits,tf_labels)
@@ -575,17 +589,16 @@ if __name__=='__main__':
         optimize = optimize_func(loss,global_step)
         inc_gstep = inc_global_step(global_step)
 
+        init_op = tf.global_variables_initializer()
+        _ = session.run(init_op)
 
         # valid predict function
         pred_valid = predict_with_dataset(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
         pred_test = predict_with_dataset(tf_test_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
 
         logger.info('Tensorflow functions defined')
-
-        init_op = tf.initialize_all_variables()
-        _ = session.run(init_op)
-
         logger.info('Variables initialized')
+
         train_losses = []
         mean_train_loss = 0
         rolling_next_accuracy = 0
@@ -601,11 +614,11 @@ if __name__=='__main__':
         current_states,current_actions = None,None
         prev_valid_accuracy,next_valid_accuracy = 0,0
 
-        logger.info('starting running batch')
+        logger.info('Starting Training Phase')
         #TODO: Think about decaying learning rate (should or shouldn't)
-        for batch_id in range(ceil(dataset_size//batch_size)-1):
+        for batch_id in range(ceil(dataset_size//batch_size)-2):
 
-            logger.info('running batch %d',batch_id)
+            logger.debug('\tTraining with batch %d',batch_id)
             for op in cnn_ops:
                 if 'pool' not in op:
                     assert weights[op].name in [v.name for v in tf.trainable_variables()]
@@ -673,8 +686,8 @@ if __name__=='__main__':
                     batch_test_labels = test_labels[test_batch_id*batch_size:(test_batch_id+1)*batch_size, :]
 
                     feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
-                    test_predictions = session.run([pred_test],feed_dict=feed_test_dict)
-                    test_accuracies.append(accuracy(test_predictions[0], batch_test_labels))
+                    test_predictions = session.run(pred_test,feed_dict=feed_test_dict)
+                    test_accuracies.append(accuracy(test_predictions, batch_test_labels))
 
                 logger.info('\tTest Accuracy: %.3f'%np.mean(test_accuracies))
                 logger.info('='*60)
@@ -698,83 +711,87 @@ if __name__=='__main__':
                     logger.info('Updating the Policy for')
                     logger.info('\tStates: %s',str(current_states))
                     logger.info('\tActions: %s',str(current_actions))
-                    logger.info('\tValide accuracy: %.2f (Unseen) %.2f (seen)',next_valid_accuracy,prev_valid_accuracy)
+                    logger.info('\tValid accuracy: %.2f (Unseen) %.2f (seen)',next_valid_accuracy,prev_valid_accuracy)
                     adapter.update_policy({'states':current_states,'actions':current_actions,
                                            'next_accuracy':next_valid_accuracy,'prev_accuracy':prev_valid_accuracy})
                 distMSE = 0.0
                 for li in range(num_labels):
                     distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
 
-                filter_dict = {}
-                for op_i,op in enumerate(cnn_ops):
-                    if 'conv' in op:
-                        filter_dict[op_i]=cnn_hyperparameters[op]['weights'][3]
-                    elif 'pool' in op:
-                        filter_dict[op_i]=0
+                if adapt_structure:
+                    filter_dict = {}
+                    for op_i,op in enumerate(cnn_ops):
+                        if 'conv' in op:
+                            filter_dict[op_i]=cnn_hyperparameters[op]['weights'][3]
+                        elif 'pool' in op:
+                            filter_dict[op_i]=0
 
-                current_states,current_actions = adapter.output_trajectory({'distMSE':distMSE,'filter_counts':filter_dict})
-                # where all magic happens (adding and removing filters)
-                for si,ai in zip(current_states,current_actions):
-                    current_op = cnn_ops[si[0]]
-                    if 'conv' in current_op and (ai[0]=='add' or ai[0]=='remove'):
+                    current_states,current_actions = adapter.output_trajectory({'distMSE':distMSE,'filter_counts':filter_dict})
+                    # where all magic happens (adding and removing filters)
+                    for si,ai in zip(current_states,current_actions):
+                        current_op = cnn_ops[si[0]]
+                        if 'conv' in current_op and (ai[0]=='add' or ai[0]=='remove'):
 
-                        update_ops,changed_vars,chaged_ops = adapt_cnn_with_tf_ops(cnn_ops, cnn_hyperparameters,
-                                                                    si, ai, rolling_ativation_means[current_op])
+                            update_ops, changed_vars,chaged_ops = adapt_cnn_with_tf_ops(cnn_ops, cnn_hyperparameters,
+                                                                        si, ai, rolling_ativation_means[current_op])
+                            _ = session.run(update_ops)
 
-                        changed_var_names = [v.name for v in changed_vars]
-                        _ = session.run([update_ops])
-                        logger.debug('All variable names: %s',str([v.name for v in tf.all_variables()]))
-                        logger.debug('Changed var names: %s',str(changed_var_names))
-                        c_vars = session.run(changed_vars)
+                            changed_var_names = [v.name for v in changed_vars]
 
-                        # =========================
-                        for chg_op in chaged_ops:
-                            logger.debug('checking %s op',chg_op+'_weights')
-                            if chg_op+'_weights:0' in changed_var_names:
-                                weights[chg_op].set_shape(c_vars[changed_var_names.index(chg_op+'_weights:0')])
-                                logger.debug('Assigning weights %s new value %s',chg_op,str(changed_vars[changed_var_names.index(chg_op+'_weights:0')].get_shape().as_list()))
-                            if chg_op+'_bias:0' in changed_var_names:
-                                biases[chg_op].set_shape(c_vars[changed_var_names.index(chg_op+'_bias:0')])
+                            logger.debug('All variable names: %s', str([v.name for v in tf.all_variables()]))
+                            logger.debug('Changed var names: %s', str(changed_var_names))
+                            changed_var_values = session.run(changed_vars)
+                            logger.debug('Changed Variable Values')
+                            for n, v in zip(changed_var_names,changed_var_values):
+                                logger.debug('\t%s,%s',n,str(v.shape))
 
-                        for wop,w in weights.items():
-                            logger.debug('%s,%s',wop,str(w.get_shape().as_list()))
-                        logger.debug('')
+                            # redefine tensorflow ops as they changed sizes
+                            logger.info('Redefining Tensorflow ops (logits, loss, optimize,...')
+                            logits, act_means = get_logits_with_ops(tf_dataset, cnn_ops,
+                                                            cnn_hyperparameters, weights, biases)
+                            loss = calc_loss(logits, tf_labels)
+                            loss_vec = calc_loss_vector(logits, tf_labels)
+                            pred = predict_with_logits(logits)
+                            optimize = optimize_func(loss, global_step)
+                            pred_valid = predict_with_dataset(tf_valid_dataset, cnn_ops,
+                                                              cnn_hyperparameters, weights, biases)
+                            pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
+                                                             cnn_hyperparameters, weights, biases)
 
+                            logger.debug('')
 
-                # pooling takes place here
-                # calculating all the things again
-                logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
-                pool_logits,_ = get_logits_with_ops(tf_pool_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
-                pool_loss = calc_loss(pool_logits,tf_pool_labels)
-                optimize_with_variable,upd_lr = optimize_with_variable_func(pool_loss,global_step,[weights[op],biases[op]])
+                    # pooling takes place here
+                    pool_logits,_ = get_logits_with_ops(tf_pool_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+                    pool_loss = calc_loss(pool_logits,tf_pool_labels)
+                    optimize_with_variable,upd_lr = optimize_with_variable_func(pool_loss,global_step,[weights[op],biases[op]])
 
-                pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
-                for si,ai in zip(current_states,current_actions):
-                    if ai[0]=='finetune':
-                        op = cnn_ops[si[0]]
-                        logger.debug('Only tuning following variables...')
-                        logger.debug('\t%s,%s',weights[op].name,str(weights[op]))
-                        logger.debug('\t%s,%s',biases[op].name,str(biases[op]))
-                        assert weights[op].name in [v.name for v in tf.trainable_variables()]
-                        assert biases[op].name in [v.name for v in tf.trainable_variables()]
+                    pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
+                    for si,ai in zip(current_states,current_actions):
+                        if ai[0]=='finetune':
+                            op = cnn_ops[si[0]]
+                            logger.debug('Only tuning following variables...')
+                            logger.debug('\t%s,%s',weights[op].name,str(weights[op]))
+                            logger.debug('\t%s,%s',biases[op].name,str(biases[op]))
+                            assert weights[op].name in [v.name for v in tf.trainable_variables()]
+                            assert biases[op].name in [v.name for v in tf.trainable_variables()]
 
-                        for pool_id in range((hard_pool.get_size()//batch_size)-1):
-                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
-                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
-                            _, _, _ = session.run([pool_logits,pool_loss,optimize_with_variable],feed_dict=pool_feed_dict)
+                            for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                                pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                                pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                                pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+                                _, _, _ = session.run([pool_logits,pool_loss,optimize_with_variable],feed_dict=pool_feed_dict)
 
-                #reset rolling activation means because network changed
-                rolling_ativation_means = {}
-                for op in cnn_ops:
-                    if 'conv' in op:
-                        logger.debug("Resetting activation means to zero for %s with %d",op,cnn_hyperparameters[op]['weights'][3])
-                        rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
+                    #reset rolling activation means because network changed
+                    rolling_ativation_means = {}
+                    for op in cnn_ops:
+                        if 'conv' in op:
+                            logger.debug("Resetting activation means to zero for %s with %d",op,cnn_hyperparameters[op]['weights'][3])
+                            rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
 
-                logger.debug('Resetting both data distribution means')
+                    logger.debug('Resetting both data distribution means')
 
-                prev_mean_distribution = mean_data_distribution
-                for li in range(num_labels):
-                    rolling_data_distribution[li]=0.0
-                    mean_data_distribution[li]=0.0
+                    prev_mean_distribution = mean_data_distribution
+                    for li in range(num_labels):
+                        rolling_data_distribution[li]=0.0
+                        mean_data_distribution[li]=0.0
 

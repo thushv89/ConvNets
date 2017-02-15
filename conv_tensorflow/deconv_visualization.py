@@ -45,7 +45,7 @@ __author__ = 'Thushan Ganegedara'
 # b - batch size
 # w, h and d - width, height and depth
 
-number_of_featuremaps_per_layer = 20
+number_of_featuremaps_per_layer = 50
 examples_per_featuremap = 10
 
 batch_size = 128
@@ -63,7 +63,7 @@ elif dataset_type == 'imagenet-100':
     num_channels = 3
     valid_size = 5000//2
 
-output_dir = 'imagenet-100-test-deconv'
+output_dir = 'imagenet-100-full-momentum'
 
 iconv_ops = None
 hyparams = None
@@ -111,11 +111,14 @@ def restore_weights_and_biases_and_hyperparameters(
     global iconv_ops,hyparams,depth_conv
     global weights,biases
 
-    '''with open(output_dir + os.sep + 'ops_hyperparameters.pickle', 'rb') as f:
+    with open(output_dir + os.sep + 'ops_hyperparameters.pickle', 'rb') as f:
         param_dict = pickle.load(f)
     iconv_ops = param_dict['op_list']
-    hyparams = param_dict['hyperparameters']'''
-    iconv_ops = ['conv_1', 'pool_1', 'conv_2', 'pool_2',
+    hyparams = param_dict['hyperparameters']
+    depth_conv = param_dict['depth_conv']
+    final_2d_output = (1, 1)
+
+    '''iconv_ops = ['conv_1', 'pool_1', 'conv_2', 'pool_2',
                  'conv_3', 'pool_3', 'conv_4',
                  'conv_5', 'pool_5', 'conv_6','conv_7',
                  'pool_global', 'fulcon_out']
@@ -154,7 +157,7 @@ def restore_weights_and_biases_and_hyperparameters(
         'pool_5': pool_1_hyparams,
         'pool_global': pool_global_hyparams,
         'fulcon_out': out_hyparams
-    }
+    }'''
 
     # restoring weights and biases
     logger.info('Restoring weights %s',weights_filename)
@@ -443,6 +446,7 @@ def deconv_featuremap_with_data(layer_id, featuremap_id, tf_selected_dataset, gu
 
 def visualize_with_deconv(session, layer_id, all_x, guided_backprop=False):
     global logger, weights, biases
+    global examples_per_featuremap,number_of_featuremaps_per_layer
     '''
     DECONV works the following way.
     # Pick a layer
@@ -453,9 +457,8 @@ def visualize_with_deconv(session, layer_id, all_x, guided_backprop=False):
     #          Do back propagation for the given activations from that layer until the pixel input layer
     '''
 
-    selected_featuremap_ids = list(np.random.randint(0, depth_conv[layer_id], (20,)))
+    selected_featuremap_ids = list(np.random.randint(0, depth_conv[layer_id], (number_of_featuremaps_per_layer,)))
 
-    examples_per_featuremap = 8
     images_for_featuremap = {}  # a dictionary with featuremmap_id : an ndarray with size num_of_images_per_featuremap x image_size
     mean_activations_for_featuremap = {}  # this is a dictionary containing featuremap_id : [list of mean activations for each image in order]
 
@@ -598,11 +601,11 @@ if __name__=='__main__':
     with tf.Session(graph=graph, config=tf.ConfigProto(allow_soft_placement=True,gpu_options=gpu_options)) as session:
 
         restore_weights_and_biases_and_hyperparameters(
-            session,output_dir + os.sep + 'cnn-weights-2',output_dir + os.sep + 'cnn-biases-2')
+            session,output_dir + os.sep + 'cnn-weights-31',output_dir + os.sep + 'cnn-biases-31')
         load_valid_dataset(dataset_type)
 
         #layer_ids = [op for op in iconv_ops if 'conv' in op and op != 'conv_1']
-        layer_ids = ['conv_7']
+        layer_ids = ['conv_3']
         backprop_feature_dir = output_dir + os.sep + backprop_feature_dir
         if not os.path.exists(backprop_feature_dir):
             os.makedirs(backprop_feature_dir)

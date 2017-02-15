@@ -627,7 +627,7 @@ def deconv_featuremap_with_data(layer_id,featuremap_id,tf_selected_dataset,guide
             updates = tf.reshape(outputs_bckwd[-1],[-1])
 
             ref = tf.Variable(tf.zeros([b,output_shape[1]*output_shape[2]*output_shape[3]],dtype=tf.float32),dtype=tf.float32,name='ref_'+op,trainable=False)
-            
+
             session.run(tf.variables_initializer([ref]))
 
             updated_unpool = tf.scatter_nd(tf.to_int32(tf_indices),updates,tf.constant([b,output_shape[1]*output_shape[2]*output_shape[3]]),name='updated_unpool_'+op)
