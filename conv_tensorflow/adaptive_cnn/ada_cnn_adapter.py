@@ -14,6 +14,7 @@ import qlearner
 from data_pool import Pool
 from collections import Counter
 from scipy.misc import imsave
+import getopt
 
 ##################################################################
 # AdaCNN Adapter
@@ -24,7 +25,7 @@ from scipy.misc import imsave
 ##################################################################
 
 logger = None
-logging_level = logging.DEBUG
+logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
@@ -455,11 +456,26 @@ weights,biases = None,None
 research_parameters = \
     {'save_train_test_images':False,
      'log_class_distribution':True,'log_distribution_every':128,
-     'adapt_structure' : False
+     'adapt_structure' : True
      }
 
 if __name__=='__main__':
     global weights,biases
+
+    try:
+        opts,args = getopt.getopt(
+            sys.argv[1:],"",["output_dir="])
+    except getopt.GetoptError as err:
+        print('<filename>.py --output_dir=')
+
+    if len(opts)!=0:
+        for opt,arg in opts:
+            if opt == '--output_dir':
+                output_dir = arg
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     #type of data training
     datatype = 'cifar-10'
     behavior = 'non-stationary'
@@ -515,7 +531,7 @@ if __name__=='__main__':
 
     error_logger = logging.getLogger('error_logger')
     error_logger.setLevel(logging.INFO)
-    errHandler = logging.FileHandler('Error.log', mode='w')
+    errHandler = logging.FileHandler(output_dir + os.sep + 'Error.log', mode='w')
     errHandler.setFormatter(logging.Formatter('%(message)s'))
     error_logger.addHandler(errHandler)
     error_logger.info('#Batch_ID,Valid(Seen),Valid(Unseen),Test')
@@ -523,7 +539,7 @@ if __name__=='__main__':
     if research_parameters['log_class_distribution']:
         class_dist_logger = logging.getLogger('class_dist_logger')
         class_dist_logger.setLevel(logging.INFO)
-        class_distHandler = logging.FileHandler('class_distribution.log', mode='w')
+        class_distHandler = logging.FileHandler(output_dir + os.sep + 'class_distribution.log', mode='w')
         class_distHandler.setFormatter(logging.Formatter('%(message)s'))
         class_dist_logger.addHandler(class_distHandler)
 

@@ -36,8 +36,8 @@ def sample_from_distribution(dist,size):
     # if a label is not found we add the last label
     logger.debug('Sampling %d from the given distribution of size(%s)',size,str(dist.shape))
     for i in range(size):
+        r = np.random.random()
         for j in range(dist.size):
-            r = np.random.random()
             if r<dist_cumsum[j]:
                 label_sequence.append(j)
                 label_found = True
@@ -49,9 +49,37 @@ def sample_from_distribution(dist,size):
 
     assert len(label_sequence)==size
     np.random.shuffle(label_sequence)
+    cnt = Counter(label_sequence)
+
+    euc_distance = 0
+    euc_threshold = (0.02**2)*dist.size
+    for li in range(dist.size):
+        if li in cnt:
+            euc_distance += ((cnt[li]*1.0/size)-dist[li])**2
+        else:
+            euc_distance += dist[li]**2
+
+    if euc_distance>euc_threshold:
+        logger.debug('Distribution:')
+        logger.debug(dist)
+        logger.debug('='*80)
+        logger.debug('Label Sequence Counts')
+        norm_counts = []
+        for li in range(dist.size):
+            if li in cnt:
+                norm_counts.append(cnt[li]*1.0/size)
+            else:
+                norm_counts.append(0)
+        logger.debug(norm_counts)
+        logger.debug('='*80)
+        logger.debug('')
+
+    assert euc_distance<euc_threshold
     return label_sequence
 
-def get_augmented_sample_for_label(dataset_info,dataset,label):
+def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter):
+    global image_abuse_threshold
+
     # dataset_info => ['type']['image_size']['resize_to']['num_channels']
     dataset_type,image_size = dataset_info['dataset_type'],dataset_info['image_size']
     num_channels = dataset_info['num_channels']
@@ -65,6 +93,9 @@ def get_augmented_sample_for_label(dataset_info,dataset,label):
         choice_probs = [0.2,0.2,0.4,0.2]
 
     image_index = np.random.choice(list(np.where(dataset['labels']==label)[0].flatten()))
+    # don't use single image too much. It seems lot of data is going unused
+    # May be we shouldn't impose uniform use. That could lead to lot of duplicates in training set
+
     selected_op = np.random.choice(ops,p=choice_probs)
 
     unnorm_image = dataset['dataset'][image_index,:,:,:]-np.min(dataset['dataset'][image_index,:,:,:])
@@ -151,7 +182,7 @@ def sample_cifar_10_with_gauss(dataset_info,data_filename,f_prior,save_directory
         label_sequence = sample_from_distribution(dist,chunk_size)
 
         for label in label_sequence:
-            sidx,sample = get_augmented_sample_for_label(dataset_info,dataset,label)
+            sidx,sample = get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
             image_use_counter[sidx] = image_use_counter[sidx]+1 if sidx in image_use_counter else 1
             fp1[memmap_idx,:,:,:] = sample
             fp2[memmap_idx,0] = label
@@ -187,7 +218,7 @@ def sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,f_pr
         label_sequence = sample_from_distribution(dist,chunk_size)
 
         for label in label_sequence:
-            sidx,sample = get_augmented_sample_for_label(dataset_info,dataset,label)
+            sidx,sample = get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
             image_use_counter[sidx] = image_use_counter[sidx]+1 if sidx in image_use_counter else 1
             fp1[memmap_idx,:,:,:] = sample
             fp2[memmap_idx,0] = label
@@ -350,7 +381,7 @@ def test_generated_data(dataset_info,persist_dir,dataset_filename,label_filename
 image_use_counter = None
 logger = None
 class_distribution_logger = None
-
+image_abuse_threshold = 3
 if __name__ == '__main__':
 
     global logger
