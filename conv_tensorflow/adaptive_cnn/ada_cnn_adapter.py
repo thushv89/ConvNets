@@ -13,6 +13,7 @@ import time
 import qlearner
 from data_pool import Pool
 from collections import Counter
+from scipy.misc import imsave
 
 ##################################################################
 # AdaCNN Adapter
@@ -23,11 +24,11 @@ from collections import Counter
 ##################################################################
 
 logger = None
-logging_level = logging.INFO
+logging_level = logging.DEBUG
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-start_lr = 0.001
+start_lr = 0.005
 decay_learning_rate = False
 dropout_rate = 0.25
 use_dropout = False
@@ -37,7 +38,7 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 
-adapt_structure = False
+
 
 def get_final_x(cnn_ops,cnn_hyps):
     '''
@@ -77,7 +78,7 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
         if 'conv' in op:
             weights[op] = tf.Variable(tf.truncated_normal(
                 cnn_hyps[op]['weights'],
-                stddev=2./max(50,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
+                stddev=2./max(100,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
             ),validate_shape = False, expected_shape = cnn_hyps[op]['weights'],name=op+'_weights',dtype=tf.float32)
             biases[op] = tf.Variable(tf.constant(
                 np.random.random()*0.001,shape=[cnn_hyps[op]['weights'][3]]
@@ -169,7 +170,6 @@ def optimize_func(loss,global_step):
         learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.95)
     else:
         learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
-
 
     optimizer = tf.train.GradientDescentOptimizer(learning_rate=start_lr).minimize(loss)
     return optimizer,learning_rate
@@ -452,6 +452,12 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
 
 weights,biases = None,None
 
+research_parameters = \
+    {'save_train_test_images':False,
+     'log_class_distribution':True,'log_distribution_every':128,
+     'adapt_structure' : True
+     }
+
 if __name__=='__main__':
     global weights,biases
     #type of data training
@@ -506,6 +512,13 @@ if __name__=='__main__':
     console.setFormatter(logging.Formatter(logging_format))
     console.setLevel(logging_level)
     logger.addHandler(console)
+
+    if research_parameters['log_class_distribution']:
+        class_dist_logger = logging.getLogger('class_dist_logger')
+        class_dist_logger.setLevel(logging.INFO)
+        class_distHandler = logging.FileHandler('class_distribution.log', mode='w')
+        class_distHandler.setFormatter(logging.Formatter('%(message)s'))
+        class_dist_logger.addHandler(class_distHandler)
 
     # Loading data
     memmap_idx = 0
@@ -616,7 +629,7 @@ if __name__=='__main__':
 
         logger.info('Starting Training Phase')
         #TODO: Think about decaying learning rate (should or shouldn't)
-        for batch_id in range(ceil(dataset_size//batch_size)-2):
+        for batch_id in range(ceil(dataset_size//batch_size)-3):
 
             logger.debug('\tTraining with batch %d',batch_id)
             for op in cnn_ops:
@@ -629,7 +642,8 @@ if __name__=='__main__':
                 # We load 1 extra batch (chunk_size+1) because we always make the valid batch the batch_id+1
                 train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size)
                 memmap_idx += chunk_size
-
+                logger.info('Loading dataset chunk of size: %d',train_dataset.shape[0])
+                logger.info('\tNext memmap start index: %d',memmap_idx)
             batch_data = train_dataset[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :]
 
@@ -637,6 +651,27 @@ if __name__=='__main__':
             _, activation_means, l,l_vec, (_,updated_lr), predictions = session.run(
                     [logits,act_means,loss,loss_vec,optimize,pred], feed_dict=feed_dict
             )
+
+            # this snippet logs the normalized class distribution every specified interval
+            if chunk_batch_id%research_parameters['log_distribution_every']==0:
+                dist_cnt = Counter(np.argmax(batch_labels, axis=1))
+                norm_dist = ''
+                for li in range(num_labels):
+                    norm_dist += '%.5f,'%(dist_cnt[li]*1.0/batch_size)
+                class_dist_logger.info(norm_dist)
+
+            if chunk_batch_id % 50<10:
+                logger.debug('=' * 80)
+                logger.debug('Actual Train Labels')
+                logger.debug(np.argmax(batch_labels, axis=1).flatten()[:5])
+                logger.debug('=' * 80)
+                logger.debug('Predicted Train Labels')
+                logger.debug(np.argmax(predictions, axis=1).flatten()[:5])
+                logger.debug('=' * 80)
+                logger.debug('Train: %d, %.3f', chunk_batch_id, accuracy(predictions, batch_labels))
+                logger.debug('')
+
+
             if np.isnan(l):
                 logger.critical('NaN detected: (batchID) %d (last Cost) %.3f',chunk_batch_id,train_losses[-1])
             if np.random.random()<0.1:
@@ -654,12 +689,12 @@ if __name__=='__main__':
             batch_valid_labels = train_labels[(chunk_batch_id+1)*batch_size:(chunk_batch_id+2)*batch_size, :]
 
             feed_valid_dict = {tf_valid_dataset:batch_valid_data, tf_valid_labels:batch_valid_labels}
-            next_valid_predictions = session.run([pred_valid],feed_dict=feed_valid_dict)
-            next_valid_accuracy = accuracy(next_valid_predictions[0], batch_valid_labels)
+            next_valid_predictions = session.run(pred_valid,feed_dict=feed_valid_dict)
+            next_valid_accuracy = accuracy(next_valid_predictions, batch_valid_labels)
             rolling_next_accuracy = (1-decay)*rolling_next_accuracy + decay*next_valid_accuracy
             # validation batch (Seen) random from last 50 batches
-            if batch_id>0:
-                prev_valid_batch_id = np.random.randint(max(0,batch_id-50),batch_id)
+            if chunk_batch_id>0:
+                prev_valid_batch_id = np.random.randint(max(0,chunk_batch_id-50),chunk_batch_id)
             else:
                 prev_valid_batch_id = 0
 
@@ -667,8 +702,8 @@ if __name__=='__main__':
             batch_valid_labels = train_labels[prev_valid_batch_id*batch_size:(prev_valid_batch_id+1)*batch_size, :]
 
             feed_valid_dict = {tf_valid_dataset:batch_valid_data, tf_valid_labels:batch_valid_labels}
-            prev_valid_predictions = session.run([pred_valid],feed_dict=feed_valid_dict)
-            prev_valid_accuracy = accuracy(prev_valid_predictions[0], batch_valid_labels)
+            prev_valid_predictions = session.run(pred_valid,feed_dict=feed_valid_dict)
+            prev_valid_accuracy = accuracy(prev_valid_predictions, batch_valid_labels)
             rolling_prev_accuracy = (1-decay)*rolling_prev_accuracy + decay*prev_valid_accuracy
 
             if batch_id%25==0:
@@ -688,37 +723,72 @@ if __name__=='__main__':
                     feed_test_dict = {tf_test_dataset:batch_test_data, tf_test_labels:batch_test_labels}
                     test_predictions = session.run(pred_test,feed_dict=feed_test_dict)
                     test_accuracies.append(accuracy(test_predictions, batch_test_labels))
+                    if test_batch_id<10:
+                        logger.debug('='*80)
+                        logger.debug('Actual Test Labels %d',test_batch_id)
+                        logger.debug(np.argmax(batch_test_labels, axis=1).flatten()[:5])
+                        logger.debug('='*80)
+                        logger.debug('Predicted Test Labels %d',test_batch_id)
+                        logger.debug(np.argmax(test_predictions,axis=1).flatten()[:5])
+                        logger.debug('='*80)
+                        logger.debug('Test: %d, %.3f',test_batch_id,accuracy(test_predictions, batch_test_labels))
 
                 logger.info('\tTest Accuracy: %.3f'%np.mean(test_accuracies))
                 logger.info('='*60)
                 logger.info('')
 
+                if research_parameters['save_train_test_images']:
+                    local_dir = 'saved_images'+str(batch_id)
+                    if not os.path.exists(local_dir):
+                        os.mkdir(local_dir)
+                    train_dir = local_dir + os.sep + 'train'
+                    if not os.path.exists(train_dir):
+                        os.mkdir(train_dir)
+                    for img_id in range(50):
+                        img_lbl = np.asscalar(np.argmax(batch_labels[img_id,:]))
+                        img_data = batch_data[img_id,:,:,:]
+                        if not os.path.exists(train_dir+os.sep+str(img_lbl)):
+                            os.mkdir(train_dir+os.sep+str(img_lbl))
+                        imsave(train_dir+os.sep+ str(img_lbl) + os.sep + 'image_' + str(img_id) + '.png',img_data)
+
+                    test_dir = local_dir + os.sep + 'test'
+                    if not os.path.exists(test_dir):
+                        os.mkdir(test_dir)
+                    for img_id in range(50):
+                        img_lbl = np.asscalar(np.argmax(test_labels[img_id, :]))
+                        img_data = test_dataset[img_id, :, :, :]
+                        if not os.path.exists(test_dir + os.sep + str(img_lbl)):
+                            os.mkdir(test_dir + os.sep + str(img_lbl))
+                        imsave(test_dir + os.sep + str(img_lbl) + os.sep + 'image_' + str(img_id) + '.png', img_data)
+
                 # reset variables
                 mean_train_loss = 0.0
                 train_losses = []
 
-            cnt = Counter(np.argmax(batch_labels,axis=1))
+            if research_parameters['adapt_structure']:
+                cnt = Counter(np.argmax(batch_labels,axis=1))
 
-            # calculate rolling mean of data distribution (amounts of different classes)
-            for li in range(num_labels):
-                rolling_data_distribution[li]=(1-decay)*rolling_data_distribution[li] + decay*float(cnt[li])/float(batch_size)
-                mean_data_distribution[li] += float(cnt[li])/(float(batch_size)*float(policy_interval))
-
-            # ====================== Policy update and output ======================
-            if batch_id>0 and batch_id%policy_interval==0:
-                #Update and Get a new policy
-                if current_states is not None and current_actions is not None:
-                    logger.info('Updating the Policy for')
-                    logger.info('\tStates: %s',str(current_states))
-                    logger.info('\tActions: %s',str(current_actions))
-                    logger.info('\tValid accuracy: %.2f (Unseen) %.2f (seen)',next_valid_accuracy,prev_valid_accuracy)
-                    adapter.update_policy({'states':current_states,'actions':current_actions,
-                                           'next_accuracy':next_valid_accuracy,'prev_accuracy':prev_valid_accuracy})
-                distMSE = 0.0
+                # calculate rolling mean of data distribution (amounts of different classes)
                 for li in range(num_labels):
-                    distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
+                    rolling_data_distribution[li]=(1-decay)*rolling_data_distribution[li] + decay*float(cnt[li])/float(batch_size)
+                    mean_data_distribution[li] += float(cnt[li])/(float(batch_size)*float(policy_interval))
 
-                if adapt_structure:
+                # ====================== Policy update and output ======================
+
+                if batch_id>0 and batch_id%policy_interval==0:
+                    #Update and Get a new policy
+                    if current_states is not None and current_actions is not None:
+                        logger.info('Updating the Policy for')
+                        logger.info('\tStates: %s',str(current_states))
+                        logger.info('\tActions: %s',str(current_actions))
+                        logger.info('\tValid accuracy: %.2f (Unseen) %.2f (seen)',next_valid_accuracy,prev_valid_accuracy)
+                        adapter.update_policy({'states':current_states,'actions':current_actions,
+                                               'next_accuracy':next_valid_accuracy,'prev_accuracy':prev_valid_accuracy})
+                    distMSE = 0.0
+                    for li in range(num_labels):
+                        distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
+
+
                     filter_dict = {}
                     for op_i,op in enumerate(cnn_ops):
                         if 'conv' in op:

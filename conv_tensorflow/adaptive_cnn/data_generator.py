@@ -38,7 +38,7 @@ def sample_from_distribution(dist,size):
     for i in range(size):
         for j in range(dist.size):
             r = np.random.random()
-            if r<dist[j]:
+            if r<dist_cumsum[j]:
                 label_sequence.append(j)
                 label_found = True
                 break
@@ -86,7 +86,7 @@ def get_augmented_sample_for_label(dataset_info,dataset,label):
         im = im.rotate(angle)
         sample_img = np.array(im)
     elif selected_op=='noise':
-        noise_amount = min(0.5,np.random.random())
+        noise_amount = min(0.25,np.random.random())
         if dataset_type=='imagenet-100':
             im.thumbnail((resize_to,resize_to), Image.ANTIALIAS)
             sample_img = (1-noise_amount)*np.array(im) + noise_amount*np.random.random_sample((resize_to,resize_to,num_channels))*255.0
@@ -114,7 +114,7 @@ def get_augmented_sample_for_label(dataset_info,dataset,label):
 
 # generate gaussian priors
 def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_labels):
-    chunk_count = elements/chunk_size
+    chunk_count = int(elements/chunk_size)
 
     x = np.linspace(0, 100,chunk_count).reshape(-1, 1)
     # 1e-6 * is for numerical stibility
@@ -164,8 +164,8 @@ def sample_cifar_10_with_gauss(dataset_info,data_filename,f_prior,save_directory
         cnt = Counter(label_sequence)
         dist_str = ''
         for li in range(num_labels):
-            dist_str += str(cnt[li]) if li in cnt else str(0) + ','
-            class_distribution_logger.info('%d,%s',i,dist_str)
+            dist_str += str(cnt[li]) + ',' if li in cnt else str(0) + ','
+        class_distribution_logger.info('%d,%s',i,dist_str)
 
 
 def sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,f_prior,save_directory):
@@ -200,8 +200,8 @@ def sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,f_pr
         cnt = Counter(label_sequence)
         dist_str = ''
         for li in range(num_labels):
-            dist_str += str(cnt[li]) if li in cnt else str(0) + ','
-            class_distribution_logger.info('%d,%s',i,dist_str)
+            dist_str += str(cnt[li]) + ',' if li in cnt else str(0) + ','
+        class_distribution_logger.info('%d,%s',i,dist_str)
 
 '''
 def sample_cifar_with_gauss(dataset_info,dataset,f_prior):
@@ -229,7 +229,10 @@ def load_slice_from_imagenet(dataset_info,dataset_filename,label_filename,start_
     del fp1,fp2
     return {'dataset':train_dataset,'labels':train_labels.flatten()}
 
+
 train_dataset,train_labels = None,None
+
+
 def load_slice_from_cifar_10(dataset_info,data_filename,start_idx,end_idx):
     global image_use_counter,logger
     global train_dataset,train_labels
@@ -347,6 +350,7 @@ def test_generated_data(dataset_info,persist_dir,dataset_filename,label_filename
 image_use_counter = None
 logger = None
 class_distribution_logger = None
+
 if __name__ == '__main__':
 
     global logger
@@ -364,14 +368,14 @@ if __name__ == '__main__':
 
     class_distribution_logger = logging.getLogger('class_distribution_logger')
     class_distribution_logger.setLevel(logging.INFO)
-    cdfileHandler = logging.FileHandler(persist_dir+os.sep+'class_distribution_log', mode='w')
+    cdfileHandler = logging.FileHandler(persist_dir+os.sep+'class_distribution_log.log', mode='w')
     cdfileHandler.setFormatter(logging.Formatter('%(message)s'))
     class_distribution_logger.addHandler(cdfileHandler)
 
     batch_size = 128
-    elements = batch_size*10000 # number of elements in the whole dataset
+    elements = int(batch_size*10000) # number of elements in the whole dataset
     # there are elements/chunk_size points in the gaussian curve for each class
-    chunk_size = batch_size*10 # number of samples sampled for each instance of the gaussian curve
+    chunk_size = int(batch_size*10) # number of samples sampled for each instance of the gaussian curve
 
     dataset_type = 'cifar-10' #'cifar-10 imagenet-100
 
@@ -417,14 +421,14 @@ if __name__ == '__main__':
         label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_small_train_labels'
         new_dataset_filename = data_save_directory+os.sep+'imagenet-100-nonstation-dataset.pkl'
         new_labels_filename = data_save_directory+os.sep+'imagenet-100-nonstation-labels.pkl'
-        #sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,priors,data_save_directory)
-        generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
+        sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,priors,data_save_directory)
+        #generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
     elif dataset_type == 'cifar-10':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-10.pickle'
         new_dataset_filename = data_save_directory+os.sep+'cifar-10-nonstation-dataset.pkl'
         new_labels_filename = data_save_directory+os.sep+'cifar-10-nonstation-labels.pkl'
         generate_cifar_test_data(data_filename,data_save_directory)
-        #sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)
+        sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)
 
     #test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
     ''' =============== Quick Test =====================
