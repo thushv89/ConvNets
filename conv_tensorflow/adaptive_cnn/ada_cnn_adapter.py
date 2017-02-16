@@ -455,7 +455,7 @@ weights,biases = None,None
 research_parameters = \
     {'save_train_test_images':False,
      'log_class_distribution':True,'log_distribution_every':128,
-     'adapt_structure' : True
+     'adapt_structure' : False
      }
 
 if __name__=='__main__':
@@ -512,6 +512,13 @@ if __name__=='__main__':
     console.setFormatter(logging.Formatter(logging_format))
     console.setLevel(logging_level)
     logger.addHandler(console)
+
+    error_logger = logging.getLogger('error_logger')
+    error_logger.setLevel(logging.INFO)
+    errHandler = logging.FileHandler('Error.log', mode='w')
+    errHandler.setFormatter(logging.Formatter('%(message)s'))
+    error_logger.addHandler(errHandler)
+    error_logger.info('#Batch_ID,Valid(Seen),Valid(Unseen),Test')
 
     if research_parameters['log_class_distribution']:
         class_dist_logger = logging.getLogger('class_dist_logger')
@@ -736,6 +743,8 @@ if __name__=='__main__':
                 logger.info('\tTest Accuracy: %.3f'%np.mean(test_accuracies))
                 logger.info('='*60)
                 logger.info('')
+
+                error_logger.info('%d,%.3f,%.3f,%.3f',batch_id,prev_valid_accuracy,next_valid_accuracy,np.mean(test_accuracies))
 
                 if research_parameters['save_train_test_images']:
                     local_dir = 'saved_images'+str(batch_id)
