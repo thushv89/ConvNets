@@ -271,6 +271,19 @@ def get_ops_hyps_from_string(net_string):
     return cnn_ops,cnn_hyperparameters
 
 
+def get_cnn_string_from_ops(cnn_ops,cnn_hyps):
+    current_cnn_string = ''
+    for op in cnn_ops:
+        if 'conv' in op:
+            current_cnn_string += '#C,'+str(cnn_hyps[op]['weights'][0])+','+str(cnn_hyps[op]['strides'][1])+','+str(cnn_hyps[op]['weights'][3])
+        if 'pool' in op:
+            current_cnn_string += '#P,'+str(cnn_hyps[op]['weights'][0])+','+str(cnn_hyps[op]['strides'][1])+','+str(0)
+        if 'fulcon' in op:
+            current_cnn_string += '#Terminate,0,0,0'
+
+    return current_cnn_string
+
+
 def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
     global logger,weights,biases
 
@@ -316,8 +329,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         changed_ops.append(op)
         # change out hyperparameter of op
         cnn_hyps[op]['weights'][3]+=amount_to_add
-        #weights[op].set_shape(cnn_hyps[op]['weights'])
-        #biases[op].set_shape([cnn_hyps[op]['weights'][3]])
+
         assert cnn_hyps[op]['weights'][2]==tf_new_weights[op].get_shape().as_list()[2]
 
         # ================ Changes to next_op ===============
@@ -326,7 +338,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         # as a change in this require changes to FC layer
         if op==last_conv_id:
             # change FC layer
-            tf_new_weights['fulcon_out'] = tf.concat(0,[weights['fulcon_out'],tf.truncated_normal([amount_to_add,num_labels],stddev=0.02)])
+            tf_new_weights['fulcon_out'] = tf.concat(0,[weights['fulcon_out'],tf.truncated_normal([amount_to_add,num_labels],stddev=0.01)])
 
             logger.debug('Summary of changes to weights of fulcon_out')
             logger.debug('\tCurrent Weights: %s',str(tf.shape(weights['fulcon_out']).eval()))
@@ -349,7 +361,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             # change only the weights in next conv_op
             tf_new_weights[next_conv_op]=tf.concat(2,[weights[next_conv_op],
                                           tf.truncated_normal([cnn_hyps[next_conv_op]['weights'][0],cnn_hyps[next_conv_op]['weights'][1],
-                                                               amount_to_add,cnn_hyps[next_conv_op]['weights'][3]],stddev=0.02)])
+                                                               amount_to_add,cnn_hyps[next_conv_op]['weights'][3]],stddev=0.01)])
             logger.debug('Summary of changes to weights of %s',next_conv_op)
             logger.debug('\tCurrent Weights: %s',str(tf.shape(weights[next_conv_op]).eval()))
             logger.debug('\tNew Weights: %s',str(tf.shape(tf_new_weights[next_conv_op]).eval()))
@@ -392,8 +404,6 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         # change out hyperparameter of op
         cnn_hyps[op]['weights'][3]-=amount_to_rmv
 
-        #weights[op].set_shape(cnn_hyps[op]['weights'])
-        #biases[op].set_shape([cnn_hyps[op]['weights'][3]])
         assert tf.shape(tf_new_weights[op]).eval()[3]==cnn_hyperparameters[op]['weights'][3]
 
         if op==last_conv_id:
@@ -458,6 +468,9 @@ research_parameters = \
      'log_class_distribution':True,'log_distribution_every':128,
      'adapt_structure' : True
      }
+
+state_action_history = {}
+history_interval = 100
 
 if __name__=='__main__':
     global weights,biases
@@ -536,6 +549,15 @@ if __name__=='__main__':
     error_logger.addHandler(errHandler)
     error_logger.info('#Batch_ID,Valid(Seen),Valid(Unseen),Test')
 
+    if research_parameters['adapt_structure']:
+        cnn_structure_logger = logging.getLogger('cnn_structure_logger')
+        cnn_structure_logger.setLevel(logging.INFO)
+        structHandler = logging.FileHandler(output_dir + os.sep + 'cnn_structure.log', mode='w')
+        structHandler.setFormatter(logging.Formatter('%(message)s'))
+        cnn_structure_logger.addHandler(structHandler)
+        cnn_structure_logger.info('#batch_id#layer_1_hyperparameters#layer_2_hyperparameters#...')
+
+
     if research_parameters['log_class_distribution']:
         class_dist_logger = logging.getLogger('class_dist_logger')
         class_dist_logger.setLevel(logging.INFO)
@@ -558,8 +580,8 @@ if __name__=='__main__':
 
     policy_interval = 10 #number of batches to process for each policy iteration
 
-    #cnn_string = "C,5,1,256#P,3,2,0#P,5,2,0#C,3,1,128#C,5,1,512#C,3,1,64#C,3,1,128#C,5,1,128#Terminate,0,0,0"
-    cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
+    cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
+    #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
     # Resetting this every policy interval
@@ -694,7 +716,6 @@ if __name__=='__main__':
                 logger.debug('Train: %d, %.3f', chunk_batch_id, accuracy(predictions, batch_labels))
                 logger.debug('')
 
-
             if np.isnan(l):
                 logger.critical('NaN detected: (batchID) %d (last Cost) %.3f',chunk_batch_id,train_losses[-1])
             if np.random.random()<0.1:
@@ -822,6 +843,10 @@ if __name__=='__main__':
                             filter_dict[op_i]=0
 
                     current_states,current_actions = adapter.output_trajectory({'distMSE':distMSE,'filter_counts':filter_dict})
+
+                    for s,a in zip(current_states,current_actions):
+                        state_action_history[batch_id]={'states':current_states,'actions':current_actions}
+
                     # where all magic happens (adding and removing filters)
                     for si,ai in zip(current_states,current_actions):
                         current_op = cnn_ops[si[0]]
@@ -853,6 +878,9 @@ if __name__=='__main__':
                             pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
                                                              cnn_hyperparameters, weights, biases)
 
+                            cnn_structure_logger.info(
+                                '%d%s',batch_id,get_cnn_string_from_ops(cnn_ops,cnn_hyperparameters)
+                            )
                             logger.debug('')
 
                     # pooling takes place here
@@ -889,4 +917,13 @@ if __name__=='__main__':
                     for li in range(num_labels):
                         rolling_data_distribution[li]=0.0
                         mean_data_distribution[li]=0.0
+
+                if batch_id>0 and batch_id%history_interval==0:
+                    with open(output_dir + os.sep + 'state_actions_' + str(batch_id)+'.pickle', 'wb') as f:
+                        pickle.dump(state_action_history, f, pickle.HIGHEST_PROTOCOL)
+
+                    with open(output_dir + os.sep + 'Q_' + str(batch_id)+'.pickle', 'wb') as f:
+                        pickle.dump(adapter.get_Q(), f, pickle.HIGHEST_PROTOCOL)
+
+
 

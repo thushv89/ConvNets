@@ -293,7 +293,7 @@ class AdaCNNAdaptingQLearner(object):
         self.filter_upper_bound = params['filter_upper_bound']
 
         self.fit_interval = params['fit_interval'] #GP calculating interval (10)
-        self.q = {} # store Q values a=> state
+        self.q = {} # store Q values dict[a][state] = q_value
         self.regressors = {} # store logistic regressors
 
         self.epsilon = params['epsilon']
@@ -488,5 +488,5 @@ class AdaCNNAdaptingQLearner(object):
 
         self.local_time_stamp += 1
 
-    def get_policy_info(self):
-        return self.q,self.regressors,self.prev_state,self.prev_action
+    def get_Q(self):
+        return self.q
