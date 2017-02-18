@@ -308,8 +308,8 @@ class AdaCNNAdaptingQLearner(object):
 
         self.local_time_stamp = 0
         self.actions = [
-            ('add',32),('remove',32),('add',64),('remove',64),
-            ('add',128),('remove',128),('finetune',0),('do_nothing',0)
+            ('add',16),('replace',16),('add',32),('replace',32),
+            ('add',64),('replace',64),('finetune',0),('do_nothing',0)
         ]
 
     def restore_policy(self,**restore_data):
@@ -390,9 +390,11 @@ class AdaCNNAdaptingQLearner(object):
                     action = restricted_action_space[action_idx]
                     # update FILTER count
                     if action[0]=='add':
-                        next_filter_count =data['filter_counts'][ni]+action[1]
+                        next_filter_count = data['filter_counts'][ni]+action[1]
                     elif action[0]=='remove':
-                        next_filter_count =data['filter_counts'][ni]-action[1]
+                        next_filter_count = data['filter_counts'][ni]-action[1]
+                    else:
+                        next_filter_count = data['filter_counts'][ni]
 
             # random selection
             else:
@@ -427,6 +429,8 @@ class AdaCNNAdaptingQLearner(object):
                         next_filter_count =data['filter_counts'][ni]+action[1]
                     elif action[0]=='remove':
                         next_filter_count =data['filter_counts'][ni]-action[1]
+                    else:
+                        next_filter_count = data['filter_counts'][ni]
 
             self.rl_logger.debug('Finally Selected action: %s'%str(action))
 

@@ -25,7 +25,7 @@ import getopt
 ##################################################################
 
 logger = None
-logging_level = logging.INFO
+logging_level = logging.DEBUG
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
@@ -187,6 +187,54 @@ def optimize_with_variable_func(loss,global_step,variables):
     return optimizer,learning_rate
 
 
+def optimize_with_tensor_slice_func(loss, filter_indices_to_replace, op, w, b, cnn_hyps):
+    global weights,biases
+
+    learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+    grads_wb = optimizer.compute_gradients(loss,[w,b])
+
+    (grads_w,w),(grads_b,b) = grads_wb[0],grads_wb[1]
+
+    transposed_shape = [cnn_hyps[op]['weights'][3],cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1], cnn_hyps[op]['weights'][2]]
+    normal_shape = [cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2], cnn_hyps[op]['weights'][3]]
+
+
+    #w.set_shape(normal_shape)
+    #b.set_shape([normal_shape[3]])
+    #grads_w.set_shape(normal_shape)
+    #grads_b.set_shape([normal_shape[3]])
+    replace_amnt = filter_indices_to_replace.size
+
+
+    logger.debug('Shapes of gradients and variables')
+    #logger.debug('\tGradient (%s): %s',w.name,tf.shape(grads_w).eval())
+    #logger.debug('\tVariable (%s): %s',w.name,tf.shape(w).eval())
+    #logger.debug('\tGradient (%s): %s',b.name,tf.shape(grads_b).eval())
+    #logger.debug('\tVariable (%s): %s\n',b.name,tf.shape(b).eval())
+
+    mask_grads_w = tf.scatter_nd(
+            filter_indices_to_replace.reshape(-1,1),
+            tf.ones(shape=[replace_amnt,transposed_shape[1],transposed_shape[2],transposed_shape[3]], dtype=tf.float32),
+            shape=transposed_shape
+    )
+
+    mask_grads_w = tf.transpose(mask_grads_w,[1,2,3,0])
+
+    mask_grads_b = tf.scatter_nd(
+            filter_indices_to_replace.reshape(-1,1),
+            tf.ones_like(filter_indices_to_replace, dtype=tf.float32),
+            shape=[cnn_hyps[op]['weights'][3]]
+    )
+
+    new_grads_w = grads_w * mask_grads_w
+    new_grads_b = grads_b * mask_grads_b
+
+    grad_apply_op = optimizer.apply_gradients([(new_grads_w,w),(new_grads_b,b)])
+
+    return grad_apply_op
+
+
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
 
@@ -275,9 +323,9 @@ def get_cnn_string_from_ops(cnn_ops,cnn_hyps):
     current_cnn_string = ''
     for op in cnn_ops:
         if 'conv' in op:
-            current_cnn_string += '#C,'+str(cnn_hyps[op]['weights'][0])+','+str(cnn_hyps[op]['strides'][1])+','+str(cnn_hyps[op]['weights'][3])
+            current_cnn_string += '#C,'+str(cnn_hyps[op]['weights'][0])+','+str(cnn_hyps[op]['stride'][1])+','+str(cnn_hyps[op]['weights'][3])
         if 'pool' in op:
-            current_cnn_string += '#P,'+str(cnn_hyps[op]['weights'][0])+','+str(cnn_hyps[op]['strides'][1])+','+str(0)
+            current_cnn_string += '#P,'+str(cnn_hyps[op]['kernel'][0])+','+str(cnn_hyps[op]['stride'][1])+','+str(0)
         if 'fulcon' in op:
             current_cnn_string += '#Terminate,0,0,0'
 
@@ -440,6 +488,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
 
     return update_ops,changed_variables,changed_ops
 
+
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
     global logger
     num_labels = dataset_info['num_labels']
@@ -463,11 +512,13 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
 
 weights,biases = None,None
 
-research_parameters = \
-    {'save_train_test_images':False,
-     'log_class_distribution':True,'log_distribution_every':128,
-     'adapt_structure' : True
-     }
+research_parameters = {
+    'save_train_test_images':False,
+    'log_class_distribution':True,'log_distribution_every':128,
+    'adapt_structure' : True,
+    'hard_pool_acceptance_rate':0.5, 'accuracy_threshold_hard_pool':50,
+    'replace_op_train_rate':0.25 # amount of batches from hard_pool selected to train
+}
 
 state_action_history = {}
 history_interval = 100
@@ -547,7 +598,7 @@ if __name__=='__main__':
     errHandler = logging.FileHandler(output_dir + os.sep + 'Error.log', mode='w')
     errHandler.setFormatter(logging.Formatter('%(message)s'))
     error_logger.addHandler(errHandler)
-    error_logger.info('#Batch_ID,Valid(Seen),Valid(Unseen),Test')
+    error_logger.info('#Batch_ID,Loss(Train),Loss(Valid),Valid(Seen),Valid(Unseen),Test')
 
     if research_parameters['adapt_structure']:
         cnn_structure_logger = logging.getLogger('cnn_structure_logger')
@@ -643,6 +694,7 @@ if __name__=='__main__':
         logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
         loss = calc_loss(logits,tf_labels)
         loss_vec = calc_loss_vector(logits,tf_labels)
+
         pred = predict_with_logits(logits)
         optimize = optimize_func(loss,global_step)
         inc_gstep = inc_global_step(global_step)
@@ -651,7 +703,10 @@ if __name__=='__main__':
         _ = session.run(init_op)
 
         # valid predict function
-        pred_valid = predict_with_dataset(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+        tf_valid_predictions = predict_with_logits(tf_valid_logits)
+        tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels)
+
         pred_test = predict_with_dataset(tf_test_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
 
         logger.info('Tensorflow functions defined')
@@ -665,6 +720,7 @@ if __name__=='__main__':
         rolling_ativation_means = {}
         for op in cnn_ops:
             if 'conv' in op:
+                logger.debug('\tDefining rolling activation mean for %s',op)
                 rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
 
         decay = 0.9
@@ -718,8 +774,10 @@ if __name__=='__main__':
 
             if np.isnan(l):
                 logger.critical('NaN detected: (batchID) %d (last Cost) %.3f',chunk_batch_id,train_losses[-1])
-            if np.random.random()<0.1:
+            if np.random.random()<research_parameters['hard_pool_acceptance_rate'] and \
+                            accuracy(predictions, batch_labels)<research_parameters['accuracy_threshold_hard_pool']:
                 hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hardness)
+
             assert not np.isnan(l)
 
             # rolling activation mean update
@@ -733,7 +791,7 @@ if __name__=='__main__':
             batch_valid_labels = train_labels[(chunk_batch_id+1)*batch_size:(chunk_batch_id+2)*batch_size, :]
 
             feed_valid_dict = {tf_valid_dataset:batch_valid_data, tf_valid_labels:batch_valid_labels}
-            next_valid_predictions = session.run(pred_valid,feed_dict=feed_valid_dict)
+            next_valid_loss, next_valid_predictions = session.run([tf_valid_loss,tf_valid_predictions],feed_dict=feed_valid_dict)
             next_valid_accuracy = accuracy(next_valid_predictions, batch_valid_labels)
             rolling_next_accuracy = (1-decay)*rolling_next_accuracy + decay*next_valid_accuracy
             # validation batch (Seen) random from last 50 batches
@@ -746,7 +804,7 @@ if __name__=='__main__':
             batch_valid_labels = train_labels[prev_valid_batch_id*batch_size:(prev_valid_batch_id+1)*batch_size, :]
 
             feed_valid_dict = {tf_valid_dataset:batch_valid_data, tf_valid_labels:batch_valid_labels}
-            prev_valid_predictions = session.run(pred_valid,feed_dict=feed_valid_dict)
+            prev_valid_loss, prev_valid_predictions = session.run([tf_valid_loss,tf_valid_predictions],feed_dict=feed_valid_dict)
             prev_valid_accuracy = accuracy(prev_valid_predictions, batch_valid_labels)
             rolling_prev_accuracy = (1-decay)*rolling_prev_accuracy + decay*prev_valid_accuracy
 
@@ -757,7 +815,9 @@ if __name__=='__main__':
                 logger.info('\tLearning rate: %.5f'%updated_lr)
                 logger.info('\tMinibatch Mean Loss: %.3f'%mean_train_loss)
                 logger.info('\tValidation Accuracy (Unseen): %.3f'%next_valid_accuracy)
+                logger.debug('\tValidation Loss (Unseen): %.3f'%next_valid_loss)
                 logger.info('\tValidation Accuracy (Seen): %.3f'%prev_valid_accuracy)
+                logger.debug('\tValidation Loss (Unseen): %.3f'%prev_valid_loss)
 
                 test_accuracies = []
                 for test_batch_id in range(test_size//batch_size):
@@ -781,7 +841,11 @@ if __name__=='__main__':
                 logger.info('='*60)
                 logger.info('')
 
-                error_logger.info('%d,%.3f,%.3f,%.3f',batch_id,prev_valid_accuracy,next_valid_accuracy,np.mean(test_accuracies))
+                error_logger.info('%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f',
+                                  batch_id,mean_train_loss,prev_valid_loss,next_valid_loss,
+                                  prev_valid_accuracy,next_valid_accuracy,
+                                  np.mean(test_accuracies)
+                                  )
 
                 if research_parameters['save_train_test_images']:
                     local_dir = 'saved_images'+str(batch_id)
@@ -852,8 +916,9 @@ if __name__=='__main__':
                         current_op = cnn_ops[si[0]]
                         if 'conv' in current_op and (ai[0]=='add' or ai[0]=='remove'):
 
-                            update_ops, changed_vars,chaged_ops = adapt_cnn_with_tf_ops(cnn_ops, cnn_hyperparameters,
-                                                                        si, ai, rolling_ativation_means[current_op])
+                            update_ops, changed_vars,chaged_ops = adapt_cnn_with_tf_ops(
+                                    cnn_ops, cnn_hyperparameters,si, ai, rolling_ativation_means[current_op]
+                            )
                             _ = session.run(update_ops)
 
                             changed_var_names = [v.name for v in changed_vars]
@@ -873,24 +938,51 @@ if __name__=='__main__':
                             loss_vec = calc_loss_vector(logits, tf_labels)
                             pred = predict_with_logits(logits)
                             optimize = optimize_func(loss, global_step)
-                            pred_valid = predict_with_dataset(tf_valid_dataset, cnn_ops,
-                                                              cnn_hyperparameters, weights, biases)
+
+                            tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+                            tf_valid_predictions = predict_with_logits(tf_valid_logits)
+                            tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels)
+
                             pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
                                                              cnn_hyperparameters, weights, biases)
 
-                            cnn_structure_logger.info(
-                                '%d%s',batch_id,get_cnn_string_from_ops(cnn_ops,cnn_hyperparameters)
+                        elif 'conv' in current_op and (ai[0]=='replace'):
+                            layer_activations = rolling_ativation_means[current_op]
+                            indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:ai[1]]).astype('int32')
+
+                            # currently no way to generally slice using gather
+                            # need to do a transoformation to do this.
+                            # change both weights and biases in the current op
+
+                            pool_loss = calc_loss(pool_logits,tf_pool_labels)
+                            tf_slice_optimize = optimize_with_tensor_slice_func(
+                                    pool_loss,indices_of_filters_replace,current_op,
+                                    weights[current_op],biases[current_op],cnn_hyperparameters
                             )
-                            logger.debug('')
+
+                            pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
+
+                            # this was done to increase performance and reduce overfitting
+                            # instead of optimzing with every single batch in the pool
+                            # we select few at random
+                            for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                                if np.random.random()<research_parameters['replace_op_train_rate']:
+                                    pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                                    pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                                    _ = session.run(tf_slice_optimize,feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
+
+                    cnn_structure_logger.info(
+                            '%d%s',batch_id,get_cnn_string_from_ops(cnn_ops,cnn_hyperparameters)
+                    )
 
                     # pooling takes place here
                     pool_logits,_ = get_logits_with_ops(tf_pool_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
                     pool_loss = calc_loss(pool_logits,tf_pool_labels)
                     optimize_with_variable,upd_lr = optimize_with_variable_func(pool_loss,global_step,[weights[op],biases[op]])
 
-                    pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
                     for si,ai in zip(current_states,current_actions):
                         if ai[0]=='finetune':
+                            pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
                             op = cnn_ops[si[0]]
                             logger.debug('Only tuning following variables...')
                             logger.debug('\t%s,%s',weights[op].name,str(weights[op]))
