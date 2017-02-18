@@ -308,8 +308,8 @@ class AdaCNNAdaptingQLearner(object):
 
         self.local_time_stamp = 0
         self.actions = [
-            ('add',16),('replace',16),('add',32),('replace',32),
-            ('add',64),('replace',64),('finetune',0),('do_nothing',0)
+            ('add',8),('replace',8),('add',16),('replace',16),
+            ('add',32),('replace',32),('finetune',0),('do_nothing',0)
         ]
 
     def restore_policy(self,**restore_data):

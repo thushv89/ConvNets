@@ -598,7 +598,7 @@ if __name__=='__main__':
     errHandler = logging.FileHandler(output_dir + os.sep + 'Error.log', mode='w')
     errHandler.setFormatter(logging.Formatter('%(message)s'))
     error_logger.addHandler(errHandler)
-    error_logger.info('#Batch_ID,Loss(Train),Loss(Valid),Valid(Seen),Valid(Unseen),Test')
+    error_logger.info('#Batch_ID,Loss(Train),Loss(Valid Seen),Loss(Valid Unseen),Valid(Seen),Valid(Unseen),Test')
 
     if research_parameters['adapt_structure']:
         cnn_structure_logger = logging.getLogger('cnn_structure_logger')
@@ -662,7 +662,7 @@ if __name__=='__main__':
 
         # Adapting Policy Learner
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
-                                                  discount_rate=0.99,
+                                                  discount_rate=0.9,
                                                   fit_interval = 5,
                                                   filter_upper_bound=1024,
                                                   net_depth=layer_count,
