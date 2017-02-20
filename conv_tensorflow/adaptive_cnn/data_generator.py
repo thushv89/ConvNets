@@ -14,7 +14,7 @@ from scipy.misc import imsave
 import logging
 from collections import Counter
 
-logging_level = logging.DEBUG
+logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 # Produce a covariance matrix
@@ -26,29 +26,34 @@ def kernel(a, b):
 # generate 'size' samples for a given distribution
 def sample_from_distribution(dist,size):
     global logger
-    dist_cumsum = np.cumsum(dist)
-    label_sequence = []
-    label_found = False
-    # take each element of the dist
-    # generate a random number and
-    # if number < cumulative sum of distribution at i th point
-    # add i as a label other wise don't
-    # if a label is not found we add the last label
-    logger.debug('Sampling %d from the given distribution of size(%s)',size,str(dist.shape))
-    for i in range(size):
-        r = np.random.random()
-        for j in range(dist.size):
-            if r<dist_cumsum[j]:
-                label_sequence.append(j)
-                label_found = True
-                break
-            label_found = False
-        if not label_found:
-            # if any label not found we add the last label
-            label_sequence.append(dist.size-1)
 
-    assert len(label_sequence)==size
-    np.random.shuffle(label_sequence)
+    def get_label_sequence(dist,size):
+        dist_cumsum = np.cumsum(dist)
+        label_sequence = []
+        label_found = False
+        # take each element of the dist
+        # generate a random number and
+        # if number < cumulative sum of distribution at i th point
+        # add i as a label other wise don't
+        # if a label is not found we add the last label
+        logger.debug('Sampling %d from the given distribution of size(%s)',size,str(dist.shape))
+        for i in range(size):
+            r = np.random.random()
+            for j in range(dist.size):
+                if r<dist_cumsum[j]:
+                    label_sequence.append(j)
+                    label_found = True
+                    break
+                label_found = False
+            if not label_found:
+                # if any label not found we add the last label
+                label_sequence.append(dist.size-1)
+
+        assert len(label_sequence)==size
+        np.random.shuffle(label_sequence)
+        return label_sequence
+
+    label_sequence = get_label_sequence(dist,size)
     cnt = Counter(label_sequence)
 
     euc_distance = 0
@@ -73,6 +78,14 @@ def sample_from_distribution(dist,size):
         logger.debug(norm_counts)
         logger.debug('='*80)
         logger.debug('')
+
+        logger.debug('Regenerating Label Sequence ...')
+        label_sequence = get_label_sequence(dist,size)
+        for li in range(dist.size):
+            if li in cnt:
+                euc_distance += ((cnt[li] * 1.0 / size) - dist[li]) ** 2
+            else:
+                euc_distance += dist[li] ** 2
 
     assert euc_distance<euc_threshold
     return label_sequence
@@ -147,7 +160,10 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
 def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_labels):
     chunk_count = int(elements/chunk_size)
 
-    x = np.linspace(0, 100,chunk_count).reshape(-1, 1)
+    # the upper bound of x defines the number of peaks
+    # smaller bound => less peaks
+    # larger bound => more peaks
+    x = np.linspace(0, 15, chunk_count).reshape(-1, 1)
     # 1e-6 * is for numerical stibility
     L = np.linalg.cholesky(kernel(x, x) + 1e-6 * np.eye(chunk_count))
 
@@ -158,7 +174,7 @@ def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_label
     f_prior = np.dot(L, np.random.normal(size=(chunk_count, num_labels)))
     # normalization
     f_prior -= f_prior.min()
-    f_prior **= math.ceil(math.sqrt(num_labels))
+    f_prior = f_prior ** math.ceil(math.sqrt(num_labels))
     f_prior /= np.sum(f_prior, axis=1).reshape(-1, 1)
 
     return f_prior
@@ -195,7 +211,7 @@ def sample_cifar_10_with_gauss(dataset_info,data_filename,f_prior,save_directory
         cnt = Counter(label_sequence)
         dist_str = ''
         for li in range(num_labels):
-            dist_str += str(cnt[li]) + ',' if li in cnt else str(0) + ','
+            dist_str += str(cnt[li]/len(label_sequence)) + ',' if li in cnt else str(0) + ','
         class_distribution_logger.info('%d,%s',i,dist_str)
 
 
@@ -462,7 +478,9 @@ if __name__ == '__main__':
         sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)
 
     #test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
-    ''' =============== Quick Test =====================
+    # =============== Quick Test =====================
+    '''sample_size = 1000
+    num_labels = 10
     x = np.linspace(0, 10, sample_size).reshape(-1, 1)
     #x = np.random.random(size=[1,sample_size])
 
@@ -478,11 +496,11 @@ if __name__ == '__main__':
     f_prior = f_prior ** math.ceil(math.sqrt(num_labels))
     f_prior /= np.sum(f_prior, axis=1).reshape(-1, 1)
 
-    x_axis = np.arange(sample_size*2)
+    x_axis = np.arange(sample_size)
 
     import matplotlib.pyplot as plt
     for i in range(num_labels):
-        plt.plot(x_axis,np.append(f_prior[:,i],f_prior[:,i],axis=0))
+        plt.plot(x_axis,f_prior[:,i])
 
     #print(np.sum(f_prior,axis=1).shape)
     #plt.plot(x_axis,np.sum(f_prior,axis=1))

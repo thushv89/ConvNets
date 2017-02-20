@@ -25,7 +25,7 @@ import getopt
 ##################################################################
 
 logger = None
-logging_level = logging.DEBUG
+logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
@@ -143,8 +143,7 @@ def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
 
     fin_x = get_final_x(cnn_ops,cnn_hyps)
 
-    #print('Unwrapping last convolution layer %s to %s hidden layer'%(shape,(batch_size,cnn_hyps['fulcon_out']['in'])))
-    print('fulcon in : %d'%cnn_hyps['fulcon_out']['in'])
+    logger.debug('Input size of fulcon_out : %d',cnn_hyps['fulcon_out']['in'])
     x = tf.reshape(x, [batch_size,cnn_hyps['fulcon_out']['in']])
 
     return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out'],act_means
@@ -197,21 +196,12 @@ def optimize_with_tensor_slice_func(loss, filter_indices_to_replace, op, w, b, c
     (grads_w,w),(grads_b,b) = grads_wb[0],grads_wb[1]
 
     transposed_shape = [cnn_hyps[op]['weights'][3],cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1], cnn_hyps[op]['weights'][2]]
-    normal_shape = [cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2], cnn_hyps[op]['weights'][3]]
 
-
-    #w.set_shape(normal_shape)
-    #b.set_shape([normal_shape[3]])
-    #grads_w.set_shape(normal_shape)
-    #grads_b.set_shape([normal_shape[3]])
     replace_amnt = filter_indices_to_replace.size
 
 
-    logger.debug('Shapes of gradients and variables')
-    #logger.debug('\tGradient (%s): %s',w.name,tf.shape(grads_w).eval())
-    #logger.debug('\tVariable (%s): %s',w.name,tf.shape(w).eval())
-    #logger.debug('\tGradient (%s): %s',b.name,tf.shape(grads_b).eval())
-    #logger.debug('\tVariable (%s): %s\n',b.name,tf.shape(b).eval())
+    logger.debug('Applying gradients for %s',op)
+    logger.debug('\tAnd filter IDs: %s',filter_indices_to_replace)
 
     mask_grads_w = tf.scatter_nd(
             filter_indices_to_replace.reshape(-1,1),
@@ -517,11 +507,18 @@ research_parameters = {
     'log_class_distribution':True,'log_distribution_every':128,
     'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.5, 'accuracy_threshold_hard_pool':50,
-    'replace_op_train_rate':0.25 # amount of batches from hard_pool selected to train
+    'replace_op_train_rate':0.25, # amount of batches from hard_pool selected to train
+
+}
+
+interval_parameters = {
+    'history_dump_interval':500,
+    'policy_interval' : 10, #number of batches to process for each policy iteration
+    'test_interval' : 25
 }
 
 state_action_history = {}
-history_interval = 100
+
 
 if __name__=='__main__':
     global weights,biases
@@ -629,8 +626,6 @@ if __name__=='__main__':
     logger.info('\tTrain Size: %d'%dataset_size)
     logger.info('='*80)
 
-    policy_interval = 10 #number of batches to process for each policy iteration
-
     cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
@@ -663,7 +658,7 @@ if __name__=='__main__':
         # Adapting Policy Learner
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
                                                   discount_rate=0.9,
-                                                  fit_interval = 5,
+                                                  fit_interval = 10,
                                                   filter_upper_bound=1024,
                                                   net_depth=layer_count,
                                                   upper_bound=10,
@@ -808,7 +803,7 @@ if __name__=='__main__':
             prev_valid_accuracy = accuracy(prev_valid_predictions, batch_valid_labels)
             rolling_prev_accuracy = (1-decay)*rolling_prev_accuracy + decay*prev_valid_accuracy
 
-            if batch_id%25==0:
+            if batch_id%interval_parameters['test_interval']==0:
                 mean_train_loss = np.mean(train_losses)
                 logger.info('='*60)
                 logger.info('\tBatch ID: %d'%batch_id)
@@ -881,11 +876,11 @@ if __name__=='__main__':
                 # calculate rolling mean of data distribution (amounts of different classes)
                 for li in range(num_labels):
                     rolling_data_distribution[li]=(1-decay)*rolling_data_distribution[li] + decay*float(cnt[li])/float(batch_size)
-                    mean_data_distribution[li] += float(cnt[li])/(float(batch_size)*float(policy_interval))
+                    mean_data_distribution[li] += float(cnt[li])/(float(batch_size)*float(interval_parameters['policy_interval']))
 
                 # ====================== Policy update and output ======================
 
-                if batch_id>0 and batch_id%policy_interval==0:
+                if batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
                     #Update and Get a new policy
                     if current_states is not None and current_actions is not None:
                         logger.info('Updating the Policy for')
@@ -1010,7 +1005,7 @@ if __name__=='__main__':
                         rolling_data_distribution[li]=0.0
                         mean_data_distribution[li]=0.0
 
-                if batch_id>0 and batch_id%history_interval==0:
+                if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
                     with open(output_dir + os.sep + 'state_actions_' + str(batch_id)+'.pickle', 'wb') as f:
                         pickle.dump(state_action_history, f, pickle.HIGHEST_PROTOCOL)
 

@@ -11,7 +11,8 @@ import sys
 from math import ceil
 from six.moves import cPickle as pickle
 import os
-from sklearn.linear_model import LinearRegression
+from sklearn.neural_network import MLPRegressor
+from collections import OrderedDict
 
 logging_level = logging.DEBUG
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
@@ -306,16 +307,28 @@ class AdaCNNAdaptingQLearner(object):
         console.setLevel(logging_level)
         self.rl_logger.addHandler(console)
 
+        self.q_length = 60
         self.local_time_stamp = 0
         self.actions = [
             ('add',8),('replace',8),('add',16),('replace',16),
             ('add',32),('replace',32),('finetune',0),('do_nothing',0)
         ]
 
+        self.past_mean_accuracy = 0
+
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
         self.q = restore_data['q']
         self.regressors = restore_data['lrs']
+
+    def clean_Q(self):
+        self.rl_logger.debug('Cleaning Q values (removing old ones)')
+        #self.rl_logger.debug('Current size: ')
+        for ai,state_q_dict in self.q.items():
+            if len(state_q_dict)>self.q_length:
+                for _ in range(len(state_q_dict)-self.q_length):
+                    self.q[ai].popitem(last=True)
+
 
     def output_trajectory(self,data):
         prev_actions = []
@@ -358,7 +371,7 @@ class AdaCNNAdaptingQLearner(object):
 
                 q_for_actions = []
                 for a in copy_actions:
-                    q_for_actions.append(self.regressors[a].predict(state))
+                    q_for_actions.append(self.regressors[a].predict(np.reshape(state,(1,-1))))
 
                 action_idx = np.asscalar(np.argmax(q_for_actions))
                 action = copy_actions[action_idx]
@@ -438,7 +451,9 @@ class AdaCNNAdaptingQLearner(object):
             prev_states.append(state)
 
         # decay epsilon
-        self.epsilon = max(self.epsilon*0.9,0.1)
+        if self.local_time_stamp>10:
+            self.epsilon = max(self.epsilon*0.9,0.1)
+
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('States')
         self.rl_logger.debug(prev_states)
@@ -455,20 +470,20 @@ class AdaCNNAdaptingQLearner(object):
         if self.local_time_stamp>0 or self.local_time_stamp%self.fit_interval==0:
             self.rl_logger.info('Training the Approximator...')
             for a in self.regressors.keys():
+                self.rl_logger.debug('Action: %s ', a)
+                self.rl_logger.debug('Total data: %d', len(self.q[a]))
                 x,y = zip(*self.q[a].items())
                 x,y = np.asarray(x).flatten().reshape(-1,len(data['states'][0])),np.asarray(y).reshape(-1,1)
                 assert x.shape[0]== len(self.q[a])
-
-                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[:3]),str(np.asarray(y)[:3]))
+                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[:3,:]),str(np.asarray(y)[:3]))
                 self.regressors[a].fit(x,y)
 
-        reward = 0.75*data['next_accuracy'] + 0.25*data['prev_accuracy']
+            self.clean_Q()
+
+        mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
+        reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
 
         for si,ai in zip(data['states'],data['actions']):
-
-            # we don't care about pooling opeartions
-            if si[2]==0:
-                continue
 
             sj = si
             if ai[0]=='add':
@@ -480,16 +495,22 @@ class AdaCNNAdaptingQLearner(object):
 
             # Q[a][(state,q)]
             if ai not in self.q:
-                self.regressors[ai]=LinearRegression()
+                self.regressors[ai]=MLPRegressor(activation='relu', alpha=1e-05, batch_size='auto',
+                                                  beta_1=0.9, beta_2=0.999,
+                                                  epsilon=1e-05, hidden_layer_sizes=(256, 128, 64, 1), learning_rate='constant',
+                                                  learning_rate_init=0.001, max_iter=50,
+                                                  random_state=1, shuffle=True,
+                                                  solver='adam')
 
-            self.q[ai]={si:reward}
+                self.q[ai]=OrderedDict([(si,reward)])
 
             if self.local_time_stamp>len(self.actions)*2+1:
-                self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(si) +\
-                            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(sj) for a in self.regressors.keys()]))
+                self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(np.reshape(si,(1,-1))) +\
+                            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(np.reshape(sj,(1,-1))) for a in self.regressors.keys()]))
             else:
                 self.q[ai][si]=reward
 
+        self.past_mean_accuracy = mean_accuracy
         self.local_time_stamp += 1
 
     def get_Q(self):
