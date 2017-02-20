@@ -310,8 +310,8 @@ class AdaCNNAdaptingQLearner(object):
         self.q_length = 60
         self.local_time_stamp = 0
         self.actions = [
-            ('add',8),('replace',8),('add',16),('replace',16),
-            ('add',32),('replace',32),('finetune',0),('do_nothing',0)
+            ('add',16),('replace',16),('remove',16),('add',32),('replace',32),('remove',32),
+            ('finetune',0),('do_nothing',0)
         ]
 
         self.past_mean_accuracy = 0
@@ -475,7 +475,7 @@ class AdaCNNAdaptingQLearner(object):
                 x,y = zip(*self.q[a].items())
                 x,y = np.asarray(x).flatten().reshape(-1,len(data['states'][0])),np.asarray(y).reshape(-1,1)
                 assert x.shape[0]== len(self.q[a])
-                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[:3,:]),str(np.asarray(y)[:3]))
+                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[-3:,:]),str(np.asarray(y)[-3:]))
                 self.regressors[a].fit(x,y)
 
             self.clean_Q()
@@ -484,6 +484,12 @@ class AdaCNNAdaptingQLearner(object):
         reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
 
         for si,ai in zip(data['states'],data['actions']):
+
+            # if si[2] (layer_depth) ==0 means a pooling operation
+            # we don't do changes to pooling ops
+            # so ignore them
+            if si[2]==0:
+                continue
 
             sj = si
             if ai[0]=='add':
@@ -514,4 +520,9 @@ class AdaCNNAdaptingQLearner(object):
         self.local_time_stamp += 1
 
     def get_Q(self):
+        q_pred_dict = {}
+        #for ai in self.q.keys():
+        #    for si in self.q[ai].keys():
+        #        if int(si[2]) not in q_pred_dict[ai]:
+        #    q_pred_dict[ai]=np
         return self.q
