@@ -123,7 +123,7 @@ class AdaCNNConstructionQLearner(object):
                 self.rl_logger.debug('Choosing action deterministic...')
                 copy_actions = list(self.actions)
                 np.random.shuffle(copy_actions)
-                action_idx = np.asscalar(np.argmax([self.q[state][a] for a in self.actions]))
+                action_idx = np.asscalar(np.argmax([self.q[state][a] for a in copy_actions]))
                 action = copy_actions[action_idx]
                 self.rl_logger.debug('\tChose: %s'%str(action))
 
@@ -371,8 +371,9 @@ class AdaCNNAdaptingQLearner(object):
 
                 q_for_actions = []
                 for a in copy_actions:
-                    q_for_actions.append(self.regressors[a].predict(np.reshape(state,(1,-1))))
-
+                    q_val = self.regressors[a].predict(np.reshape(state, (1, -1)))
+                    q_for_actions.append(q_val)
+                    self.rl_logger.debug('\tAction: %s Predicted Q: %.5f',a,q_val)
                 action_idx = np.asscalar(np.argmax(q_for_actions))
                 action = copy_actions[action_idx]
                 self.rl_logger.debug('\tChose: %s'%str(action))
@@ -391,6 +392,7 @@ class AdaCNNAdaptingQLearner(object):
 
                 while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
                     self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
+                    self.q[action][state]=-1.0
                     del q_for_actions[restricted_action_space.index(action)]
                     restricted_action_space.remove(action)
 
@@ -451,8 +453,8 @@ class AdaCNNAdaptingQLearner(object):
             prev_states.append(state)
 
         # decay epsilon
-        if self.local_time_stamp>10:
-            self.epsilon = max(self.epsilon*0.9,0.1)
+        if self.local_time_stamp>2*len(self.actions):
+            self.epsilon = max(self.epsilon*0.95,0.1)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('States')
@@ -467,7 +469,7 @@ class AdaCNNAdaptingQLearner(object):
         # data['next_accuracy'] => validation accuracy (unseen)
         # data['prev_accuracy'] => validation accuracy (seen)
 
-        if self.local_time_stamp>0 or self.local_time_stamp%self.fit_interval==0:
+        if self.local_time_stamp>0 and self.local_time_stamp%self.fit_interval==0:
             self.rl_logger.info('Training the Approximator...')
             for a in self.regressors.keys():
                 self.rl_logger.debug('Action: %s ', a)
@@ -475,7 +477,7 @@ class AdaCNNAdaptingQLearner(object):
                 x,y = zip(*self.q[a].items())
                 x,y = np.asarray(x).flatten().reshape(-1,len(data['states'][0])),np.asarray(y).reshape(-1,1)
                 assert x.shape[0]== len(self.q[a])
-                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[-3:,:]),str(np.asarray(y)[-3:]))
+                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[:3,:]),str(np.asarray(y)[:3]))
                 self.regressors[a].fit(x,y)
 
             self.clean_Q()
@@ -501,12 +503,11 @@ class AdaCNNAdaptingQLearner(object):
 
             # Q[a][(state,q)]
             if ai not in self.q:
-                self.regressors[ai]=MLPRegressor(activation='relu', alpha=1e-05, batch_size='auto',
-                                                  beta_1=0.9, beta_2=0.999,
-                                                  epsilon=1e-05, hidden_layer_sizes=(256, 128, 64, 1), learning_rate='constant',
-                                                  learning_rate_init=0.001, max_iter=50,
+                self.regressors[ai]=MLPRegressor(activation='tanh', alpha=1e-06, batch_size='auto',
+                                                  epsilon=1e-05, hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
+                                                  learning_rate_init=0.001, max_iter=100,
                                                   random_state=1, shuffle=True,
-                                                  solver='adam')
+                                                  solver='sgd')
 
                 self.q[ai]=OrderedDict([(si,reward)])
 

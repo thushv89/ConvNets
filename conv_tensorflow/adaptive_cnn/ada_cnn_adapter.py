@@ -621,10 +621,10 @@ weights,biases = None,None
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : False,
+    'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.5, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.25, # amount of batches from hard_pool selected to train
-    'optimizer':'Momentum','momentum':0.9
+    'optimizer':'SGD','momentum':0.9
 
 }
 
