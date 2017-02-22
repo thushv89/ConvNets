@@ -29,6 +29,7 @@ import load_data
 
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import gen_nn_ops
+
 @ops.RegisterGradient("MaxPoolWithArgmax")
 def _MaxPoolWithArgmaxGrad(op, grad, some_other_arg):
   return gen_nn_ops._max_pool_grad(op.inputs[0],

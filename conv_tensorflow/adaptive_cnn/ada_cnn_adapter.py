@@ -1092,13 +1092,13 @@ if __name__=='__main__':
                             '%d%s',batch_id,get_cnn_string_from_ops(cnn_ops,cnn_hyperparameters)
                     )
 
-                    # pooling takes place here
-                    pool_logits,_ = get_logits_with_ops(tf_pool_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
-                    pool_loss = calc_loss(pool_logits,tf_pool_labels)
-                    optimize_with_variable,upd_lr = optimize_with_variable_func(pool_loss,global_step,[op])
-
                     for si,ai in zip(current_states,current_actions):
                         if ai[0]=='finetune':
+                            # pooling takes place here
+                            pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights, biases)
+                            pool_loss = calc_loss(pool_logits, tf_pool_labels)
+                            optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op])
+
                             pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
                             op = cnn_ops[si[0]]
                             logger.debug('Only tuning following variables...')
