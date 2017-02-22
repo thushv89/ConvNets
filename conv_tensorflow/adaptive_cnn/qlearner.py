@@ -330,138 +330,131 @@ class AdaCNNAdaptingQLearner(object):
                     self.q[ai].popitem(last=True)
 
 
-    def output_trajectory(self,data):
-        prev_actions = []
-        prev_states = []
+    def output_action(self,data,ni):
+        action = None
 
         # data => ['distMSE']['filter_counts']
         # ['filter_counts'] => depth_index : filter_count
         # State => Layer_Depth (w.r.t net), dist_MSE, number of filters in layer
-        for ni in range(self.net_depth):
 
-            state = (ni,data['distMSE'],data['filter_counts'][ni])
-            self.rl_logger.info('Data for (Depth Index,DistMSE,Filter Count) %s'%str(state))
+        state = (ni,data['distMSE'],data['filter_counts'][ni])
+        self.rl_logger.info('Data for (Depth Index,DistMSE,Filter Count) %s'%str(state))
 
-            # pooling operation always action='do nothing'
-            if data['filter_counts'][ni]==0:
-                prev_states.append(state)
-                prev_actions.append(self.actions[-1])
-                continue
+        # pooling operation always action='do nothing'
+        if data['filter_counts'][ni]==0:
+            return state, self.actions[-1]
 
-            # we try actions evenly otherwise cannot have the approximator
-            if self.local_time_stamp<len(self.actions)*2:
-                self.rl_logger.debug('Choosing aciton evenly...')
-                action = self.actions[self.local_time_stamp%len(self.actions)]
+        # we try actions evenly otherwise cannot have the approximator
+        if self.local_time_stamp<len(self.actions)*2:
+            self.rl_logger.debug('Choosing aciton evenly...')
+            action = self.actions[self.local_time_stamp%len(self.actions)]
 
-                if action[0]=='add':
-                    next_filter_count =data['filter_counts'][ni]+action[1]
-                elif action[0]=='remove':
-                    next_filter_count =data['filter_counts'][ni]-action[1]
-                else:
-                    next_filter_count = data['filter_counts'][ni]
+            if action[0]=='add':
+                next_filter_count =data['filter_counts'][ni]+action[1]
+            elif action[0]=='remove':
+                next_filter_count =data['filter_counts'][ni]-action[1]
+            else:
+                next_filter_count = data['filter_counts'][ni]
 
-                if next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+            if next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+                action = self.actions[-1]
+
+        # deterministic selection (if epsilon is not 1 or q is not empty)
+        elif np.random.random()>self.epsilon:
+            self.rl_logger.debug('Choosing action deterministic...')
+            copy_actions = list(self.actions)
+            np.random.shuffle(copy_actions)
+
+            q_for_actions = []
+            for a in copy_actions:
+                q_val = self.regressors[a].predict(np.reshape(state, (1, -1)))
+                q_for_actions.append(q_val)
+                self.rl_logger.debug('\tAction: %s Predicted Q: %.5f',a,q_val)
+            action_idx = np.asscalar(np.argmax(q_for_actions))
+            action = copy_actions[action_idx]
+            self.rl_logger.debug('\tChose: %s'%str(action))
+
+            # ================= Look ahead 1 step (Validate Predicted Action) =========================
+            # make sure predicted action stride is not larger than resulting output.
+            # make sure predicted kernel size is not larger than the resulting output
+            # To avoid such scenarios we create a restricted action space if this happens and chose from that
+            restricted_action_space = list(copy_actions)
+            if action[0]=='add':
+                next_filter_count =data['filter_counts'][ni]+action[1]
+            elif action[0]=='remove':
+                next_filter_count =data['filter_counts'][ni]-action[1]
+            else:
+                next_filter_count = data['filter_counts'][ni]
+
+            while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+                self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
+                self.q[action][state]=-1.0
+                del q_for_actions[restricted_action_space.index(action)]
+                restricted_action_space.remove(action)
+
+                # if we do not have any more possible actions
+                if len(restricted_action_space)==0:
                     action = self.actions[-1]
 
-            # deterministic selection (if epsilon is not 1 or q is not empty)
-            elif np.random.random()>self.epsilon:
-                self.rl_logger.debug('Choosing action deterministic...')
-                copy_actions = list(self.actions)
-                np.random.shuffle(copy_actions)
-
-                q_for_actions = []
-                for a in copy_actions:
-                    q_val = self.regressors[a].predict(np.reshape(state, (1, -1)))
-                    q_for_actions.append(q_val)
-                    self.rl_logger.debug('\tAction: %s Predicted Q: %.5f',a,q_val)
                 action_idx = np.asscalar(np.argmax(q_for_actions))
-                action = copy_actions[action_idx]
-                self.rl_logger.debug('\tChose: %s'%str(action))
-
-                # ================= Look ahead 1 step (Validate Predicted Action) =========================
-                # make sure predicted action stride is not larger than resulting output.
-                # make sure predicted kernel size is not larger than the resulting output
-                # To avoid such scenarios we create a restricted action space if this happens and chose from that
-                restricted_action_space = list(copy_actions)
+                action = restricted_action_space[action_idx]
+                # update FILTER count
                 if action[0]=='add':
-                    next_filter_count =data['filter_counts'][ni]+action[1]
+                    next_filter_count = data['filter_counts'][ni]+action[1]
                 elif action[0]=='remove':
-                    next_filter_count =data['filter_counts'][ni]-action[1]
+                    next_filter_count = data['filter_counts'][ni]-action[1]
                 else:
                     next_filter_count = data['filter_counts'][ni]
 
-                while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
-                    self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
-                    self.q[action][state]=-1.0
-                    del q_for_actions[restricted_action_space.index(action)]
-                    restricted_action_space.remove(action)
+        # random selection
+        else:
+            self.rl_logger.debug('Choosing action stochastic...')
+            action = self.actions[np.random.randint(0,len(self.actions))]
+            self.rl_logger.debug('\tChose: %s'%str(action))
 
-                    # if we do not have any more possible actions
-                    if len(restricted_action_space)==0:
-                        action = self.actions[-1]
-                        break
-
-                    action_idx = np.asscalar(np.argmax(q_for_actions))
-                    action = restricted_action_space[action_idx]
-                    # update FILTER count
-                    if action[0]=='add':
-                        next_filter_count = data['filter_counts'][ni]+action[1]
-                    elif action[0]=='remove':
-                        next_filter_count = data['filter_counts'][ni]-action[1]
-                    else:
-                        next_filter_count = data['filter_counts'][ni]
-
-            # random selection
+            # ================= Look ahead 1 step (Validate Predicted Action) =========================
+            # make sure predicted action stride is not larger than resulting output.
+            # make sure predicted kernel size is not larger than the resulting output
+            # To avoid such scenarios we create a restricted action space if this happens
+            restricted_action_space = list(self.actions)
+            if action[0]=='add':
+                next_filter_count =data['filter_counts'][ni]+action[1]
+            elif action[0]=='remove':
+                next_filter_count =data['filter_counts'][ni]-action[1]
             else:
-                self.rl_logger.debug('Choosing action stochastic...')
-                action = self.actions[np.random.randint(0,len(self.actions))]
-                self.rl_logger.debug('\tChose: %s'%str(action))
+                next_filter_count = data['filter_counts'][ni]
+            while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+                self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
+                restricted_action_space.remove(action)
 
-                # ================= Look ahead 1 step (Validate Predicted Action) =========================
-                # make sure predicted action stride is not larger than resulting output.
-                # make sure predicted kernel size is not larger than the resulting output
-                # To avoid such scenarios we create a restricted action space if this happens
-                restricted_action_space = list(self.actions)
+                # if we do not have any more possible actions
+                if len(restricted_action_space)==0:
+                    action = self.actions[-1]
+                    break
+
+                action = restricted_action_space[np.random.randint(0,len(restricted_action_space))]
+
+                # update FILTER count
                 if action[0]=='add':
                     next_filter_count =data['filter_counts'][ni]+action[1]
                 elif action[0]=='remove':
                     next_filter_count =data['filter_counts'][ni]-action[1]
                 else:
                     next_filter_count = data['filter_counts'][ni]
-                while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
-                    self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
-                    restricted_action_space.remove(action)
 
-                    # if we do not have any more possible actions
-                    if len(restricted_action_space)==0:
-                        action = self.actions[-1]
-                        break
+        self.rl_logger.debug('Finally Selected action: %s'%str(action))
 
-                    action = restricted_action_space[np.random.randint(0,len(restricted_action_space))]
-
-                    # update FILTER count
-                    if action[0]=='add':
-                        next_filter_count =data['filter_counts'][ni]+action[1]
-                    elif action[0]=='remove':
-                        next_filter_count =data['filter_counts'][ni]-action[1]
-                    else:
-                        next_filter_count = data['filter_counts'][ni]
-
-            self.rl_logger.debug('Finally Selected action: %s'%str(action))
-
-            prev_actions.append(action)
-            prev_states.append(state)
 
         # decay epsilon
         if self.local_time_stamp>2*len(self.actions):
             self.epsilon = max(self.epsilon*0.95,0.1)
 
         self.rl_logger.debug('='*60)
-        self.rl_logger.debug('States')
-        self.rl_logger.debug(prev_states)
+        self.rl_logger.debug('State')
+        self.rl_logger.debug(state)
         self.rl_logger.debug('='*60)
 
-        return (prev_states,prev_actions)
+        return state,action
 
     def update_policy(self, data):
         # data['states'] => list of states
@@ -475,7 +468,7 @@ class AdaCNNAdaptingQLearner(object):
                 self.rl_logger.debug('Action: %s ', a)
                 self.rl_logger.debug('Total data: %d', len(self.q[a]))
                 x,y = zip(*self.q[a].items())
-                x,y = np.asarray(x).flatten().reshape(-1,len(data['states'][0])),np.asarray(y).reshape(-1,1)
+                x,y = np.asarray(x).flatten().reshape(-1,len(data['states'])),np.asarray(y).reshape(-1,1)
                 assert x.shape[0]== len(self.q[a])
                 self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[:3,:]),str(np.asarray(y)[:3]))
                 self.regressors[a].fit(x,y)
@@ -483,39 +476,41 @@ class AdaCNNAdaptingQLearner(object):
             self.clean_Q()
 
         mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
-        reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
+        #reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
 
-        for si,ai in zip(data['states'],data['actions']):
 
-            # if si[2] (layer_depth) ==0 means a pooling operation
-            # we don't do changes to pooling ops
-            # so ignore them
-            if si[2]==0:
-                continue
+        si,ai = data['states'],data['actions']
 
-            sj = si
-            if ai[0]=='add':
-                new_filter_size=si[2]+ai[1]
-                sj = (si[0],si[1],new_filter_size)
-            elif ai[0]=='remove':
-                new_filter_size=si[2]-ai[1]
-                sj = (si[0],si[1],new_filter_size)
+        # if si[2] (layer_depth) ==0 means a pooling operation in CNN
+        # we don't do changes to pooling ops
+        # so ignore them
+        if si[2]==0:
+            return
 
-            # Q[a][(state,q)]
-            if ai not in self.q:
-                self.regressors[ai]=MLPRegressor(activation='tanh', alpha=1e-06, batch_size='auto',
-                                                  epsilon=1e-05, hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
-                                                  learning_rate_init=0.001, max_iter=100,
-                                                  random_state=1, shuffle=True,
-                                                  solver='sgd')
+        sj = si
+        if ai[0]=='add':
+            new_filter_size=si[2]+ai[1]
+            sj = (si[0],si[1],new_filter_size)
+        elif ai[0]=='remove':
+            new_filter_size=si[2]-ai[1]
+            sj = (si[0],si[1],new_filter_size)
 
-                self.q[ai]=OrderedDict([(si,reward)])
+        reward = mean_accuracy - (0.2*new_filter_size/self.filter_upper_bound)
+        # Q[a][(state,q)]
+        if ai not in self.q:
+            self.regressors[ai]=MLPRegressor(activation='tanh', alpha=1e-06, batch_size='auto',
+                                              epsilon=1e-05, hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
+                                              learning_rate_init=0.001, max_iter=100,
+                                              random_state=1, shuffle=True,
+                                              solver='sgd')
 
-            if self.local_time_stamp>len(self.actions)*2+1:
-                self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(np.reshape(si,(1,-1))) +\
-                            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(np.reshape(sj,(1,-1))) for a in self.regressors.keys()]))
-            else:
-                self.q[ai][si]=reward
+            self.q[ai]=OrderedDict([(si,reward)])
+
+        if self.local_time_stamp>len(self.actions)*2+1:
+            self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(np.reshape(si,(1,-1))) +\
+                        self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(np.reshape(sj,(1,-1))) for a in self.regressors.keys()]))
+        else:
+            self.q[ai][si]=reward
 
         self.past_mean_accuracy = mean_accuracy
         self.local_time_stamp += 1

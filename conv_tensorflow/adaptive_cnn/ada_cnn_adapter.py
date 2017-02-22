@@ -840,8 +840,16 @@ if __name__=='__main__':
 
         decay = 0.9
         act_decay = 0.5
-        current_states,current_actions = None,None
+        current_state,current_action = None,None
+        prev_state,prev_action = None,None
         prev_valid_accuracy,next_valid_accuracy = 0,0
+
+        convolution_op_ids = []
+        for op_i, op in enumerate(cnn_ops):
+            if 'conv' in op:
+                convolution_op_ids.append(op_i)
+        current_q_learn_op_id = 0
+        logger.info('Convolutional Op IDs: %s',convolution_op_ids)
 
         logger.info('Starting Training Phase')
         #TODO: Think about decaying learning rate (should or shouldn't)
@@ -1003,17 +1011,18 @@ if __name__=='__main__':
 
                 if batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
                     #Update and Get a new policy
-                    if current_states is not None and current_actions is not None:
-                        logger.info('Updating the Policy for')
-                        logger.info('\tStates: %s',str(current_states))
-                        logger.info('\tActions: %s',str(current_actions))
+                    if prev_state is not None and prev_action is not None:
+                        logger.info('Updating the Policy for Layer %s',cnn_ops[prev_state[0]])
+                        logger.info('\tState: %s',str(current_state))
+                        logger.info('\tAction: %s',str(current_action))
                         logger.info('\tValid accuracy: %.2f (Unseen) %.2f (seen)',next_valid_accuracy,prev_valid_accuracy)
-                        adapter.update_policy({'states':current_states,'actions':current_actions,
+                        adapter.update_policy({'states':prev_state,'actions':prev_action,
                                                'next_accuracy':next_valid_accuracy,'prev_accuracy':prev_valid_accuracy})
+
+                    # update distance measure for class distirbution
                     distMSE = 0.0
                     for li in range(num_labels):
                         distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
-
 
                     filter_dict = {}
                     for op_i,op in enumerate(cnn_ops):
@@ -1022,97 +1031,102 @@ if __name__=='__main__':
                         elif 'pool' in op:
                             filter_dict[op_i]=0
 
-                    current_states,current_actions = adapter.output_trajectory({'distMSE':distMSE,'filter_counts':filter_dict})
+                    current_state,current_action = adapter.output_action({'distMSE':distMSE,'filter_counts':filter_dict},convolution_op_ids[current_q_learn_op_id])
+                    prev_state,prev_action = current_state,current_action
+                    current_q_learn_op_id = (current_q_learn_op_id + 1) % len(
+                        convolution_op_ids)  # we update each convolutional layer in a circular pattern
 
-                    for s,a in zip(current_states,current_actions):
-                        state_action_history[batch_id]={'states':current_states,'actions':current_actions}
+                    logger.info('Got state: %s, action: %s',str(current_state),str(current_action))
+
+
+                    state_action_history[batch_id]={'states':current_state,'actions':current_action}
 
                     # where all magic happens (adding and removing filters)
-                    for si,ai in zip(current_states,current_actions):
-                        current_op = cnn_ops[si[0]]
-                        if 'conv' in current_op and (ai[0]=='add' or ai[0]=='remove'):
+                    si,ai = current_state,current_action
+                    current_op = cnn_ops[si[0]]
+                    if 'conv' in current_op and (ai[0]=='add' or ai[0]=='remove'):
 
-                            update_ops, changed_vars,chaged_ops = adapt_cnn_with_tf_ops(
-                                    cnn_ops, cnn_hyperparameters,si, ai, rolling_ativation_means[current_op]
-                            )
-                            _ = session.run(update_ops)
-                            
-                            changed_var_names = [v.name for v in changed_vars]
+                        update_ops, changed_vars,chaged_ops = adapt_cnn_with_tf_ops(
+                                cnn_ops, cnn_hyperparameters,si, ai, rolling_ativation_means[current_op]
+                        )
+                        _ = session.run(update_ops)
 
-                            logger.debug('All variable names: %s', str([v.name for v in tf.all_variables()]))
-                            logger.debug('Changed var names: %s', str(changed_var_names))
-                            changed_var_values = session.run(changed_vars)
+                        changed_var_names = [v.name for v in changed_vars]
 
-                            logger.debug('Changed Variable Values')
-                            for n, v in zip(changed_var_names,changed_var_values):
-                                logger.debug('\t%s,%s',n,str(v.shape))
+                        logger.debug('All variable names: %s', str([v.name for v in tf.all_variables()]))
+                        logger.debug('Changed var names: %s', str(changed_var_names))
+                        changed_var_values = session.run(changed_vars)
 
-                            # redefine tensorflow ops as they changed sizes
-                            logger.info('Redefining Tensorflow ops (logits, loss, optimize,...')
-                            logits, act_means = get_logits_with_ops(tf_dataset, cnn_ops,
-                                                            cnn_hyperparameters, weights, biases)
-                            loss = calc_loss(logits, tf_labels)
-                            loss_vec = calc_loss_vector(logits, tf_labels)
-                            pred = predict_with_logits(logits)
-                            optimize,upd_lr = optimize_func(loss, global_step)
+                        logger.debug('Changed Variable Values')
+                        for n, v in zip(changed_var_names,changed_var_values):
+                            logger.debug('\t%s,%s',n,str(v.shape))
 
-                            tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
-                            tf_valid_predictions = predict_with_logits(tf_valid_logits)
-                            tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels)
+                        # redefine tensorflow ops as they changed sizes
+                        logger.info('Redefining Tensorflow ops (logits, loss, optimize,...')
+                        logits, act_means = get_logits_with_ops(tf_dataset, cnn_ops,
+                                                        cnn_hyperparameters, weights, biases)
+                        loss = calc_loss(logits, tf_labels)
+                        loss_vec = calc_loss_vector(logits, tf_labels)
+                        pred = predict_with_logits(logits)
+                        optimize,upd_lr = optimize_func(loss, global_step)
 
-                            pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
-                                                             cnn_hyperparameters, weights, biases)
+                        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+                        tf_valid_predictions = predict_with_logits(tf_valid_logits)
+                        tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels)
 
-                        elif 'conv' in current_op and (ai[0]=='replace'):
-                            layer_activations = rolling_ativation_means[current_op]
-                            indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:ai[1]]).astype('int32')
+                        pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
+                                                         cnn_hyperparameters, weights, biases)
 
-                            # currently no way to generally slice using gather
-                            # need to do a transoformation to do this.
-                            # change both weights and biases in the current op
+                    elif 'conv' in current_op and (ai[0]=='replace'):
+                        layer_activations = rolling_ativation_means[current_op]
+                        indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:ai[1]]).astype('int32')
 
-                            pool_loss = calc_loss(pool_logits,tf_pool_labels)
-                            tf_slice_optimize = optimize_with_tensor_slice_func(
-                                    pool_loss,indices_of_filters_replace,current_op,
-                                    weights[current_op],biases[current_op],cnn_hyperparameters
-                            )
+                        # currently no way to generally slice using gather
+                        # need to do a transoformation to do this.
+                        # change both weights and biases in the current op
+                        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
+                                                             biases)
+                        pool_loss = calc_loss(pool_logits,tf_pool_labels)
+                        tf_slice_optimize = optimize_with_tensor_slice_func(
+                                pool_loss,indices_of_filters_replace,current_op,
+                                weights[current_op],biases[current_op],cnn_hyperparameters
+                        )
 
-                            pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
+                        pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
 
-                            # this was done to increase performance and reduce overfitting
-                            # instead of optimizing with every single batch in the pool
-                            # we select few at random
-                            for pool_id in range((hard_pool.get_size()//batch_size)-1):
-                                if np.random.random()<research_parameters['replace_op_train_rate']:
-                                    pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
-                                    pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                                    _ = session.run(tf_slice_optimize,feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
-
-                    cnn_structure_logger.info(
-                            '%d%s',batch_id,get_cnn_string_from_ops(cnn_ops,cnn_hyperparameters)
-                    )
-
-                    for si,ai in zip(current_states,current_actions):
-                        if ai[0]=='finetune':
-                            # pooling takes place here
-                            pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights, biases)
-                            pool_loss = calc_loss(pool_logits, tf_pool_labels)
-                            optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op])
-
-                            pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
-                            op = cnn_ops[si[0]]
-                            logger.debug('Only tuning following variables...')
-                            logger.debug('\t%s,%s',weights[op].name,str(weights[op]))
-                            logger.debug('\t%s,%s',biases[op].name,str(biases[op]))
-                            assert weights[op].name in [v.name for v in tf.trainable_variables()]
-                            assert biases[op].name in [v.name for v in tf.trainable_variables()]
-
-                            for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                        # this was done to increase performance and reduce overfitting
+                        # instead of optimizing with every single batch in the pool
+                        # we select few at random
+                        for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                            if np.random.random()<research_parameters['replace_op_train_rate']:
                                 pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                                 pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                                pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
-                                if research_parameters['optimizer']=='SGD':
-                                    _, _, _ = session.run([pool_logits,pool_loss,optimize_with_variable],feed_dict=pool_feed_dict)
+                                _ = session.run(tf_slice_optimize,feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
+
+                    elif 'conv' in current_op and ai[0]=='finetune':
+                        # pooling takes place here
+                        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights, biases)
+                        pool_loss = calc_loss(pool_logits, tf_pool_labels)
+                        optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op])
+
+                        pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
+                        op = cnn_ops[si[0]]
+                        logger.debug('Only tuning following variables...')
+                        logger.debug('\t%s,%s',weights[op].name,str(weights[op]))
+                        logger.debug('\t%s,%s',biases[op].name,str(biases[op]))
+                        assert weights[op].name in [v.name for v in tf.trainable_variables()]
+                        assert biases[op].name in [v.name for v in tf.trainable_variables()]
+
+                        for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+                            if research_parameters['optimizer']=='SGD':
+                                _, _, _ = session.run([pool_logits,pool_loss,optimize_with_variable],feed_dict=pool_feed_dict)
+
+                    cnn_structure_logger.info(
+                        '%d%s', batch_id, get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
+                    )
 
                     #reset rolling activation means because network changed
                     rolling_ativation_means = {}
