@@ -311,9 +311,9 @@ class AdaCNNAdaptingQLearner(object):
         self.local_time_stamp = 0
         self.actions = [
             ('add',16),('replace',16),('remove',16),('add',32),('replace',32),('remove',32),
-            ('finetune',0),('do_nothing',0)
+            ('finetune', 0),('do_nothing',0)
         ]
-
+        #
         self.past_mean_accuracy = 0
 
     def restore_policy(self,**restore_data):
@@ -469,9 +469,13 @@ class AdaCNNAdaptingQLearner(object):
                 self.rl_logger.debug('Total data: %d', len(self.q[a]))
                 x,y = zip(*self.q[a].items())
                 x,y = np.asarray(x).flatten().reshape(-1,len(data['states'])),np.asarray(y).reshape(-1,1)
+                # since the state contain layer id, let us make the layer id one-hot encoded
+                ohe_x = np.zeros((x.shape[0],self.net_depth),dtype=np.float32)
+                ohe_x[np.arange(x.shape[0]),x[:,0].astype(np.int32)] = 1.0
+                ohe_x = np.append(ohe_x,x[:,1:],axis=1)
                 assert x.shape[0]== len(self.q[a])
-                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(x)[:3,:]),str(np.asarray(y)[:3]))
-                self.regressors[a].fit(x,y)
+                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(ohe_x)[:3,:]),str(np.asarray(y)[:3]))
+                self.regressors[a].fit(ohe_x,y)
 
             self.clean_Q()
 
@@ -491,14 +495,17 @@ class AdaCNNAdaptingQLearner(object):
         if ai[0]=='add':
             new_filter_size=si[2]+ai[1]
             sj = (si[0],si[1],new_filter_size)
+            #reward = mean_accuracy * (mean_accuracy - self.past_mean_accuracy) - (0.1*ai[1] / self.filter_upper_bound)
         elif ai[0]=='remove':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
+            #reward = mean_accuracy * (mean_accuracy - self.past_mean_accuracy) + (0.1*ai[1] / self.filter_upper_bound)
         else:
             new_filter_size = si[2]
             sj = (si[0], si[1], new_filter_size)
+            #reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
 
-        reward = mean_accuracy - (0.2*new_filter_size/self.filter_upper_bound)
+        reward = mean_accuracy * (mean_accuracy - self.past_mean_accuracy)
         # Q[a][(state,q)]
         if ai not in self.q:
             self.regressors[ai]=MLPRegressor(activation='tanh', alpha=1e-06, batch_size='auto',

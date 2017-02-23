@@ -74,7 +74,7 @@ def get_final_x(cnn_ops,cnn_hyps):
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
     weights,biases = {},{}
 
-    print('Initializing the iConvNet (conv_global,pool_global,classifier)...')
+    logger.info('Initializing the iConvNet (conv_global,pool_global,classifier)...\n')
     for op in cnn_ops:
         if 'conv' in op:
             weights[op] = tf.Variable(tf.truncated_normal(
@@ -105,12 +105,11 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
 
 
 def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
-    logger.debug('Current set of operations: %s'%cnn_ops)
+    logger.debug('Defining the logit calculation ...')
+    logger.debug('\tCurrent set of operations: %s'%cnn_ops)
     act_means = {}
     x = dataset
-    logger.debug('Received data for X(%s)...'%x.get_shape().as_list())
-
-    logger.debug('Adjusting the logit calculation ...')
+    logger.debug('\tReceived data for X(%s)...'%x.get_shape().as_list())
 
     #need to calculate the output according to the layers we have
     for op in cnn_ops:
@@ -164,19 +163,15 @@ def calc_loss_vector(logits,labels):
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
 
 
-def optimize_func(loss,global_step):
+def optimize_func(loss,global_step,start_lr=start_lr):
     global research_parameters
     global weights,biases
 
     optimize_ops = []
     # Optimizer.
     if research_parameters['optimizer'] == 'SGD':
-        if decay_learning_rate:
-            learning_rate = tf.train.exponential_decay(start_lr, global_step,decay_steps=1,decay_rate=0.95)
-        else:
-            learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
-
-        optimize_ops.append(tf.train.GradientDescentOptimizer(learning_rate=start_lr).minimize(loss))
+        learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
+        optimize_ops.append(tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss))
 
     elif research_parameters['optimizer'] == 'Momentum':
         # custom momentum optimizing
@@ -248,7 +243,6 @@ def optimize_with_tensor_slice_func(loss, filter_indices_to_replace, op, w, b, c
     transposed_shape = [cnn_hyps[op]['weights'][3],cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1], cnn_hyps[op]['weights'][2]]
 
     replace_amnt = filter_indices_to_replace.size
-
 
     logger.debug('Applying gradients for %s',op)
     logger.debug('\tAnd filter IDs: %s',filter_indices_to_replace)
@@ -410,11 +404,11 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
     # add depth
     elif ai[0]=='add':
         amount_to_add = ai[1]
-        logger.debug('Adding %d filter for %s action recieved',amount_to_add,op)
+        logger.debug('\tAdding %d filter for %s action recieved',amount_to_add,op)
         assert 'conv' in op
 
         # change both weights and biase in the current op
-        logger.debug('Concatting %s(old) and %s(new)',str(tf.shape(weights[op]).eval()),
+        logger.debug('\tConcatting %s(old) and %s(new)',str(tf.shape(weights[op]).eval()),
                      str([cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2],amount_to_add]))
         tf_new_weights[op] = tf.concat(3,[weights[op],
                                             tf.truncated_normal([cnn_hyps[op]['weights'][0],
@@ -430,8 +424,8 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
                                                   ])
             bias_velocity_vectors[op] = tf.concat(0,[bias_velocity_vectors[op],tf.zeros([amount_to_add],dtype=tf.float32)])
 
-        logger.debug('Summary of changes to weights of %s ...',op)
-        logger.debug('\tNew Weights: %s',str(tf.shape(tf_new_weights[op]).eval()))
+        logger.debug('\tSummary of changes to weights of %s ...',op)
+        logger.debug('\t\tNew Weights: %s',str(tf.shape(tf_new_weights[op]).eval()))
 
         update_ops.append(tf.assign(weights[op], tf_new_weights[op], validate_shape=False))
         update_ops.append(tf.assign(biases[op], tf_new_biases[op], validate_shape = False))
@@ -451,9 +445,9 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             # change FC layer
             tf_new_weights['fulcon_out'] = tf.concat(0,[weights['fulcon_out'],tf.truncated_normal([amount_to_add,num_labels],stddev=0.01)])
 
-            logger.debug('Summary of changes to weights of fulcon_out')
-            logger.debug('\tCurrent Weights: %s',str(tf.shape(weights['fulcon_out']).eval()))
-            logger.debug('\tNew Weights: %s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
+            logger.debug('\tSummary of changes to weights of fulcon_out')
+            logger.debug('\t\tCurrent Weights: %s',str(tf.shape(weights['fulcon_out']).eval()))
+            logger.debug('\t\tNew Weights: %s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
 
             # updating velocity vectors
             if research_parameters['optimizer'] == 'Momentum':
@@ -465,7 +459,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             changed_ops.append('fulcon_out')
 
             cnn_hyps['fulcon_out']['in']+=amount_to_add
-            logger.debug('%s in: %d','fulcon_out',cnn_hyperparameters['fulcon_out']['in'])
+            logger.debug('\t%s in: %d','fulcon_out',cnn_hyperparameters['fulcon_out']['in'])
 
         else:
 
@@ -477,9 +471,9 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             tf_new_weights[next_conv_op]=tf.concat(2,[weights[next_conv_op],
                                           tf.truncated_normal([cnn_hyps[next_conv_op]['weights'][0],cnn_hyps[next_conv_op]['weights'][1],
                                                                amount_to_add,cnn_hyps[next_conv_op]['weights'][3]],stddev=0.01)])
-            logger.debug('Summary of changes to weights of %s',next_conv_op)
-            logger.debug('\tCurrent Weights: %s',str(tf.shape(weights[next_conv_op]).eval()))
-            logger.debug('\tNew Weights: %s',str(tf.shape(tf_new_weights[next_conv_op]).eval()))
+            logger.debug('\tSummary of changes to weights of %s',next_conv_op)
+            logger.debug('\t\tCurrent Weights: %s',str(tf.shape(weights[next_conv_op]).eval()))
+            logger.debug('\t\tNew Weights: %s',str(tf.shape(tf_new_weights[next_conv_op]).eval()))
 
             if research_parameters['optimizer']=='Momentum':
                 weight_velocity_vectors[next_conv_op] = tf.concat(2,[
@@ -511,19 +505,33 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             # calculate cosine distance for F filters (FxF matrix)
             # take one side of diagonal, find (f1,f2) pairs with least distance
             # select indices amnt f2 indices
+            logger.debug('\tRemoving %d filters for op %s',amount_to_rmv,op)
             reshaped_weight = tf.transpose(weights[op],[3,0,1,2])
             reshaped_weight = tf.reshape(weights[op],[cnn_hyps[op]['weights'][3],
                                                       cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1]*cnn_hyps[op]['weights'][2]]
                                          )
-            cos_sim_weights = tf.matmul(reshaped_weight,tf.transpose(reshaped_weight))/\
-                              tf.matmul(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True),
-                                        tf.transpose(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)))
-            flattened_cos_sim = tf.reshape(tf.matrix_band_part(cos_sim_weights, 0, -1),shape=[-1])
-            high_sim_indices = tf.nn.top_k(flattened_cos_sim,k=amount_to_rmv)[1]
-            indices_to_remove = tf.mod(high_sim_indices,cnn_hyps[op]['weights'][3])
-            np_indices_to_remove = indices_to_remove.eval()
-            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - set(np_indices_to_remove))
+            cos_sim_weights = tf.matmul(reshaped_weight,tf.transpose(reshaped_weight))/ tf.matmul(
+                tf.sqrt(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)),
+                tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)))
+            )
+            logger.debug('\t\tSize of cos sim: %s', tf.shape(cos_sim_weights).eval())
+            upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1)
+            zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim, tf.zeros(shape=[cnn_hyps[op]['weights'][3]]))
+            flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim,shape=[-1])
+            logger.debug('\t\tSize of flattened cos sim: %s', tf.shape(flattened_cos_sim).eval())
+            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim,k=2*amount_to_rmv)
+            logger.debug('\t\tSize of highest sim indices: %s',tf.shape(high_sim_indices).eval())
+            indices_to_remove = tf.unique(tf.mod(high_sim_indices,cnn_hyps[op]['weights'][3]))[0]
+            logger.debug('\t\tSimilarity summary')
+            logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
+            logger.debug('\t\t\tIndices: %s', indices_to_remove.eval()[:10])
+            # we get 2 times amount to remove top entries to avoid duplicates of indices
+            np_indices_to_remove = indices_to_remove.eval()[:amount_to_rmv]
+            assert not np.any(np_indices_to_remove)>=cnn_hyps[op]['weights'][3]
 
+            logger.debug('\t\tSize of indices to remove: %s/%d', np_indices_to_remove.shape,cnn_hyps[op]['weights'][3])
+            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - set(np_indices_to_remove))
+            logger.debug('\t\tSize of indices to keep: %s/%d', len(indices_of_filters_keep),cnn_hyps[op]['weights'][3])
 
         # currently no way to generally slice using gather
         # need to do a transoformation to do this.
@@ -532,7 +540,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         tf_new_weights[op]=tf.transpose(weights[op],[3,0,1,2])
         tf_new_weights[op] = tf.gather_nd(tf_new_weights[op],[[idx] for idx in indices_of_filters_keep])
         tf_new_weights[op] = tf.transpose(tf_new_weights[op],[1,2,3,0])
-        logger.debug('Size after feature map reduction: %s,%s',op,tf.shape(tf_new_weights[op]).eval())
+        logger.debug('\tSize after feature map reduction: %s,%s',op,tf.shape(tf_new_weights[op]).eval())
 
         update_ops.append(tf.assign(weights[op],tf_new_weights[op],validate_shape=False))
 
@@ -568,7 +576,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             changed_ops.append('fulcon_out')
 
             cnn_hyps['fulcon_out']['in']-=amount_to_rmv
-            logger.debug('Size after feature map reduction: fulcon_out,%s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
+            logger.debug('\tSize after feature map reduction: fulcon_out,%s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
 
         else:
             # change in hyperparameter of next conv op
@@ -581,7 +589,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             tf_new_weights[next_conv_op] = tf.gather_nd(tf_new_weights[next_conv_op],[[idx] for idx in indices_of_filters_keep])
             tf_new_weights[next_conv_op] = tf.transpose(tf_new_weights[next_conv_op],[1,2,0,3])
 
-            logger.debug('Size after feature map reduction: %s,%s',next_conv_op,str(tf.shape(tf_new_weights[next_conv_op]).eval()))
+            logger.debug('\tSize after feature map reduction: %s,%s',next_conv_op,str(tf.shape(tf_new_weights[next_conv_op]).eval()))
             update_ops.append(tf.assign(weights[next_conv_op],tf_new_weights[next_conv_op],validate_shape=False))
 
             if research_parameters['optimizer']=='Momentum':
@@ -640,7 +648,7 @@ research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
     'adapt_structure' : True,
-    'hard_pool_acceptance_rate':0.5, 'accuracy_threshold_hard_pool':50,
+    'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.25, # amount of batches from hard_pool selected to train
     'optimizer':'SGD','momentum':0.9,
     'remove_filters_by':'Distance'
@@ -820,7 +828,8 @@ if __name__=='__main__':
         tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TestDataset')
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TestLabels')
 
-        init_velocity_vectors(cnn_ops,cnn_hyperparameters)
+        if research_parameters['optimizer']=='Momentum':
+            init_velocity_vectors(cnn_ops,cnn_hyperparameters)
 
         init_op = tf.global_variables_initializer()
         _ = session.run(init_op)
@@ -830,7 +839,7 @@ if __name__=='__main__':
         loss_vec = calc_loss_vector(logits,tf_labels)
 
         pred = predict_with_logits(logits)
-        optimize,upd_lr = optimize_func(loss,global_step)
+        optimize,upd_lr = optimize_func(loss,global_step,start_lr*0.01)
         inc_gstep = inc_global_step(global_step)
 
         init_op = tf.global_variables_initializer()
@@ -844,7 +853,7 @@ if __name__=='__main__':
         pred_test = predict_with_dataset(tf_test_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
 
         logger.info('Tensorflow functions defined')
-        logger.info('Variables initialized')
+        logger.info('Variables initialized...')
 
         train_losses = []
         mean_train_loss = 0
@@ -893,7 +902,7 @@ if __name__=='__main__':
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
 
             _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
-                    [logits,act_means,loss,loss_vec,optimize,upd_lr, pred], feed_dict=feed_dict
+                    [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
             )
 
             # this snippet logs the normalized class distribution every specified interval
@@ -917,9 +926,8 @@ if __name__=='__main__':
 
             if np.isnan(l):
                 logger.critical('NaN detected: (batchID) %d (last Cost) %.3f',chunk_batch_id,train_losses[-1])
-            if np.random.random()<research_parameters['hard_pool_acceptance_rate'] and \
-                            accuracy(predictions, batch_labels)<research_parameters['accuracy_threshold_hard_pool']:
-                hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,hardness)
+            if np.random.random()<research_parameters['hard_pool_acceptance_rate']:
+                hard_pool.add_hard_examples(batch_data,batch_labels,l_vec,1.0-(accuracy(predictions, batch_labels)/100.0))
 
             assert not np.isnan(l)
 
@@ -974,11 +982,10 @@ if __name__=='__main__':
                         logger.debug('='*80)
                         logger.debug('Actual Test Labels %d',test_batch_id)
                         logger.debug(np.argmax(batch_test_labels, axis=1).flatten()[:5])
-                        logger.debug('='*80)
                         logger.debug('Predicted Test Labels %d',test_batch_id)
                         logger.debug(np.argmax(test_predictions,axis=1).flatten()[:5])
-                        logger.debug('='*80)
                         logger.debug('Test: %d, %.3f',test_batch_id,accuracy(test_predictions, batch_test_labels))
+                        logger.debug('=' * 80)
 
                 logger.info('\tTest Accuracy: %.3f'%np.mean(test_accuracies))
                 logger.info('='*60)
@@ -1080,14 +1087,41 @@ if __name__=='__main__':
                         for n, v in zip(changed_var_names,changed_var_values):
                             logger.debug('\t%s,%s',n,str(v.shape))
 
+                        # optimize the newly added fiterls only
+                        if ai[0]=='add':
+
+                            # currently no way to generally slice using gather
+                            # need to do a transoformation to do this.
+                            # change both weights and biases in the current op
+                            pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
+                                                                 biases)
+                            pool_loss = calc_loss(pool_logits, tf_pool_labels)
+                            tf_slice_optimize = optimize_with_tensor_slice_func(
+                                pool_loss, np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
+                                current_op, weights[current_op], biases[current_op], cnn_hyperparameters
+                            )
+
+                            pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
+                                                        hard_pool.get_pool_data()['pool_labels']
+
+                            # this was done to increase performance and reduce overfitting
+                            # instead of optimizing with every single batch in the pool
+                            # we select few at random
+                            for pool_id in range((hard_pool.get_size() // batch_size) - 1):
+                                if np.random.random() < research_parameters['replace_op_train_rate']:
+                                    pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
+                                    pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
+                                    _ = session.run(tf_slice_optimize, feed_dict={tf_pool_dataset: pbatch_data,
+                                                                                  tf_pool_labels: pbatch_labels})
+
                         # redefine tensorflow ops as they changed sizes
-                        logger.info('Redefining Tensorflow ops (logits, loss, optimize,...')
+                        logger.info('Redefining Tensorflow ops (logits, loss, optimize,...)')
                         logits, act_means = get_logits_with_ops(tf_dataset, cnn_ops,
                                                         cnn_hyperparameters, weights, biases)
                         loss = calc_loss(logits, tf_labels)
                         loss_vec = calc_loss_vector(logits, tf_labels)
                         pred = predict_with_logits(logits)
-                        optimize,upd_lr = optimize_func(loss, global_step)
+                        optimize,upd_lr = optimize_func(loss, global_step, start_lr*0.01)
 
                         tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
                         tf_valid_predictions = predict_with_logits(tf_valid_logits)
@@ -1114,12 +1148,20 @@ if __name__=='__main__':
                                                                        cnn_hyperparameters[current_op]['weights'][2]])
                             logger.debug('\tTransposed weights: %s', tf.shape(reshaped_weight).eval())
                             cos_sim_weights = tf.matmul(reshaped_weight, tf.transpose(reshaped_weight)) / tf.matmul(
-                                tf.reduce_sum(reshaped_weight ** 2, axis=1,keep_dims=True),
-                                tf.transpose(tf.reduce_sum(reshaped_weight ** 2, axis=1,keep_dims=True)))
+                                tf.sqrt(tf.reduce_sum(reshaped_weight ** 2, axis=1,keep_dims=True)),
+                                tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight ** 2, axis=1,keep_dims=True)))
+                            )
                             logger.debug('\tCosine similarity matrix of %s', tf.shape(cos_sim_weights).eval())
-                            flattened_cos_sim = tf.reshape(tf.matrix_band_part(cos_sim_weights, 0, -1), shape=[-1])
+                            upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1)
+                            zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim,
+                                                                          tf.zeros(shape=[cnn_hyperparameters[current_op]['weights'][3]]))
+                            flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim, shape=[-1])
+
                             logger.debug('\t(Flattened) Cosine similarity matrix of %s', tf.shape(flattened_cos_sim).eval())
-                            high_sim_indices = tf.nn.top_k(flattened_cos_sim, k=ai[1])[1]
+                            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim, k=ai[1])
+                            logger.debug('\t Similarity summary')
+                            logger.debug('\t\tValues: %s', high_sim_values.eval()[:10])
+                            logger.debug('\t\tIndices: %s', high_sim_indices.eval()[:10])
                             indices_to_replace = tf.mod(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
                             indices_of_filters_replace = indices_to_replace.eval()
                             logger.debug('\tFound %s ... highest indices of similarity',indices_of_filters_replace[:5])
