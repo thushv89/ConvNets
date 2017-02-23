@@ -367,7 +367,11 @@ class AdaCNNAdaptingQLearner(object):
 
             q_for_actions = []
             for a in copy_actions:
-                q_val = self.regressors[a].predict(np.reshape(state, (1, -1)))
+                ohe_state = np.zeros((1, self.net_depth + len(state) - 1))
+                ohe_state[0, -1] = state[2]
+                ohe_state[0, -2] = state[1]
+                ohe_state[0, int(state[0])] = 1.0
+                q_val = self.regressors[a].predict(ohe_state)
                 q_for_actions.append(q_val)
                 self.rl_logger.debug('\tAction: %s Predicted Q: %.5f',a,q_val)
             action_idx = np.asscalar(np.argmax(q_for_actions))
@@ -517,8 +521,18 @@ class AdaCNNAdaptingQLearner(object):
             self.q[ai]=OrderedDict([(si,reward)])
 
         if self.local_time_stamp>len(self.actions)*2+1:
-            self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(np.reshape(si,(1,-1))) +\
-                        self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(np.reshape(sj,(1,-1))) for a in self.regressors.keys()]))
+            ohe_si = np.zeros((1,self.net_depth+len(si)-1))
+            ohe_si[0,-1] = si[2]
+            ohe_si[0,-2] = si[1]
+            ohe_si[0,int(si[0])] = 1.0
+
+            ohe_sj = np.zeros((1, self.net_depth + len(sj) - 1))
+            ohe_sj[0, -1] = sj[2]
+            ohe_sj[0, -2] = sj[1]
+            ohe_sj[0, int(sj[0])] = 1.0
+
+            self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
+                        self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
         else:
             self.q[ai][si]=reward
 
