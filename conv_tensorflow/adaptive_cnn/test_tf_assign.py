@@ -21,16 +21,6 @@ if __name__ == '__main__':
     session = tf.InteractiveSession(graph=graph,
                         config=tf.ConfigProto(allow_soft_placement=True))
     _ = tf.device('/gpu:0')
-    v1['first'] = tf.Variable([0],name='v1')
-    v1['second'] = tf.Variable([1],name='v2')
-    tf.initialize_all_variables().run()
-    for _ in range(5):
-        update_op = update_v()
-        _ = session.run(update_op)
-
-    v_val = session.run(v1)
-    print(v1['first'].get_shape().as_list())
-    print(v1['second'].get_shape().as_list())
-    print(v_val)
-
+    b  = tf.nn.top_k(tf.reshape(tf.random_normal([3,3]),shape=[-1]))
+    print(session.run(b))
     session.close()

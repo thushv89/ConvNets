@@ -494,6 +494,9 @@ class AdaCNNAdaptingQLearner(object):
         elif ai[0]=='remove':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
+        else:
+            new_filter_size = si[2]
+            sj = (si[0], si[1], new_filter_size)
 
         reward = mean_accuracy - (0.2*new_filter_size/self.filter_upper_bound)
         # Q[a][(state,q)]

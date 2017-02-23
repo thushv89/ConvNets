@@ -25,7 +25,7 @@ import getopt
 ##################################################################
 
 logger = None
-logging_level = logging.INFO
+logging_level = logging.DEBUG
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
@@ -505,7 +505,25 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         amount_to_rmv = ai[1]
         assert 'conv' in op
 
-        indices_of_filters_keep = (np.argsort(layer_activations).flatten()[amount_to_rmv:]).astype('int32')
+        if research_parameters['remove_filters_by']=='Activation':
+            indices_of_filters_keep = (np.argsort(layer_activations).flatten()[amount_to_rmv:]).astype('int32')
+        elif research_parameters['remove_filters_by']=='Distance':
+            # calculate cosine distance for F filters (FxF matrix)
+            # take one side of diagonal, find (f1,f2) pairs with least distance
+            # select indices amnt f2 indices
+            reshaped_weight = tf.transpose(weights[op],[3,0,1,2])
+            reshaped_weight = tf.reshape(weights[op],[cnn_hyps[op]['weights'][3],
+                                                      cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1]*cnn_hyps[op]['weights'][2]]
+                                         )
+            cos_sim_weights = tf.matmul(reshaped_weight,tf.transpose(reshaped_weight))/\
+                              tf.matmul(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True),
+                                        tf.transpose(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)))
+            flattened_cos_sim = tf.reshape(tf.matrix_band_part(cos_sim_weights, 0, -1),shape=[-1])
+            high_sim_indices = tf.nn.top_k(flattened_cos_sim,k=amount_to_rmv)[1]
+            indices_to_remove = tf.mod(high_sim_indices,cnn_hyps[op]['weights'][3])
+            np_indices_to_remove = indices_to_remove.eval()
+            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - set(np_indices_to_remove))
+
 
         # currently no way to generally slice using gather
         # need to do a transoformation to do this.
@@ -624,7 +642,8 @@ research_parameters = {
     'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.5, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.25, # amount of batches from hard_pool selected to train
-    'optimizer':'SGD','momentum':0.9
+    'optimizer':'SGD','momentum':0.9,
+    'remove_filters_by':'Distance'
 
 }
 
@@ -1078,8 +1097,33 @@ if __name__=='__main__':
                                                          cnn_hyperparameters, weights, biases)
 
                     elif 'conv' in current_op and (ai[0]=='replace'):
-                        layer_activations = rolling_ativation_means[current_op]
-                        indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:ai[1]]).astype('int32')
+
+                        if research_parameters['remove_filters_by'] == 'Activation':
+                            layer_activations = rolling_ativation_means[current_op]
+                            indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:ai[1]]).astype(
+                                'int32')
+                        elif research_parameters['remove_filters_by'] == 'Distance':
+                            # calculate cosine distance for F filters (FxF matrix)
+                            # take one side of diagonal, find (f1,f2) pairs with least distance
+                            # select indices amnt f2 indices
+                            logger.debug('Replacing Weights of %s with weights %s',current_op,cnn_hyperparameters[current_op]['weights'])
+                            reshaped_weight = tf.transpose(weights[current_op], [3, 0, 1, 2])
+                            logger.debug('\tReshaped weights: %s',tf.shape(reshaped_weight).eval())
+                            reshaped_weight = tf.reshape(weights[current_op], [cnn_hyperparameters[current_op]['weights'][3], cnn_hyperparameters[current_op]['weights'][0] *
+                                                                       cnn_hyperparameters[current_op]['weights'][1] *
+                                                                       cnn_hyperparameters[current_op]['weights'][2]])
+                            logger.debug('\tTransposed weights: %s', tf.shape(reshaped_weight).eval())
+                            cos_sim_weights = tf.matmul(reshaped_weight, tf.transpose(reshaped_weight)) / tf.matmul(
+                                tf.reduce_sum(reshaped_weight ** 2, axis=1,keep_dims=True),
+                                tf.transpose(tf.reduce_sum(reshaped_weight ** 2, axis=1,keep_dims=True)))
+                            logger.debug('\tCosine similarity matrix of %s', tf.shape(cos_sim_weights).eval())
+                            flattened_cos_sim = tf.reshape(tf.matrix_band_part(cos_sim_weights, 0, -1), shape=[-1])
+                            logger.debug('\t(Flattened) Cosine similarity matrix of %s', tf.shape(flattened_cos_sim).eval())
+                            high_sim_indices = tf.nn.top_k(flattened_cos_sim, k=ai[1])[1]
+                            indices_to_replace = tf.mod(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
+                            indices_of_filters_replace = indices_to_replace.eval()
+                            logger.debug('\tFound %s ... highest indices of similarity',indices_of_filters_replace[:5])
+
 
                         # currently no way to generally slice using gather
                         # need to do a transoformation to do this.
