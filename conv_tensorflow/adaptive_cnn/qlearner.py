@@ -325,6 +325,7 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('Cleaning Q values (removing old ones)')
         #self.rl_logger.debug('Current size: ')
         for ai,state_q_dict in self.q.items():
+            self.rl_logger.debug('\tItems in q for %s: %d',ai,len(state_q_dict))
             if len(state_q_dict)>self.q_length:
                 for _ in range(len(state_q_dict)-self.q_length):
                     self.q[ai].popitem(last=True)
@@ -368,14 +369,22 @@ class AdaCNNAdaptingQLearner(object):
             q_for_actions = []
             for a in copy_actions:
                 ohe_state = np.zeros((1, self.net_depth + len(state) - 1))
-                ohe_state[0, -1] = state[2]
+                ohe_state[0, -1] = state[2]*1.0/self.filter_upper_bound
                 ohe_state[0, -2] = state[1]
                 ohe_state[0, int(state[0])] = 1.0
                 q_val = self.regressors[a].predict(ohe_state)
                 q_for_actions.append(q_val)
                 self.rl_logger.debug('\tAction: %s Predicted Q: %.5f',a,q_val)
-            action_idx = np.asscalar(np.argmax(q_for_actions))
-            action = copy_actions[action_idx]
+            argsort_q_for_actions = np.argsort(q_for_actions).flatten()
+            if abs(np.asscalar(q_for_actions[argsort_q_for_actions[-1]]) -
+                           np.asscalar(q_for_actions[argsort_q_for_actions[-2]]))>0.001:
+                action_idx = np.asscalar(np.argmax(q_for_actions))
+            else:
+                self.rl_logger.debug('\tChoosing stochastic out of best two actions')
+                action_idx = np.random.choice([np.asscalar(q_for_actions[argsort_q_for_actions[-1]]),
+                                               np.asscalar(q_for_actions[argsort_q_for_actions[-2]])])
+
+            action = copy_actions[int(action_idx)]
             self.rl_logger.debug('\tChose: %s'%str(action))
 
             # ================= Look ahead 1 step (Validate Predicted Action) =========================
@@ -477,6 +486,8 @@ class AdaCNNAdaptingQLearner(object):
                 ohe_x = np.zeros((x.shape[0],self.net_depth),dtype=np.float32)
                 ohe_x[np.arange(x.shape[0]),x[:,0].astype(np.int32)] = 1.0
                 ohe_x = np.append(ohe_x,x[:,1:],axis=1)
+                ohe_x[:,-1] = ohe_x[:,-1]*1.0/self.filter_upper_bound
+
                 assert x.shape[0]== len(self.q[a])
                 self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(ohe_x)[:3,:]),str(np.asarray(y)[:3]))
                 self.regressors[a].fit(ohe_x,y)
@@ -509,12 +520,18 @@ class AdaCNNAdaptingQLearner(object):
             sj = (si[0], si[1], new_filter_size)
             #reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
 
-        reward = mean_accuracy * (mean_accuracy - self.past_mean_accuracy)
+        reward = mean_accuracy
+
+        self.rl_logger.debug('Update Summary ')
+        self.rl_logger.debug('\tState: %s',si)
+        self.rl_logger.debug('\tAction: %s',ai)
+        self.rl_logger.debug('\tReward: %.3f',reward)
+
         # Q[a][(state,q)]
         if ai not in self.q:
-            self.regressors[ai]=MLPRegressor(activation='tanh', alpha=1e-06, batch_size='auto',
-                                              epsilon=1e-05, hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
-                                              learning_rate_init=0.001, max_iter=100,
+            self.regressors[ai]=MLPRegressor(activation='relu', alpha=1e-08, batch_size='auto',
+                                              hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
+                                              learning_rate_init=0.0001, max_iter=100,
                                               random_state=1, shuffle=True,
                                               solver='sgd')
 
@@ -522,12 +539,12 @@ class AdaCNNAdaptingQLearner(object):
 
         if self.local_time_stamp>len(self.actions)*2+1:
             ohe_si = np.zeros((1,self.net_depth+len(si)-1))
-            ohe_si[0,-1] = si[2]
+            ohe_si[0,-1] = si[2]*1.0/self.filter_upper_bound
             ohe_si[0,-2] = si[1]
             ohe_si[0,int(si[0])] = 1.0
 
             ohe_sj = np.zeros((1, self.net_depth + len(sj) - 1))
-            ohe_sj[0, -1] = sj[2]
+            ohe_sj[0, -1] = sj[2]*1.0/self.filter_upper_bound
             ohe_sj[0, -2] = sj[1]
             ohe_sj[0, int(sj[0])] = 1.0
 

@@ -1,6 +1,8 @@
 
 import tensorflow as tf
 import numpy as np
+from collections import Counter
+
 
 class Pool(object):
     '''
@@ -11,6 +13,7 @@ class Pool(object):
 
         self.assert_test = params['assert_test']
         self.size = params['size']
+        self.num_labels = params['num_labels']
         self.position = 0
         self.dataset = np.empty((self.size,params['image_size'],params['image_size'],params['num_channels']),dtype=np.float32)
         self.labels = np.empty((self.size,params['num_labels']),dtype=np.float32)
@@ -82,7 +85,6 @@ class Pool(object):
             self.dataset[:overflow,:,:,:] = data[hard_indices[end_chunk_size:],:,:,:]
             self.labels[:overflow,:] = labels[hard_indices[end_chunk_size:],:]
 
-
         if self.assert_test:
             assert np.all(self.dataset[self.position,:,:,:].flatten()== data[hard_indices[0],:,:,:].flatten())
 
@@ -99,3 +101,13 @@ class Pool(object):
 
     def get_pool_data(self):
         return {'pool_dataset':self.dataset,'pool_labels':self.labels}
+
+    def get_class_distribution(self):
+        class_count = Counter(np.argmax(self.labels[:self.filled_size,:],axis=1).flatten())
+        dist_vector = []
+        for lbl in range(self.num_labels):
+            if lbl in class_count:
+                dist_vector.append(class_count[lbl]*1.0/self.filled_size)
+            else:
+                dist_vector.append(0.0)
+        return dist_vector

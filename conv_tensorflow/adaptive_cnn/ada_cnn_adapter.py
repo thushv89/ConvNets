@@ -25,7 +25,7 @@ import getopt
 ##################################################################
 
 logger = None
-logging_level = logging.DEBUG
+logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
@@ -208,8 +208,11 @@ def optimize_with_variable_func(loss,global_step,var_ops):
         else:
             learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
         variable_list = [weights[op] for op in var_ops]
-        variable_list = variable_list.extend([biases[op] for op in var_ops])
-        optimize_ops.append(tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss,var_list=variable_list))
+        variable_list.extend([biases[op] for op in var_ops])
+        assert variable_list is not None and len(variable_list)>0
+        optimize_ops.append(
+            tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss,var_list=variable_list)
+        )
 
     elif research_parameters['optimizer'] == 'Momentum':
         optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
@@ -266,8 +269,105 @@ def optimize_with_tensor_slice_func(loss, filter_indices_to_replace, op, w, b, c
 
     grad_apply_op = optimizer.apply_gradients([(new_grads_w,w),(new_grads_b,b)])
 
+
     return grad_apply_op
 
+
+def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b, cnn_hyps, cnn_ops):
+    '''
+    Any adaptation of a convolutional layer would result in a change in the following layer.
+    This optimization optimize the filters/weights responsible in both those layer
+    :param loss:
+    :param filter_indices_to_replace:
+    :param op:
+    :param w:
+    :param b:
+    :param cnn_hyps:
+    :param cnn_ops:
+    :return:
+    '''
+    global weights,biases
+
+    grad_ops = []
+    grads_w,grads_b= {},{}
+    mask_grads_w,mask_grads_b = {},{}
+    learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+
+
+    if 'conv' in op:
+        [(grads_w[op], w), (grads_b[op], b)] = optimizer.compute_gradients(loss, [w, b])
+
+        transposed_shape = [cnn_hyps[op]['weights'][3],cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1], cnn_hyps[op]['weights'][2]]
+
+        replace_amnt = filter_indices_to_replace.size
+
+        logger.debug('Applying gradients for %s',op)
+        logger.debug('\tAnd filter IDs: %s',filter_indices_to_replace)
+
+        mask_grads_w[op] = tf.scatter_nd(
+                filter_indices_to_replace.reshape(-1,1),
+                tf.ones(shape=[replace_amnt,transposed_shape[1],transposed_shape[2],transposed_shape[3]], dtype=tf.float32),
+                shape=transposed_shape
+        )
+
+        mask_grads_w[op] = tf.transpose(mask_grads_w[op],[1,2,3,0])
+
+        mask_grads_b[op] = tf.scatter_nd(
+                filter_indices_to_replace.reshape(-1,1),
+                tf.ones_like(filter_indices_to_replace, dtype=tf.float32),
+                shape=[cnn_hyps[op]['weights'][3]]
+        )
+
+        grads_w[op] = grads_w[op] * mask_grads_w[op]
+        grads_b[op] = grads_b[op] * mask_grads_b[op]
+        grad_ops.append(optimizer.apply_gradients([(grads_w[op],w),(grads_b[op],b)]))
+
+    next_op = None
+    for tmp_op in cnn_ops[cnn_ops.index(op)+1:]:
+        if 'conv' in tmp_op or 'fulcon' in tmp_op:
+            next_op = tmp_op
+            break
+    logger.debug('Next conv op: %s',next_op)
+    [(grads_w[next_op], w)] = optimizer.compute_gradients(loss, [weights[next_op]])
+    if 'conv' in next_op:
+        transposed_shape = [cnn_hyps[next_op]['weights'][2], cnn_hyps[next_op]['weights'][0], cnn_hyps[next_op]['weights'][1],
+                            cnn_hyps[next_op]['weights'][3]]
+
+        replace_amnt = filter_indices_to_replace.size
+
+        logger.debug('Applying gradients for %s', next_op)
+        logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
+
+        mask_grads_w[next_op] = tf.scatter_nd(
+            filter_indices_to_replace.reshape(-1, 1),
+            tf.ones(shape=[replace_amnt, transposed_shape[1], transposed_shape[2], transposed_shape[3]],
+                    dtype=tf.float32),
+            shape=transposed_shape
+        )
+
+        mask_grads_w[next_op] = tf.transpose(mask_grads_w[next_op], [1, 2, 0, 3])
+        grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
+        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op])]))
+
+    elif 'fulcon' in next_op:
+
+        replace_amnt = filter_indices_to_replace.size
+
+        logger.debug('Applying gradients for %s', next_op)
+        logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
+
+        mask_grads_w[next_op] = tf.scatter_nd(
+            filter_indices_to_replace.reshape(-1, 1),
+            tf.ones(shape=[replace_amnt, cnn_hyps[next_op]['out']],
+                    dtype=tf.float32),
+            shape=[cnn_hyps[next_op]['in'],cnn_hyps[next_op]['out']]
+        )
+
+        grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
+        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op])]))
+
+    return grad_ops
 
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
@@ -649,7 +749,7 @@ research_parameters = {
     'log_class_distribution':True,'log_distribution_every':128,
     'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
-    'replace_op_train_rate':0.25, # amount of batches from hard_pool selected to train
+    'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'SGD','momentum':0.9,
     'remove_filters_by':'Distance'
 
@@ -748,7 +848,7 @@ if __name__=='__main__':
         structHandler = logging.FileHandler(output_dir + os.sep + 'cnn_structure.log', mode='w')
         structHandler.setFormatter(logging.Formatter('%(message)s'))
         cnn_structure_logger.addHandler(structHandler)
-        cnn_structure_logger.info('#batch_id#layer_1_hyperparameters#layer_2_hyperparameters#...')
+        cnn_structure_logger.info('#batch_id:state:action:#layer_1_hyperparameters#layer_2_hyperparameters#...')
 
 
     if research_parameters['log_class_distribution']:
@@ -757,6 +857,13 @@ if __name__=='__main__':
         class_distHandler = logging.FileHandler(output_dir + os.sep + 'class_distribution.log', mode='w')
         class_distHandler.setFormatter(logging.Formatter('%(message)s'))
         class_dist_logger.addHandler(class_distHandler)
+
+    pool_dist_logger = logging.getLogger('pool_distribution_logger')
+    pool_dist_logger.setLevel(logging.INFO)
+    poolHandler = logging.FileHandler(output_dir + os.sep + 'pool_distribution.log', mode='w')
+    poolHandler.setFormatter(logging.Formatter('%(message)s'))
+    pool_dist_logger.addHandler(poolHandler)
+    pool_dist_logger.info('#Class distribution')
 
     # Loading data
     memmap_idx = 0
@@ -803,7 +910,7 @@ if __name__=='__main__':
         # Adapting Policy Learner
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
                                                   discount_rate=0.9,
-                                                  fit_interval = 10,
+                                                  fit_interval = 5,
                                                   filter_upper_bound=1024,
                                                   net_depth=layer_count,
                                                   upper_bound=10,
@@ -839,7 +946,7 @@ if __name__=='__main__':
         loss_vec = calc_loss_vector(logits,tf_labels)
 
         pred = predict_with_logits(logits)
-        optimize,upd_lr = optimize_func(loss,global_step,start_lr*0.01)
+        optimize,upd_lr = optimize_func(loss,global_step,start_lr*0.1)
         inc_gstep = inc_global_step(global_step)
 
         init_op = tf.global_variables_initializer()
@@ -857,8 +964,6 @@ if __name__=='__main__':
 
         train_losses = []
         mean_train_loss = 0
-        rolling_next_accuracy = 0
-        rolling_prev_accuracy = 0
 
         rolling_ativation_means = {}
         for op in cnn_ops:
@@ -869,7 +974,6 @@ if __name__=='__main__':
         decay = 0.9
         act_decay = 0.5
         current_state,current_action = None,None
-        prev_state,prev_action = None,None
         prev_valid_accuracy,next_valid_accuracy = 0,0
 
         convolution_op_ids = []
@@ -944,7 +1048,7 @@ if __name__=='__main__':
             feed_valid_dict = {tf_valid_dataset:batch_valid_data, tf_valid_labels:batch_valid_labels}
             next_valid_loss, next_valid_predictions = session.run([tf_valid_loss,tf_valid_predictions],feed_dict=feed_valid_dict)
             next_valid_accuracy = accuracy(next_valid_predictions, batch_valid_labels)
-            rolling_next_accuracy = (1-decay)*rolling_next_accuracy + decay*next_valid_accuracy
+
             # validation batch (Seen) random from last 50 batches
             if chunk_batch_id>0:
                 prev_valid_batch_id = np.random.randint(max(0,chunk_batch_id-50),chunk_batch_id)
@@ -957,7 +1061,6 @@ if __name__=='__main__':
             feed_valid_dict = {tf_valid_dataset:batch_valid_data, tf_valid_labels:batch_valid_labels}
             prev_valid_loss, prev_valid_predictions = session.run([tf_valid_loss,tf_valid_predictions],feed_dict=feed_valid_dict)
             prev_valid_accuracy = accuracy(prev_valid_predictions, batch_valid_labels)
-            rolling_prev_accuracy = (1-decay)*rolling_prev_accuracy + decay*prev_valid_accuracy
 
             if batch_id%interval_parameters['test_interval']==0:
                 mean_train_loss = np.mean(train_losses)
@@ -1036,14 +1139,6 @@ if __name__=='__main__':
                 # ====================== Policy update and output ======================
 
                 if batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
-                    #Update and Get a new policy
-                    if prev_state is not None and prev_action is not None:
-                        logger.info('Updating the Policy for Layer %s',cnn_ops[prev_state[0]])
-                        logger.info('\tState: %s',str(current_state))
-                        logger.info('\tAction: %s',str(current_action))
-                        logger.info('\tValid accuracy: %.2f (Unseen) %.2f (seen)',next_valid_accuracy,prev_valid_accuracy)
-                        adapter.update_policy({'states':prev_state,'actions':prev_action,
-                                               'next_accuracy':next_valid_accuracy,'prev_accuracy':prev_valid_accuracy})
 
                     # update distance measure for class distirbution
                     distMSE = 0.0
@@ -1058,7 +1153,6 @@ if __name__=='__main__':
                             filter_dict[op_i]=0
 
                     current_state,current_action = adapter.output_action({'distMSE':distMSE,'filter_counts':filter_dict},convolution_op_ids[current_q_learn_op_id])
-                    prev_state,prev_action = current_state,current_action
                     current_q_learn_op_id = (current_q_learn_op_id + 1) % len(
                         convolution_op_ids)  # we update each convolutional layer in a circular pattern
 
@@ -1096,9 +1190,9 @@ if __name__=='__main__':
                             pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
                                                                  biases)
                             pool_loss = calc_loss(pool_logits, tf_pool_labels)
-                            tf_slice_optimize = optimize_with_tensor_slice_func(
+                            tf_slice_optimize = optimize_all_affected_with_indices(
                                 pool_loss, np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
-                                current_op, weights[current_op], biases[current_op], cnn_hyperparameters
+                                current_op, weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
                             )
 
                             pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
@@ -1121,7 +1215,7 @@ if __name__=='__main__':
                         loss = calc_loss(logits, tf_labels)
                         loss_vec = calc_loss_vector(logits, tf_labels)
                         pred = predict_with_logits(logits)
-                        optimize,upd_lr = optimize_func(loss, global_step, start_lr*0.01)
+                        optimize,upd_lr = optimize_func(loss, global_step, start_lr*0.1)
 
                         tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
                         tf_valid_predictions = predict_with_logits(tf_valid_logits)
@@ -1173,9 +1267,9 @@ if __name__=='__main__':
                         pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
                                                              biases)
                         pool_loss = calc_loss(pool_logits,tf_pool_labels)
-                        tf_slice_optimize = optimize_with_tensor_slice_func(
+                        tf_slice_optimize = optimize_all_affected_with_indices(
                                 pool_loss,indices_of_filters_replace,current_op,
-                                weights[current_op],biases[current_op],cnn_hyperparameters
+                                weights[current_op],biases[current_op],cnn_hyperparameters,cnn_ops
                         )
 
                         pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
@@ -1193,13 +1287,16 @@ if __name__=='__main__':
                         # pooling takes place here
                         pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights, biases)
                         pool_loss = calc_loss(pool_logits, tf_pool_labels)
-                        optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op])
+
+                        op = cnn_ops[si[0]]
+                        optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op,'fulcon_out'])
 
                         pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
-                        op = cnn_ops[si[0]]
+
                         logger.debug('Only tuning following variables...')
                         logger.debug('\t%s,%s',weights[op].name,str(weights[op]))
                         logger.debug('\t%s,%s',biases[op].name,str(biases[op]))
+
                         assert weights[op].name in [v.name for v in tf.trainable_variables()]
                         assert biases[op].name in [v.name for v in tf.trainable_variables()]
 
@@ -1211,8 +1308,38 @@ if __name__=='__main__':
                                 _, _, _ = session.run([pool_logits,pool_loss,optimize_with_variable],feed_dict=pool_feed_dict)
 
                     cnn_structure_logger.info(
-                        '%d%s', batch_id, get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
+                        '%d:%s:%s%s', batch_id, current_state,current_action,get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
                     )
+
+                    # updating the policy
+                    if current_state is not None and current_action is not None:
+
+                        feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
+                        next_valid_loss, next_valid_predictions = session.run([tf_valid_loss, tf_valid_predictions],
+                                                                              feed_dict=feed_valid_dict)
+                        next_valid_accuracy_after = accuracy(next_valid_predictions, batch_valid_labels)
+
+                        batch_valid_data = train_dataset[
+                                           prev_valid_batch_id * batch_size:(prev_valid_batch_id + 1) * batch_size, :,
+                                           :, :]
+                        batch_valid_labels = train_labels[
+                                             prev_valid_batch_id * batch_size:(prev_valid_batch_id + 1) * batch_size, :]
+
+                        feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
+                        prev_valid_loss, prev_valid_predictions = session.run([tf_valid_loss, tf_valid_predictions],
+                                                                              feed_dict=feed_valid_dict)
+                        prev_valid_accuracy_after = accuracy(prev_valid_predictions, batch_valid_labels)
+
+                        logger.info('Updating the Policy for Layer %s', cnn_ops[current_state[0]])
+                        logger.info('\tState: %s', str(current_state))
+                        logger.info('\tAction: %s', str(current_action))
+                        logger.info('\tValid accuracy Gain: %.2f (Unseen) %.2f (seen)',
+                                    (next_valid_accuracy_after - next_valid_accuracy),
+                                    (prev_valid_accuracy_after-prev_valid_accuracy)
+                                    )
+                        adapter.update_policy({'states': current_state, 'actions': current_action,
+                                               'next_accuracy': next_valid_accuracy_after - next_valid_accuracy,
+                                               'prev_accuracy': prev_valid_accuracy_after-prev_valid_accuracy})
 
                     #reset rolling activation means because network changed
                     rolling_ativation_means = {}
@@ -1236,5 +1363,9 @@ if __name__=='__main__':
                     with open(output_dir + os.sep + 'Q_' + str(batch_id)+'.pickle', 'wb') as f:
                         pickle.dump(adapter.get_Q(), f, pickle.HIGHEST_PROTOCOL)
 
+                    pool_dist_string = ''
+                    for val in hard_pool.get_class_distribution():
+                        pool_dist_string += str(val)+','
 
+                    pool_dist_logger.info(pool_dist_string)
 
