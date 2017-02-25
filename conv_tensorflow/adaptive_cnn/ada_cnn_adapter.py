@@ -329,7 +329,7 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
             next_op = tmp_op
             break
     logger.debug('Next conv op: %s',next_op)
-    [(grads_w[next_op], w)] = optimizer.compute_gradients(loss, [weights[next_op]])
+    [(grads_w[next_op], w),(grads_b[next_op],b)] = optimizer.compute_gradients(loss, [weights[next_op],biases[next_op]])
     if 'conv' in next_op:
         transposed_shape = [cnn_hyps[next_op]['weights'][2], cnn_hyps[next_op]['weights'][0], cnn_hyps[next_op]['weights'][1],
                             cnn_hyps[next_op]['weights'][3]]
@@ -348,7 +348,7 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
 
         mask_grads_w[next_op] = tf.transpose(mask_grads_w[next_op], [1, 2, 0, 3])
         grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op])]))
+        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
 
     elif 'fulcon' in next_op:
 
@@ -365,7 +365,12 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
         )
 
         grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op])]))
+        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
+
+    for tmp_op in cnn_ops[cnn_ops.index(next_op)+1:]:
+        if 'conv' in tmp_op or 'fulcon' in tmp_op:
+            [(grads_w[tmp_op], w), (grads_b[tmp_op], b)] = optimizer.compute_gradients(loss, [w, b])
+        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op], biases[next_op])]))
 
     return grad_ops
 
@@ -1289,7 +1294,7 @@ if __name__=='__main__':
                         pool_loss = calc_loss(pool_logits, tf_pool_labels)
 
                         op = cnn_ops[si[0]]
-                        optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op,'fulcon_out'])
+                        optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
 
                         pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
 
