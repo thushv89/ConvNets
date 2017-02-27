@@ -38,7 +38,7 @@ include_l2_loss = False
 beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
-
+iterations_per_batch = 3
 
 
 def get_final_x(cnn_ops,cnn_hyps):
@@ -367,10 +367,11 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
         grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
         grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
 
-    for tmp_op in cnn_ops[cnn_ops.index(next_op)+1:]:
-        if 'conv' in tmp_op or 'fulcon' in tmp_op:
-            [(grads_w[tmp_op], w), (grads_b[tmp_op], b)] = optimizer.compute_gradients(loss, [w, b])
-        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op], biases[next_op])]))
+    if research_parameters['optimize_end_to_end']:
+        for tmp_op in cnn_ops[cnn_ops.index(next_op)+1:]:
+            if 'conv' in tmp_op or 'fulcon' in tmp_op:
+                [(grads_w[tmp_op], w), (grads_b[tmp_op], b)] = optimizer.compute_gradients(loss, [w, b])
+            grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op], biases[next_op])]))
 
     return grad_ops
 
@@ -752,11 +753,12 @@ weights,biases = None,None
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : True,
+    'adapt_structure' : False,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'SGD','momentum':0.9,
-    'remove_filters_by':'Distance'
+    'remove_filters_by':'Distance',
+    'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
 
 }
 
@@ -951,7 +953,7 @@ if __name__=='__main__':
         loss_vec = calc_loss_vector(logits,tf_labels)
 
         pred = predict_with_logits(logits)
-        optimize,upd_lr = optimize_func(loss,global_step,start_lr*0.1)
+        optimize,upd_lr = optimize_func(loss,global_step,start_lr)
         inc_gstep = inc_global_step(global_step)
 
         init_op = tf.global_variables_initializer()
@@ -990,7 +992,13 @@ if __name__=='__main__':
 
         logger.info('Starting Training Phase')
         #TODO: Think about decaying learning rate (should or shouldn't)
-        for batch_id in range(ceil(dataset_size//batch_size)-3):
+
+        logger.info('Dataset Size: %d',dataset_size)
+        logger.info('Batch Size: %d',batch_size)
+        logger.info('Chunk Size: %d',chunk_size)
+        logger.info('Batches in Chunk : %d',batches_in_chunk)
+
+        for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
 
             logger.debug('\tTraining with batch %d',batch_id)
             for op in cnn_ops:
@@ -1001,18 +1009,21 @@ if __name__=='__main__':
 
             if chunk_batch_id==0:
                 # We load 1 extra batch (chunk_size+1) because we always make the valid batch the batch_id+1
+                logger.info('\tCurrent memmap start index: %d', memmap_idx)
                 train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size)
                 memmap_idx += chunk_size
-                logger.info('Loading dataset chunk of size: %d',train_dataset.shape[0])
+                logger.info('Loading dataset chunk of size (chunk size + batch size): %d',train_dataset.shape[0])
                 logger.info('\tNext memmap start index: %d',memmap_idx)
+
             batch_data = train_dataset[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :]
 
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
 
-            _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
-                    [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
-            )
+            for _ in range(iterations_per_batch):
+                _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
+                        [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
+                )
 
             # this snippet logs the normalized class distribution every specified interval
             if chunk_batch_id%research_parameters['log_distribution_every']==0:
@@ -1106,7 +1117,7 @@ if __name__=='__main__':
                                   )
 
                 if research_parameters['save_train_test_images']:
-                    local_dir = 'saved_images'+str(batch_id)
+                    local_dir = output_dir+ os.sep + 'saved_images_'+str(batch_id)
                     if not os.path.exists(local_dir):
                         os.mkdir(local_dir)
                     train_dir = local_dir + os.sep + 'train'
@@ -1162,8 +1173,6 @@ if __name__=='__main__':
                         convolution_op_ids)  # we update each convolutional layer in a circular pattern
 
                     logger.info('Got state: %s, action: %s',str(current_state),str(current_action))
-
-
                     state_action_history[batch_id]={'states':current_state,'actions':current_action}
 
                     # where all magic happens (adding and removing filters)
@@ -1220,7 +1229,7 @@ if __name__=='__main__':
                         loss = calc_loss(logits, tf_labels)
                         loss_vec = calc_loss_vector(logits, tf_labels)
                         pred = predict_with_logits(logits)
-                        optimize,upd_lr = optimize_func(loss, global_step, start_lr*0.1)
+                        optimize,upd_lr = optimize_func(loss, global_step, start_lr)
 
                         tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
                         tf_valid_predictions = predict_with_logits(tf_valid_logits)
@@ -1294,7 +1303,10 @@ if __name__=='__main__':
                         pool_loss = calc_loss(pool_logits, tf_pool_labels)
 
                         op = cnn_ops[si[0]]
-                        optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
+                        if research_parameters['optimize_end_to_end']:
+                            optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
+                        else:
+                            optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op,'fulcon_out'])
 
                         pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
 
