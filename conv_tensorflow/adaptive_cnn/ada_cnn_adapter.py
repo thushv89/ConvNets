@@ -621,22 +621,35 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
                 tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)))
             )
             logger.debug('\t\tSize of cos sim: %s', tf.shape(cos_sim_weights).eval())
+            # we only take the upper triangle of the cosine sim matrix because it is symmetric
             upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1)
+            # make diagonal zero because diagonal of cosine sim matrix is 1 (highest)
             zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim, tf.zeros(shape=[cnn_hyps[op]['weights'][3]]))
+            # flatten the upper triangle to get the highest 'k' argmax
             flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim,shape=[-1])
             logger.debug('\t\tSize of flattened cos sim: %s', tf.shape(flattened_cos_sim).eval())
-            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim,k=2*amount_to_rmv)
+            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim,k=amount_to_rmv)
             logger.debug('\t\tSize of highest sim indices: %s',tf.shape(high_sim_indices).eval())
-            indices_to_remove = tf.unique(tf.mod(high_sim_indices,cnn_hyps[op]['weights'][3]))[0]
+            tf_indices_to_remove_1 = tf.mod(high_sim_indices,cnn_hyps[op]['weights'][3])
+            tf_indices_to_remove_2 = tf.floor_div(high_sim_indices,cnn_hyps[op]['weights'][3])
             logger.debug('\t\tSimilarity summary')
             logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
-            logger.debug('\t\t\tIndices: %s', indices_to_remove.eval()[:10])
+            logger.debug('\t\t\tIndices: %s', tf_indices_to_remove_1.eval()[:10])
             # we get 2 times amount to remove top entries to avoid duplicates of indices
-            np_indices_to_remove = indices_to_remove.eval()[:amount_to_rmv]
-            assert not np.any(np_indices_to_remove)>=cnn_hyps[op]['weights'][3]
+            indices_to_remove_1 = tf_indices_to_remove_1.eval().tolist()
+            indices_to_remove_2 = tf_indices_to_remove_2.eval().tolist()
+            assert not np.any(indices_to_remove_1)>=cnn_hyps[op]['weights'][3]
+            assert not np.any(indices_to_remove_2) >= cnn_hyps[op]['weights'][3]
 
-            logger.debug('\t\tSize of indices to remove: %s/%d', np_indices_to_remove.shape,cnn_hyps[op]['weights'][3])
-            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - set(np_indices_to_remove))
+            unique_indices_to_remove = []
+            for idx1,idx2 in zip(indices_to_remove_1,indices_to_remove_2):
+                if idx1 not in unique_indices_to_remove:
+                    unique_indices_to_remove.append(idx1)
+                else:
+                    unique_indices_to_remove.append(idx2)
+
+            logger.debug('\t\tSize of indices to remove: %s/%d', indices_to_remove_1.shape,cnn_hyps[op]['weights'][3])
+            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - set(unique_indices_to_remove))
             logger.debug('\t\tSize of indices to keep: %s/%d', len(indices_of_filters_keep),cnn_hyps[op]['weights'][3])
 
         # currently no way to generally slice using gather
@@ -1005,6 +1018,7 @@ if __name__=='__main__':
         logger.info('Batches in Chunk : %d',batches_in_chunk)
 
         updated_lr = start_lr
+        train_data_pipe,train_label_pipe = None,None
         for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
 
             logger.debug('\tTraining with batch %d',batch_id)
@@ -1024,6 +1038,13 @@ if __name__=='__main__':
 
             batch_data = train_dataset[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :]
+
+            if train_data_pipe is None or train_label_pipe is None:
+                train_data_pipe = np.asarray(batch_data)
+                train_label_pipe = np.asarray(batch_labels)
+            else:
+                train_data_pipe = np.append(train_data_pipe,batch_data,axis=0)
+                train_label_pipe = np.append(train_label_pipe, batch_labels, axis=0)
 
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
 
@@ -1230,7 +1251,12 @@ if __name__=='__main__':
                                 current_op, weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
                             )
 
-                            _ = session.run(tf_slice_optimize, feed_dict=feed_dict)
+                            for pipe_id in range(interval_parameters['policy_interval']-1):
+                                pipe_feed_dict = {tf_dataset:train_data_pipe[pipe_id * batch_size:(pipe_id + 1) * batch_size, :],
+                                                  tf_labels: train_label_pipe[pipe_id * batch_size:(pipe_id + 1) * batch_size, :]}
+                                _ = session.run(tf_slice_optimize, feed_dict=pipe_feed_dict)
+
+                            train_data_pipe,train_label_pipe = None,None
 
                     elif 'conv' in current_op and (ai[0]=='replace'):
 
@@ -1264,17 +1290,40 @@ if __name__=='__main__':
                             logger.debug('\t Similarity summary')
                             logger.debug('\t\tValues: %s', high_sim_values.eval()[:10])
                             logger.debug('\t\tIndices: %s', high_sim_indices.eval()[:10])
-                            indices_to_replace = tf.mod(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
-                            indices_of_filters_replace = indices_to_replace.eval()
-                            logger.debug('\tFound %s ... highest indices of similarity',indices_of_filters_replace[:5])
 
+                            tf_indices_to_replace_1 = tf.mod(high_sim_indices, cnn_hyperparameters[op]['weights'][3])
+                            tf_indices_to_replace_2 = tf.floor_div(high_sim_indices, cnn_hyperparameters[op]['weights'][3])
+                            logger.debug('\t\tSimilarity summary')
+                            logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
+                            logger.debug('\t\t\tIndices: %s', tf_indices_to_replace_1.eval()[:10])
+                            # we get 2 times amount to remove top entries to avoid duplicates of indices
+                            indices_to_replace_1 = tf_indices_to_replace_1.eval().tolist()
+                            indices_to_replace_2 = tf_indices_to_replace_2.eval().tolist()
+                            assert not np.any(indices_to_replace_1) >= cnn_hyperparameters[op]['weights'][3]
+                            assert not np.any(indices_to_replace_2) >= cnn_hyperparameters[op]['weights'][3]
+
+                            unique_indices_to_replace = []
+                            for idx1, idx2 in zip(indices_to_replace_1, indices_to_replace_2):
+                                if idx1 not in unique_indices_to_replace:
+                                    unique_indices_to_replace.append(idx1)
+                                else:
+                                    unique_indices_to_replace.append(idx2)
+
+                            logger.debug('\tFound %s ... highest indices of similarity',unique_indices_to_replace[:5])
 
                         tf_slice_optimize = optimize_all_affected_with_indices(
-                                loss,indices_of_filters_replace,current_op,
+                                loss,unique_indices_to_replace,current_op,
                                 weights[current_op],biases[current_op],cnn_hyperparameters,cnn_ops
                         )
 
-                        _ = session.run(tf_slice_optimize,feed_dict=feed_dict)
+                        for pipe_id in range(interval_parameters['policy_interval'] - 1):
+                            pipe_feed_dict = {
+                                tf_dataset: train_data_pipe[pipe_id * batch_size:(pipe_id + 1) * batch_size, :],
+                                tf_labels: train_label_pipe[pipe_id * batch_size:(pipe_id + 1) * batch_size, :]
+                            }
+                            _ = session.run(tf_slice_optimize, feed_dict=pipe_feed_dict)
+
+                        train_data_pipe, train_label_pipe = None, None
 
                     elif 'conv' in current_op and ai[0]=='finetune':
                         # pooling takes place here
@@ -1351,56 +1400,6 @@ if __name__=='__main__':
                         rolling_data_distribution[li]=0.0
                         mean_data_distribution[li]=0.0
 
-                # all the batches we don't have an action
-                else:
-
-                    for current_op in cnn_ops:
-                        if 'conv' in current_op:
-                            if research_parameters['remove_filters_by'] == 'Activation':
-                                layer_activations = rolling_ativation_means[current_op]
-                                indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:research_parameters['replace_size_inbetween']]).astype(
-                                    'int32')
-                            elif research_parameters['remove_filters_by'] == 'Distance':
-                                # calculate cosine distance for F filters (FxF matrix)
-                                # take one side of diagonal, find (f1,f2) pairs with least distance
-                                # select indices amnt f2 indices
-                                logger.debug('Replacing Weights of %s with weights %s', current_op,
-                                             cnn_hyperparameters[current_op]['weights'])
-                                reshaped_weight = tf.transpose(weights[current_op], [3, 0, 1, 2])
-                                logger.debug('\tReshaped weights: %s', tf.shape(reshaped_weight).eval())
-                                reshaped_weight = tf.reshape(weights[current_op],
-                                                             [cnn_hyperparameters[current_op]['weights'][3],
-                                                              cnn_hyperparameters[current_op]['weights'][0] *
-                                                              cnn_hyperparameters[current_op]['weights'][1] *
-                                                              cnn_hyperparameters[current_op]['weights'][2]])
-                                logger.debug('\tTransposed weights: %s', tf.shape(reshaped_weight).eval())
-                                cos_sim_weights = tf.matmul(reshaped_weight, tf.transpose(reshaped_weight)) / tf.matmul(
-                                    tf.sqrt(tf.reduce_sum(reshaped_weight ** 2, axis=1, keep_dims=True)),
-                                    tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight ** 2, axis=1, keep_dims=True)))
-                                )
-                                logger.debug('\tCosine similarity matrix of %s', tf.shape(cos_sim_weights).eval())
-                                upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1)
-                                zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim,
-                                                                              tf.zeros(shape=[
-                                                                                  cnn_hyperparameters[current_op]['weights'][
-                                                                                      3]]))
-                                flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim, shape=[-1])
-
-                                logger.debug('\t(Flattened) Cosine similarity matrix of %s', tf.shape(flattened_cos_sim).eval())
-                                [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim, k=research_parameters['replace_size_inbetween'])
-                                logger.debug('\t Similarity summary')
-                                logger.debug('\t\tValues: %s', high_sim_values.eval()[:10])
-                                logger.debug('\t\tIndices: %s', high_sim_indices.eval()[:10])
-                                indices_to_replace = tf.mod(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
-                                indices_of_filters_replace = indices_to_replace.eval()
-                                logger.debug('\tFound %s ... highest indices of similarity', indices_of_filters_replace[:5])
-
-                            tf_slice_optimize = optimize_all_affected_with_indices(
-                                loss, indices_of_filters_replace, current_op,
-                                weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
-                            )
-
-                            _ = session.run(tf_slice_optimize, feed_dict=feed_dict)
 
                 if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
                     with open(output_dir + os.sep + 'state_actions_' + str(batch_id)+'.pickle', 'wb') as f:
