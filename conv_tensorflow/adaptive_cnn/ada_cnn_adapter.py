@@ -25,7 +25,7 @@ import getopt
 ##################################################################
 
 logger = None
-logging_level = logging.INFO
+logging_level = logging.DEBUG
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
@@ -38,7 +38,7 @@ include_l2_loss = False
 beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
-iterations_per_batch = 3
+iterations_per_batch = 2
 
 
 def get_final_x(cnn_ops,cnn_hyps):
@@ -660,14 +660,17 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
 
             bias_velocity_vectors[op] = tf.gather(bias_velocity_vectors[op],indices_of_filters_keep)
 
-
         changed_variables.extend([weights[op],biases[op]])
         changed_ops.append(op)
 
         # change out hyperparameter of op
         cnn_hyps[op]['weights'][3]-=amount_to_rmv
 
-        assert tf.shape(tf_new_weights[op]).eval()[3]==cnn_hyperparameters[op]['weights'][3]
+        if tf.shape(tf_new_weights[op]).eval()[3] != cnn_hyperparameters[op]['weights'][3]:
+            logger.debug('Shape of output Tensor of %s: %s',op,tf.shape(tf_new_weights[op]).eval()[3])
+            logger.debug('Shape of hyperparam of %s: %s', op, cnn_hyperparameters[op]['weights'][3])
+            raise AssertionError
+
 
         if op==last_conv_id:
 
@@ -753,20 +756,23 @@ weights,biases = None,None
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : False,
+    'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'SGD','momentum':0.9,
     'remove_filters_by':'Distance',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
-
+    'replace_size_inbetween':16
 }
+
 
 interval_parameters = {
     'history_dump_interval':500,
-    'policy_interval' : 10, #number of batches to process for each policy iteration
+    'policy_interval' : 5, #number of batches to process for each policy iteration
     'test_interval' : 25
 }
+
+
 
 state_action_history = {}
 
@@ -998,6 +1004,7 @@ if __name__=='__main__':
         logger.info('Chunk Size: %d',chunk_size)
         logger.info('Batches in Chunk : %d',batches_in_chunk)
 
+        updated_lr = start_lr
         for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
 
             logger.debug('\tTraining with batch %d',batch_id)
@@ -1021,8 +1028,8 @@ if __name__=='__main__':
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
 
             for _ in range(iterations_per_batch):
-                _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
-                        [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
+                _, activation_means, l,l_vec, predictions = session.run(
+                        [logits,act_means,loss,loss_vec,pred], feed_dict=feed_dict
                 )
 
             # this snippet logs the normalized class distribution every specified interval
@@ -1195,33 +1202,6 @@ if __name__=='__main__':
                         for n, v in zip(changed_var_names,changed_var_values):
                             logger.debug('\t%s,%s',n,str(v.shape))
 
-                        # optimize the newly added fiterls only
-                        if ai[0]=='add':
-
-                            # currently no way to generally slice using gather
-                            # need to do a transoformation to do this.
-                            # change both weights and biases in the current op
-                            pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
-                                                                 biases)
-                            pool_loss = calc_loss(pool_logits, tf_pool_labels)
-                            tf_slice_optimize = optimize_all_affected_with_indices(
-                                pool_loss, np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
-                                current_op, weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
-                            )
-
-                            pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
-                                                        hard_pool.get_pool_data()['pool_labels']
-
-                            # this was done to increase performance and reduce overfitting
-                            # instead of optimizing with every single batch in the pool
-                            # we select few at random
-                            for pool_id in range((hard_pool.get_size() // batch_size) - 1):
-                                if np.random.random() < research_parameters['replace_op_train_rate']:
-                                    pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
-                                    pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
-                                    _ = session.run(tf_slice_optimize, feed_dict={tf_pool_dataset: pbatch_data,
-                                                                                  tf_pool_labels: pbatch_labels})
-
                         # redefine tensorflow ops as they changed sizes
                         logger.info('Redefining Tensorflow ops (logits, loss, optimize,...)')
                         logits, act_means = get_logits_with_ops(tf_dataset, cnn_ops,
@@ -1237,6 +1217,20 @@ if __name__=='__main__':
 
                         pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
                                                          cnn_hyperparameters, weights, biases)
+
+                        # optimize the newly added fiterls only
+                        if ai[0] == 'add':
+
+                            # currently no way to generally slice using gather
+                            # need to do a transoformation to do this.
+                            # change both weights and biases in the current op
+                            tf_slice_optimize = optimize_all_affected_with_indices(
+                                loss, np.arange(cnn_hyperparameters[current_op]['weights'][3] - ai[1],
+                                                     cnn_hyperparameters[current_op]['weights'][3]),
+                                current_op, weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
+                            )
+
+                            _ = session.run(tf_slice_optimize, feed_dict=feed_dict)
 
                     elif 'conv' in current_op and (ai[0]=='replace'):
 
@@ -1275,27 +1269,12 @@ if __name__=='__main__':
                             logger.debug('\tFound %s ... highest indices of similarity',indices_of_filters_replace[:5])
 
 
-                        # currently no way to generally slice using gather
-                        # need to do a transoformation to do this.
-                        # change both weights and biases in the current op
-                        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
-                                                             biases)
-                        pool_loss = calc_loss(pool_logits,tf_pool_labels)
                         tf_slice_optimize = optimize_all_affected_with_indices(
-                                pool_loss,indices_of_filters_replace,current_op,
+                                loss,indices_of_filters_replace,current_op,
                                 weights[current_op],biases[current_op],cnn_hyperparameters,cnn_ops
                         )
 
-                        pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
-
-                        # this was done to increase performance and reduce overfitting
-                        # instead of optimizing with every single batch in the pool
-                        # we select few at random
-                        for pool_id in range((hard_pool.get_size()//batch_size)-1):
-                            if np.random.random()<research_parameters['replace_op_train_rate']:
-                                pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
-                                pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                                _ = session.run(tf_slice_optimize,feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
+                        _ = session.run(tf_slice_optimize,feed_dict=feed_dict)
 
                     elif 'conv' in current_op and ai[0]=='finetune':
                         # pooling takes place here
@@ -1371,6 +1350,57 @@ if __name__=='__main__':
                     for li in range(num_labels):
                         rolling_data_distribution[li]=0.0
                         mean_data_distribution[li]=0.0
+
+                # all the batches we don't have an action
+                else:
+
+                    for current_op in cnn_ops:
+                        if 'conv' in current_op:
+                            if research_parameters['remove_filters_by'] == 'Activation':
+                                layer_activations = rolling_ativation_means[current_op]
+                                indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:research_parameters['replace_size_inbetween']]).astype(
+                                    'int32')
+                            elif research_parameters['remove_filters_by'] == 'Distance':
+                                # calculate cosine distance for F filters (FxF matrix)
+                                # take one side of diagonal, find (f1,f2) pairs with least distance
+                                # select indices amnt f2 indices
+                                logger.debug('Replacing Weights of %s with weights %s', current_op,
+                                             cnn_hyperparameters[current_op]['weights'])
+                                reshaped_weight = tf.transpose(weights[current_op], [3, 0, 1, 2])
+                                logger.debug('\tReshaped weights: %s', tf.shape(reshaped_weight).eval())
+                                reshaped_weight = tf.reshape(weights[current_op],
+                                                             [cnn_hyperparameters[current_op]['weights'][3],
+                                                              cnn_hyperparameters[current_op]['weights'][0] *
+                                                              cnn_hyperparameters[current_op]['weights'][1] *
+                                                              cnn_hyperparameters[current_op]['weights'][2]])
+                                logger.debug('\tTransposed weights: %s', tf.shape(reshaped_weight).eval())
+                                cos_sim_weights = tf.matmul(reshaped_weight, tf.transpose(reshaped_weight)) / tf.matmul(
+                                    tf.sqrt(tf.reduce_sum(reshaped_weight ** 2, axis=1, keep_dims=True)),
+                                    tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight ** 2, axis=1, keep_dims=True)))
+                                )
+                                logger.debug('\tCosine similarity matrix of %s', tf.shape(cos_sim_weights).eval())
+                                upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1)
+                                zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim,
+                                                                              tf.zeros(shape=[
+                                                                                  cnn_hyperparameters[current_op]['weights'][
+                                                                                      3]]))
+                                flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim, shape=[-1])
+
+                                logger.debug('\t(Flattened) Cosine similarity matrix of %s', tf.shape(flattened_cos_sim).eval())
+                                [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim, k=research_parameters['replace_size_inbetween'])
+                                logger.debug('\t Similarity summary')
+                                logger.debug('\t\tValues: %s', high_sim_values.eval()[:10])
+                                logger.debug('\t\tIndices: %s', high_sim_indices.eval()[:10])
+                                indices_to_replace = tf.mod(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
+                                indices_of_filters_replace = indices_to_replace.eval()
+                                logger.debug('\tFound %s ... highest indices of similarity', indices_of_filters_replace[:5])
+
+                            tf_slice_optimize = optimize_all_affected_with_indices(
+                                loss, indices_of_filters_replace, current_op,
+                                weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
+                            )
+
+                            _ = session.run(tf_slice_optimize, feed_dict=feed_dict)
 
                 if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
                     with open(output_dir + os.sep + 'state_actions_' + str(batch_id)+'.pickle', 'wb') as f:
