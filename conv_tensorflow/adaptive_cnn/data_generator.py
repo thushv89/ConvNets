@@ -456,7 +456,7 @@ if __name__ == '__main__':
         dataset_info = {'dataset_type':dataset_type,'elements':elements,'chunk_size':chunk_size,'image_size':image_size,'num_labels':num_labels,'dataset_size':dataset_size,
                         'num_channels':num_channels,'data_in_memory':chunk_size,'resize_to':resize_to,'test_size':test_size}
 
-    logger.info('='*60)
+    '''logger.info('='*60)
     logger.info('Dataset Information')
     logger.info('\t%s',str(dataset_info))
     logger.info('='*60)
@@ -477,13 +477,13 @@ if __name__ == '__main__':
         new_dataset_filename = data_save_directory+os.sep+'cifar-10-nonstation-dataset.pkl'
         new_labels_filename = data_save_directory+os.sep+'cifar-10-nonstation-labels.pkl'
         generate_cifar_test_data(data_filename,data_save_directory)
-        sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)
+        sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)'''
 
     #test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
     # =============== Quick Test =====================
-    '''sample_size = 1000
+    sample_size = 1000
     num_labels = 10
-    x = np.linspace(0, 10, sample_size).reshape(-1, 1)
+    x = np.linspace(0, 784, sample_size).reshape(-1, 1)
     #x = np.random.random(size=[1,sample_size])
 
     # 1e-6 * is for numerical stibility
@@ -501,10 +501,12 @@ if __name__ == '__main__':
     x_axis = np.arange(sample_size)
 
     import matplotlib.pyplot as plt
-    for i in range(num_labels):
-        plt.plot(x_axis,f_prior[:,i])
+    #for i in range(num_labels):
+        #plt.plot(x_axis,f_prior[:,i])
 
+    plt.stackplot(x_axis, f_prior[:, 0],f_prior[:, 1],f_prior[:, 2],f_prior[:, 3],f_prior[:, 4],
+                  f_prior[:, 5], f_prior[:, 6], f_prior[:, 7], f_prior[:, 8], f_prior[:, 9])
     #print(np.sum(f_prior,axis=1).shape)
     #plt.plot(x_axis,np.sum(f_prior,axis=1))
-    plt.show()'''
+    plt.show()
 

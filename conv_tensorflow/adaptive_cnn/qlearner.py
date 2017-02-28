@@ -11,7 +11,8 @@ import sys
 from math import ceil
 from six.moves import cPickle as pickle
 import os
-from sklearn.neural_network import MLPRegressor
+#from sklearn.neural_network import MLPRegressor
+from sklearn.gaussian_process import GaussianProcessRegressor
 from collections import OrderedDict
 
 logging_level = logging.DEBUG
@@ -380,7 +381,7 @@ class AdaCNNAdaptingQLearner(object):
                            np.asscalar(q_for_actions[argsort_q_for_actions[-2]]))>0.001:
                 action_idx = np.asscalar(np.argmax(q_for_actions))
             else:
-                self.rl_logger.debug('\tChoosing stochastic out of best two actions')
+                self.rl_logger.debug('Choosing stochastic out of best two actions')
                 action_idx = np.random.choice([np.asscalar(q_for_actions[argsort_q_for_actions[-1]]),
                                                np.asscalar(q_for_actions[argsort_q_for_actions[-2]])])
 
@@ -529,11 +530,12 @@ class AdaCNNAdaptingQLearner(object):
 
         # Q[a][(state,q)]
         if ai not in self.q:
-            self.regressors[ai]=MLPRegressor(activation='relu', alpha=1e-08, batch_size='auto',
-                                              hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
-                                              learning_rate_init=0.0001, max_iter=100,
-                                              random_state=1, shuffle=True,
-                                              solver='sgd')
+            #self.regressors[ai]=MLPRegressor(activation='relu', alpha=1e-08, batch_size='auto',
+            #                                  hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
+            #                                  learning_rate_init=0.001, max_iter=100,
+            #                                  random_state=1, shuffle=True,
+            #                                 solver='sgd')
+            self.regressors[ai] = GaussianProcessRegressor()
 
             self.q[ai]=OrderedDict([(si,reward)])
 
