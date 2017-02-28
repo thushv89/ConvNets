@@ -628,28 +628,36 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             # flatten the upper triangle to get the highest 'k' argmax
             flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim,shape=[-1])
             logger.debug('\t\tSize of flattened cos sim: %s', tf.shape(flattened_cos_sim).eval())
-            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim,k=amount_to_rmv)
+            # we are finding top amount_to_rmv + epsilon amount because
+            # to avoid k_values = {...,(83,1)(139,94)(139,83),...} like incidents
+            # above case will ignore both indices of (139,83) resulting in a reduction < amount_to_rmv
+            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim,k=min(cnn_hyps[op]['weights'][3], amount_to_rmv+10))
+
             logger.debug('\t\tSize of highest sim indices: %s',tf.shape(high_sim_indices).eval())
             tf_indices_to_remove_1 = tf.mod(high_sim_indices,cnn_hyps[op]['weights'][3])
             tf_indices_to_remove_2 = tf.floor_div(high_sim_indices,cnn_hyps[op]['weights'][3])
             logger.debug('\t\tSimilarity summary')
             logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
             logger.debug('\t\t\tIndices: %s', tf_indices_to_remove_1.eval()[:10])
-            # we get 2 times amount to remove top entries to avoid duplicates of indices
-            indices_to_remove_1 = tf_indices_to_remove_1.eval().tolist()
-            indices_to_remove_2 = tf_indices_to_remove_2.eval().tolist()
+
+            indices_to_remove_1 = tf_indices_to_remove_1.eval()
+            indices_to_remove_2 = tf_indices_to_remove_2.eval()
             assert not np.any(indices_to_remove_1)>=cnn_hyps[op]['weights'][3]
             assert not np.any(indices_to_remove_2) >= cnn_hyps[op]['weights'][3]
+            assert indices_to_remove_2.size == indices_to_remove_1.size
 
-            unique_indices_to_remove = []
-            for idx1,idx2 in zip(indices_to_remove_1,indices_to_remove_2):
+            unique_indices_to_remove = set()
+            for idx1, idx2 in zip(indices_to_remove_1,indices_to_remove_2):
                 if idx1 not in unique_indices_to_remove:
-                    unique_indices_to_remove.append(idx1)
+                    unique_indices_to_remove.add(idx1)
                 else:
-                    unique_indices_to_remove.append(idx2)
+                    unique_indices_to_remove.add(idx2)
 
-            logger.debug('\t\tSize of indices to remove: %s/%d', indices_to_remove_1.shape,cnn_hyps[op]['weights'][3])
-            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - set(unique_indices_to_remove))
+                if len(unique_indices_to_remove)==amount_to_rmv:
+                    break
+
+            logger.debug('\t\tSize of indices to remove: %s/%d', len(unique_indices_to_remove),cnn_hyps[op]['weights'][3])
+            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - unique_indices_to_remove)
             logger.debug('\t\tSize of indices to keep: %s/%d', len(indices_of_filters_keep),cnn_hyps[op]['weights'][3])
 
         # currently no way to generally slice using gather
@@ -682,6 +690,11 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
         if tf.shape(tf_new_weights[op]).eval()[3] != cnn_hyperparameters[op]['weights'][3]:
             logger.debug('Shape of output Tensor of %s: %s',op,tf.shape(tf_new_weights[op]).eval()[3])
             logger.debug('Shape of hyperparam of %s: %s', op, cnn_hyperparameters[op]['weights'][3])
+            logger.debug(indices_to_remove_1)
+            logger.debug(indices_to_remove_2)
+            logger.debug(unique_indices_to_remove)
+            logger.debug(set(unique_indices_to_remove))
+
             raise AssertionError
 
 
@@ -1291,16 +1304,16 @@ if __name__=='__main__':
                             logger.debug('\t\tValues: %s', high_sim_values.eval()[:10])
                             logger.debug('\t\tIndices: %s', high_sim_indices.eval()[:10])
 
-                            tf_indices_to_replace_1 = tf.mod(high_sim_indices, cnn_hyperparameters[op]['weights'][3])
-                            tf_indices_to_replace_2 = tf.floor_div(high_sim_indices, cnn_hyperparameters[op]['weights'][3])
+                            tf_indices_to_replace_1 = tf.mod(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
+                            tf_indices_to_replace_2 = tf.floor_div(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
                             logger.debug('\t\tSimilarity summary')
                             logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
                             logger.debug('\t\t\tIndices: %s', tf_indices_to_replace_1.eval()[:10])
                             # we get 2 times amount to remove top entries to avoid duplicates of indices
                             indices_to_replace_1 = tf_indices_to_replace_1.eval().tolist()
                             indices_to_replace_2 = tf_indices_to_replace_2.eval().tolist()
-                            assert not np.any(indices_to_replace_1) >= cnn_hyperparameters[op]['weights'][3]
-                            assert not np.any(indices_to_replace_2) >= cnn_hyperparameters[op]['weights'][3]
+                            assert not np.any(indices_to_replace_1) >= cnn_hyperparameters[current_op]['weights'][3]
+                            assert not np.any(indices_to_replace_2) >= cnn_hyperparameters[current_op]['weights'][3]
 
                             unique_indices_to_replace = []
                             for idx1, idx2 in zip(indices_to_replace_1, indices_to_replace_2):
@@ -1312,7 +1325,7 @@ if __name__=='__main__':
                             logger.debug('\tFound %s ... highest indices of similarity',unique_indices_to_replace[:5])
 
                         tf_slice_optimize = optimize_all_affected_with_indices(
-                                loss,unique_indices_to_replace,current_op,
+                                loss,np.asarray(unique_indices_to_replace),current_op,
                                 weights[current_op],biases[current_op],cnn_hyperparameters,cnn_ops
                         )
 

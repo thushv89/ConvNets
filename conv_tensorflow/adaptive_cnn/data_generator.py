@@ -100,10 +100,10 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
     if dataset_type=='imagenet-100':
         resize_to = dataset_info['resize_to']
         ops = ['original','rotate','noise','crop','flip']
-        choice_probs = [0.05,0.2,0.4,0.25,0.1]
+        choice_probs = [0.1,0.25,0.2,0.25,0.2]
     elif dataset_type=='cifar-10':
         ops = ['original','rotate','noise','flip']
-        choice_probs = [0.2,0.2,0.4,0.2]
+        choice_probs = [0.2,0.25,0.3,0.25]
 
     image_index = np.random.choice(list(np.where(dataset['labels']==label)[0].flatten()))
     # don't use single image too much. It seems lot of data is going unused
@@ -130,12 +130,14 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
         im = im.rotate(angle)
         sample_img = np.array(im)
     elif selected_op=='noise':
-        noise_amount = min(0.25,np.random.random())
+        noise_amount = min(0.2,np.random.random())
         if dataset_type=='imagenet-100':
             im.thumbnail((resize_to,resize_to), Image.ANTIALIAS)
-            sample_img = (1-noise_amount)*np.array(im) + noise_amount*np.random.random_sample((resize_to,resize_to,num_channels))*255.0
+            sample_img = np.array(im) + noise_amount*np.random.random_sample((resize_to,resize_to,num_channels))*255.0
+            sample_img = np.minimum(sample_img, 255.0)
         elif dataset_type=='cifar-10':
-            sample_img = (1-noise_amount)*np.array(im) + noise_amount*np.random.random_sample((image_size,image_size,num_channels))*255.0
+            sample_img = np.array(im) + noise_amount*np.random.random_sample((image_size,image_size,num_channels))*255.0
+            sample_img = np.minimum(sample_img,255.0)
     elif selected_op=='crop':
         x,y = np.random.randint(24,image_size-resize_to),np.random.randint(24,image_size-resize_to)
         im = im.crop((x,y,x+resize_to,y+resize_to))
