@@ -38,7 +38,7 @@ include_l2_loss = False
 beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
-iterations_per_batch = 3
+iterations_per_batch = 1
 
 
 def get_final_x(cnn_ops,cnn_hyps):
@@ -104,7 +104,7 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
     return weights,biases
 
 
-def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
+def get_logits_with_ops(dataset, cnn_ops, cnn_hyps, weights, biases, use_dropout):
     logger.debug('Defining the logit calculation ...')
     logger.debug('\tCurrent set of operations: %s'%cnn_ops)
     act_means = {}
@@ -118,6 +118,18 @@ def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
             #logger.debug('\t\tX before convolution:%s'%(x.get_shape().as_list()))
             logger.debug('\t\tWeights: %s',tf.shape(weights[op]).eval())
             x = tf.nn.conv2d(x, weights[op], cnn_hyps[op]['stride'], padding=cnn_hyps[op]['padding'])
+
+            if use_dropout:
+                x_2d_shape = tf.shape(x).eval()[:2]
+                dropout_selected_ids = np.random.randint(0,cnn_hyps[op]['weights'][3],(int((1-dropout_rate)*cnn_hyps[op]['weights'][3]),)).tolist()
+                dropout_mask = tf.scatter_nd([[idx] for idx in dropout_selected_ids],
+                                             tf.ones(shape=[len(dropout_selected_ids), batch_size, x_2d_shape[0],
+                                                            x_2d_shape[1]], dtype=tf.float32),
+                                             shape=[cnn_hyps[op]['weights'][3],batch_size,
+                                                    x_2d_shape]
+                                             )
+                dropout_mask = tf.transpose(dropout_mask,[1,2,3,0])
+                x = dropout_mask * x
             #logger.debug('\t\t Relu with x(%s) and b(%s)'%(tf.shape(x).eval(),tf.shape(biases[op]).eval()))
             x = tf.nn.relu(x + biases[op])
             #logger.debug('\t\tX after %s:%s'%tf.shape(weights[op]).eval())
@@ -139,22 +151,28 @@ def get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases):
     # convert 4D output to a 2D input to the hidden layer
     # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
 
-
     fin_x = get_final_x(cnn_ops,cnn_hyps)
 
     logger.debug('Input size of fulcon_out : %d',cnn_hyps['fulcon_out']['in'])
     x = tf.reshape(x, [batch_size,cnn_hyps['fulcon_out']['in']])
 
+    if use_dropout:
+        x = tf.nn.dropout(x,1-dropout_rate)
+
     return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out'],act_means
 
 
-def calc_loss(logits,labels):
+def calc_loss(logits,labels,weighted=False,tf_data_weights=None):
     # Training computation.
     if include_l2_loss:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels)) + \
                (beta/2)*tf.reduce_sum([tf.nn.l2_loss(w) if 'fulcon' in kw or 'conv' in kw else 0 for kw,w in weights.items()])
     else:
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels))
+        # use weighted loss
+        if weighted:
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels) * tf_data_weights)
+        else:
+            loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels))
 
     return loss
 
@@ -185,16 +203,17 @@ def optimize_func(loss,global_step,start_lr=start_lr):
         learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
 
         for op in weight_velocity_vectors.keys():
-            grads_wb = optimizer.compute_gradients(loss, [weights[op], biases[op]])
-            (grads_w,w),(grads_b,b) = grads_wb[0],grads_wb[1]
-            # update velocity vector
+            [(grads_w,w),(grads_b,b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
 
+            # update velocity vector
             weight_velocity_vectors[op] = -(research_parameters['momentum']* weight_velocity_vectors[op] - (learning_rate*grads_w))
             bias_velocity_vectors[op] = -(research_parameters['momentum'] * bias_velocity_vectors[op] - (learning_rate*grads_b))
 
             optimize_ops.append(optimizer.apply_gradients(
                         [(weight_velocity_vectors[op],weights[op]),(bias_velocity_vectors[op],biases[op])]
-                ))
+            ))
+    else:
+        raise NotImplementedError
 
     return optimize_ops,learning_rate
 
@@ -230,6 +249,9 @@ def optimize_with_variable_func(loss,global_step,var_ops):
             ]):
                 optimize_ops.append(optimizer.apply_gradients(
                     [(weight_velocity_vectors[op], weights[op]), (bias_velocity_vectors[op], biases[op])]))
+
+    else:
+        raise NotImplementedError
 
     return optimize_ops,learning_rate
 
@@ -268,7 +290,6 @@ def optimize_with_tensor_slice_func(loss, filter_indices_to_replace, op, w, b, c
     new_grads_b = grads_b * mask_grads_b
 
     grad_apply_op = optimizer.apply_gradients([(new_grads_w,w),(new_grads_b,b)])
-
 
     return grad_apply_op
 
@@ -386,7 +407,7 @@ def predict_with_logits(logits):
 
 
 def predict_with_dataset(dataset,cnn_ops,cnn_hyps,weights,biases):
-    logits,_ = get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases)
+    logits,_ = get_logits_with_ops(dataset,cnn_ops,cnn_hyps,weights,biases,False)
     prediction = tf.nn.softmax(logits)
     return prediction
 
@@ -625,19 +646,40 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
             zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim, tf.zeros(shape=[cnn_hyps[op]['weights'][3]]))
             flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim,shape=[-1])
             logger.debug('\t\tSize of flattened cos sim: %s', tf.shape(flattened_cos_sim).eval())
-            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim,k=2*amount_to_rmv)
-            logger.debug('\t\tSize of highest sim indices: %s',tf.shape(high_sim_indices).eval())
-            indices_to_remove = tf.unique(tf.mod(high_sim_indices,cnn_hyps[op]['weights'][3]))[0]
+
+            # we are finding top amount_to_rmv + epsilon amount because
+            # to avoid k_values = {...,(83,1)(139,94)(139,83),...} like incidents
+            # above case will ignore both indices of (139,83) resulting in a reduction < amount_to_rmv
+            [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim,
+                                                              k=min(cnn_hyps[op]['weights'][3], amount_to_rmv + 10))
+
+            logger.debug('\t\tSize of highest sim indices: %s', tf.shape(high_sim_indices).eval())
+            tf_indices_to_remove_1 = tf.mod(high_sim_indices, cnn_hyps[op]['weights'][3])
+            tf_indices_to_remove_2 = tf.floor_div(high_sim_indices, cnn_hyps[op]['weights'][3])
             logger.debug('\t\tSimilarity summary')
             logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
-            logger.debug('\t\t\tIndices: %s', indices_to_remove.eval()[:10])
-            # we get 2 times amount to remove top entries to avoid duplicates of indices
-            np_indices_to_remove = indices_to_remove.eval()[:amount_to_rmv]
-            assert not np.any(np_indices_to_remove)>=cnn_hyps[op]['weights'][3]
+            logger.debug('\t\t\tIndices: %s', tf_indices_to_remove_1.eval()[:10])
 
-            logger.debug('\t\tSize of indices to remove: %s/%d', np_indices_to_remove.shape,cnn_hyps[op]['weights'][3])
-            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - set(np_indices_to_remove))
-            logger.debug('\t\tSize of indices to keep: %s/%d', len(indices_of_filters_keep),cnn_hyps[op]['weights'][3])
+            indices_to_remove_1 = tf_indices_to_remove_1.eval()
+            indices_to_remove_2 = tf_indices_to_remove_2.eval()
+            assert not np.any(indices_to_remove_1) >= cnn_hyps[op]['weights'][3]
+            assert not np.any(indices_to_remove_2) >= cnn_hyps[op]['weights'][3]
+            assert indices_to_remove_2.size == indices_to_remove_1.size
+
+            unique_indices_to_remove = set()
+            for idx1, idx2 in zip(indices_to_remove_1, indices_to_remove_2):
+                if idx1 not in unique_indices_to_remove:
+                    unique_indices_to_remove.add(idx1)
+                else:
+                    unique_indices_to_remove.add(idx2)
+
+                if len(unique_indices_to_remove) == amount_to_rmv:
+                    break
+
+            logger.debug('\t\tSize of indices to remove: %s/%d', len(unique_indices_to_remove),
+                         cnn_hyps[op]['weights'][3])
+            indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - unique_indices_to_remove)
+            logger.debug('\t\tSize of indices to keep: %s/%d', len(indices_of_filters_keep), cnn_hyps[op]['weights'][3])
 
         # currently no way to generally slice using gather
         # need to do a transoformation to do this.
@@ -753,7 +795,7 @@ weights,biases = None,None
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : False,
+    'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'SGD','momentum':0.9,
@@ -791,7 +833,7 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
-    behavior = 'non-stationary'
+    behavior = 'stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
@@ -805,6 +847,11 @@ if __name__=='__main__':
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 51200
+        elif behavior == 'stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-10-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-10-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
 
@@ -918,6 +965,7 @@ if __name__=='__main__':
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
                                                   discount_rate=0.9,
                                                   fit_interval = 5,
+                                                  even_tries = 3,
                                                   filter_upper_bound=1024,
                                                   net_depth=layer_count,
                                                   upper_bound=10,
@@ -929,6 +977,7 @@ if __name__=='__main__':
         # Input train data
         tf_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TrainDataset')
         tf_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TrainLabels')
+        tf_data_weights = tf.placeholder(tf.float32, shape=(batch_size),name='TrainLabels')
 
         # Pool data
         tf_pool_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='PoolDataset')
@@ -948,8 +997,8 @@ if __name__=='__main__':
         init_op = tf.global_variables_initializer()
         _ = session.run(init_op)
 
-        logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
-        loss = calc_loss(logits,tf_labels)
+        logits,act_means = get_logits_with_ops(tf_dataset,cnn_ops,cnn_hyperparameters,weights,biases,use_dropout)
+        loss = calc_loss(logits,tf_labels,True,tf_data_weights)
         loss_vec = calc_loss_vector(logits,tf_labels)
 
         pred = predict_with_logits(logits)
@@ -960,9 +1009,9 @@ if __name__=='__main__':
         _ = session.run(init_op)
 
         # valid predict function
-        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases,False)
         tf_valid_predictions = predict_with_logits(tf_valid_logits)
-        tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels)
+        tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels,False,None)
 
         pred_test = predict_with_dataset(tf_test_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
 
@@ -1018,7 +1067,21 @@ if __name__=='__main__':
             batch_data = train_dataset[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :, :, :]
             batch_labels = train_labels[chunk_batch_id*batch_size:(chunk_batch_id+1)*batch_size, :]
 
-            feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels}
+            cnt = Counter(np.argmax(batch_labels, axis=1))
+            if behavior=='non-stationary':
+                batch_weights = np.zeros((batch_size,))
+                batch_labels_int = np.argmax(batch_labels, axis=1)
+
+                for li in range(num_labels):
+                    batch_weights[np.where(batch_labels_int==li)[0]] = 1.0 - (cnt[li]/batch_size)
+            elif behavior=='stationary':
+                batch_weights = np.ones((batch_size,))
+            else:
+                raise NotImplementedError
+            #print(cnt)
+            #print(batch_weights)
+            #print(batch_labels_int)
+            feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels, tf_data_weights:batch_weights}
 
             for _ in range(iterations_per_batch):
                 _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
@@ -1145,7 +1208,6 @@ if __name__=='__main__':
                 train_losses = []
 
             if research_parameters['adapt_structure']:
-                cnt = Counter(np.argmax(batch_labels,axis=1))
 
                 # calculate rolling mean of data distribution (amounts of different classes)
                 for li in range(num_labels):
@@ -1202,8 +1264,8 @@ if __name__=='__main__':
                             # need to do a transoformation to do this.
                             # change both weights and biases in the current op
                             pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
-                                                                 biases)
-                            pool_loss = calc_loss(pool_logits, tf_pool_labels)
+                                                                 biases,use_dropout)
+                            pool_loss = calc_loss(pool_logits, tf_pool_labels,False,None)
                             tf_slice_optimize = optimize_all_affected_with_indices(
                                 pool_loss, np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
                                 current_op, weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
@@ -1225,15 +1287,15 @@ if __name__=='__main__':
                         # redefine tensorflow ops as they changed sizes
                         logger.info('Redefining Tensorflow ops (logits, loss, optimize,...)')
                         logits, act_means = get_logits_with_ops(tf_dataset, cnn_ops,
-                                                        cnn_hyperparameters, weights, biases)
-                        loss = calc_loss(logits, tf_labels)
+                                                        cnn_hyperparameters, weights, biases,use_dropout)
+                        loss = calc_loss(logits, tf_labels,True,tf_data_weights)
                         loss_vec = calc_loss_vector(logits, tf_labels)
                         pred = predict_with_logits(logits)
                         optimize,upd_lr = optimize_func(loss, global_step, start_lr)
 
-                        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
+                        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,cnn_ops,cnn_hyperparameters,weights,biases,False)
                         tf_valid_predictions = predict_with_logits(tf_valid_logits)
-                        tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels)
+                        tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels,False,None)
 
                         pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
                                                          cnn_hyperparameters, weights, biases)
@@ -1265,22 +1327,43 @@ if __name__=='__main__':
                                                                           tf.zeros(shape=[cnn_hyperparameters[current_op]['weights'][3]]))
                             flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim, shape=[-1])
 
-                            logger.debug('\t(Flattened) Cosine similarity matrix of %s', tf.shape(flattened_cos_sim).eval())
-                            [high_sim_values,high_sim_indices] = tf.nn.top_k(flattened_cos_sim, k=ai[1])
+                            logger.debug('\t(Flattened) Cosine similarity matrix of %s',
+                                         tf.shape(flattened_cos_sim).eval())
+                            [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim, k=ai[1])
                             logger.debug('\t Similarity summary')
                             logger.debug('\t\tValues: %s', high_sim_values.eval()[:10])
                             logger.debug('\t\tIndices: %s', high_sim_indices.eval()[:10])
-                            indices_to_replace = tf.mod(high_sim_indices, cnn_hyperparameters[current_op]['weights'][3])
-                            indices_of_filters_replace = indices_to_replace.eval()
-                            logger.debug('\tFound %s ... highest indices of similarity',indices_of_filters_replace[:5])
 
+                            tf_indices_to_replace_1 = tf.mod(high_sim_indices,
+                                                             cnn_hyperparameters[current_op]['weights'][3])
+                            tf_indices_to_replace_2 = tf.floor_div(high_sim_indices,
+                                                                   cnn_hyperparameters[current_op]['weights'][3])
+                            logger.debug('\t\tSimilarity summary')
+                            logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
+                            logger.debug('\t\t\tIndices: %s', tf_indices_to_replace_1.eval()[:10])
+                            # we get 2 times amount to remove top entries to avoid duplicates of indices
+                            indices_to_replace_1 = tf_indices_to_replace_1.eval().tolist()
+                            indices_to_replace_2 = tf_indices_to_replace_2.eval().tolist()
+                            assert not np.any(indices_to_replace_1) >= cnn_hyperparameters[current_op]['weights'][3]
+                            assert not np.any(indices_to_replace_2) >= cnn_hyperparameters[current_op]['weights'][3]
+
+                            unique_indices_to_replace = []
+                            for idx1, idx2 in zip(indices_to_replace_1, indices_to_replace_2):
+                                if idx1 not in unique_indices_to_replace:
+                                    unique_indices_to_replace.append(idx1)
+                                else:
+                                    unique_indices_to_replace.append(idx2)
+
+                            logger.debug('\tFound %s ... highest indices of similarity', unique_indices_to_replace[:5])
+
+                            indices_of_filters_replace = np.asarray(unique_indices_to_replace)
 
                         # currently no way to generally slice using gather
                         # need to do a transoformation to do this.
                         # change both weights and biases in the current op
                         pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
-                                                             biases)
-                        pool_loss = calc_loss(pool_logits,tf_pool_labels)
+                                                             biases,use_dropout)
+                        pool_loss = calc_loss(pool_logits,tf_pool_labels,False,None)
                         tf_slice_optimize = optimize_all_affected_with_indices(
                                 pool_loss,indices_of_filters_replace,current_op,
                                 weights[current_op],biases[current_op],cnn_hyperparameters,cnn_ops
@@ -1299,8 +1382,8 @@ if __name__=='__main__':
 
                     elif 'conv' in current_op and ai[0]=='finetune':
                         # pooling takes place here
-                        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights, biases)
-                        pool_loss = calc_loss(pool_logits, tf_pool_labels)
+                        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights, biases,use_dropout)
+                        pool_loss = calc_loss(pool_logits, tf_pool_labels, False, None)
 
                         op = cnn_ops[si[0]]
                         if research_parameters['optimize_end_to_end']:

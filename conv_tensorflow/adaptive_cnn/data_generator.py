@@ -179,7 +179,8 @@ def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_label
 
     return f_prior
 
-def sample_cifar_10_with_gauss(dataset_info,data_filename,f_prior,save_directory):
+def sample_cifar_10_with_distribution(dataset_info, data_filename, f_prior,
+                                      save_directory, new_dataset_filename, new_labels_filename):
     global image_use_counter,logger,class_distribution_logger
     # dataset_info => ['elements']['chunk_size']['type']['image_size']['resize_dim']['num_channels']
     elements,chunk_size = dataset_info['elements'],dataset_info['chunk_size']
@@ -188,8 +189,8 @@ def sample_cifar_10_with_gauss(dataset_info,data_filename,f_prior,save_directory
     dataset_type,image_size = dataset_info['dataset_type'],dataset_info['image_size']
     num_channels = dataset_info['num_channels']
 
-    fp1 = np.memmap(filename=save_directory+os.sep+'cifar-10-nonstation-dataset.pkl', dtype='float32', mode='w+', shape=(elements,image_size,image_size,num_channels))
-    fp2 = np.memmap(filename=save_directory+os.sep+'cifar-10-nonstation-labels.pkl', dtype='int32', mode='w+', shape=(elements,1))
+    fp1 = np.memmap(filename=new_dataset_filename, dtype='float32', mode='w+', shape=(elements,image_size,image_size,num_channels))
+    fp2 = np.memmap(filename=new_labels_filename, dtype='int32', mode='w+', shape=(elements,1))
 
     memmap_idx = 0
     for i,dist in enumerate(f_prior):
@@ -215,7 +216,7 @@ def sample_cifar_10_with_gauss(dataset_info,data_filename,f_prior,save_directory
         class_distribution_logger.info('%d,%s',i,dist_str)
 
 
-def sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,f_prior,save_directory):
+def sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, f_prior, save_directory):
     global image_use_counter,logger,class_distribution_logger
     # dataset_info => ['elements']['chunk_size']['type']['image_size']['resize_dim']['num_channels']
     elements,chunk_size = dataset_info['elements'],dataset_info['chunk_size']
@@ -410,6 +411,8 @@ if __name__ == '__main__':
 
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
+    distribution_type = 'stationary'
+
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
 
@@ -460,26 +463,48 @@ if __name__ == '__main__':
     logger.info('='*60)
 
     logger.info('Generating gaussian priors')
-    priors = generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_labels)
+    if distribution_type=='non-stationary':
+        priors = generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_labels)
+    elif distribution_type=='stationary':
+        priors = np.ones((elements//chunk_size,num_labels))*(1.0/num_labels)
+    else:
+        raise NotImplementedError
+
     logger.info('\tGenerated priors of size: %d,%d',priors.shape[0],priors.shape[1])
 
     if dataset_type == 'imagenet-100':
         dataset_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_small_train_dataset'
         label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_small_train_labels'
-        new_dataset_filename = data_save_directory+os.sep+'imagenet-100-nonstation-dataset.pkl'
-        new_labels_filename = data_save_directory+os.sep+'imagenet-100-nonstation-labels.pkl'
-        sample_imagenet_with_gauss(dataset_info,dataset_filename,label_filename,priors,data_save_directory)
+        if distribution_type == 'non-stationary':
+            new_dataset_filename = data_save_directory+os.sep+'imagenet-100-nonstation-dataset.pkl'
+            new_labels_filename = data_save_directory+os.sep+'imagenet-100-nonstation-labels.pkl'
+        elif distribution_type == 'stationary':
+            new_dataset_filename = data_save_directory + os.sep + 'imagenet-100-station-dataset.pkl'
+            new_labels_filename = data_save_directory + os.sep + 'imagenet-100-station-labels.pkl'
+        else:
+            raise NotImplementedError
+
+        print(new_dataset_filename)
+        sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, data_save_directory)
         #generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
     elif dataset_type == 'cifar-10':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-10.pickle'
-        new_dataset_filename = data_save_directory+os.sep+'cifar-10-nonstation-dataset.pkl'
-        new_labels_filename = data_save_directory+os.sep+'cifar-10-nonstation-labels.pkl'
-        generate_cifar_test_data(data_filename,data_save_directory)
-        sample_cifar_10_with_gauss(dataset_info,data_filename,priors,data_save_directory)
+        if distribution_type=='non-stationary':
+            new_dataset_filename = data_save_directory+os.sep+'cifar-10-nonstation-dataset.pkl'
+            new_labels_filename = data_save_directory+os.sep+'cifar-10-nonstation-labels.pkl'
+        elif distribution_type == 'stationary':
+            new_dataset_filename = data_save_directory + os.sep + 'cifar-10-station-dataset.pkl'
+            new_labels_filename = data_save_directory + os.sep + 'cifar-10-station-labels.pkl'
+        else:
+            raise NotImplementedError
 
-    #test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
+        print(new_dataset_filename)
+        #generate_cifar_test_data(data_filename,data_save_directory)
+        sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
+
+    '''#test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
     # =============== Quick Test =====================
-    '''sample_size = 1000
+    sample_size = 1000
     num_labels = 10
     x = np.linspace(0, 10, sample_size).reshape(-1, 1)
     #x = np.random.random(size=[1,sample_size])

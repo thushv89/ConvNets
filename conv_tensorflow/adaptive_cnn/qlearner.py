@@ -11,7 +11,7 @@ import sys
 from math import ceil
 from six.moves import cPickle as pickle
 import os
-#from sklearn.neural_network import MLPRegressor
+from sklearn.neural_network import MLPRegressor
 from sklearn.gaussian_process import GaussianProcessRegressor
 from collections import OrderedDict
 
@@ -295,6 +295,7 @@ class AdaCNNAdaptingQLearner(object):
         self.filter_upper_bound = params['filter_upper_bound']
 
         self.fit_interval = params['fit_interval'] #GP calculating interval (10)
+        self.even_tries = params['even_tries']
         self.q = {} # store Q values dict[a][state] = q_value
         self.regressors = {} # store logistic regressors
 
@@ -308,10 +309,10 @@ class AdaCNNAdaptingQLearner(object):
         console.setLevel(logging_level)
         self.rl_logger.addHandler(console)
 
-        self.q_length = 60
+        self.q_length = 30
         self.local_time_stamp = 0
         self.actions = [
-            ('add',16),('replace',16),('remove',16),('add',32),('replace',32),('remove',32),
+            ('add',16),('remove',16),('add',32),('remove',32),
             ('finetune', 0),('do_nothing',0)
         ]
         #
@@ -347,7 +348,7 @@ class AdaCNNAdaptingQLearner(object):
             return state, self.actions[-1]
 
         # we try actions evenly otherwise cannot have the approximator
-        if self.local_time_stamp<len(self.actions)*2:
+        if self.local_time_stamp<len(self.actions)*self.even_tries:
             self.rl_logger.debug('Choosing aciton evenly...')
             action = self.actions[self.local_time_stamp%len(self.actions)]
 
@@ -377,13 +378,13 @@ class AdaCNNAdaptingQLearner(object):
                 q_for_actions.append(q_val)
                 self.rl_logger.debug('\tAction: %s Predicted Q: %.5f',a,q_val)
             argsort_q_for_actions = np.argsort(q_for_actions).flatten()
-            if abs(np.asscalar(q_for_actions[argsort_q_for_actions[-1]]) -
-                           np.asscalar(q_for_actions[argsort_q_for_actions[-2]]))>0.001:
-                action_idx = np.asscalar(np.argmax(q_for_actions))
-            else:
-                self.rl_logger.debug('\tChoosing stochastic out of best two actions')
-                action_idx = np.random.choice([np.asscalar(q_for_actions[argsort_q_for_actions[-1]]),
-                                               np.asscalar(q_for_actions[argsort_q_for_actions[-2]])])
+            #if abs(np.asscalar(q_for_actions[argsort_q_for_actions[-1]]) -
+            #               np.asscalar(q_for_actions[argsort_q_for_actions[-2]]))>0.001:
+            action_idx = np.asscalar(np.argmax(q_for_actions))
+            #else:
+            #    self.rl_logger.debug('Choosing stochastic out of best two actions')
+            #    action_idx = np.random.choice([np.asscalar(q_for_actions[argsort_q_for_actions[-1]]),
+            #                                   np.asscalar(q_for_actions[argsort_q_for_actions[-2]])])
 
             action = copy_actions[int(action_idx)]
             self.rl_logger.debug('\tChose: %s'%str(action))
@@ -530,15 +531,15 @@ class AdaCNNAdaptingQLearner(object):
 
         # Q[a][(state,q)]
         if ai not in self.q:
-            #self.regressors[ai]=MLPRegressor(activation='relu', alpha=1e-08, batch_size='auto',
-            #                                  hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
-            #                                  learning_rate_init=0.0001, max_iter=100,
-            #                                  random_state=1, shuffle=True,
-            #                                  solver='sgd')
-            self.regressors[ai] = GaussianProcessRegressor()
+            self.regressors[ai]=MLPRegressor(activation='relu', batch_size='auto',
+                                              hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
+                                              learning_rate_init=0.001, max_iter=100,
+                                              random_state=1, shuffle=True,
+                                              solver='sgd',momentum=0.9)
+            #self.regressors[ai] = GaussianProcessRegressor()
             self.q[ai]=OrderedDict([(si,reward)])
 
-        if self.local_time_stamp>len(self.actions)*2+1:
+        if self.local_time_stamp>len(self.actions)*self.even_tries+1:
             ohe_si = np.zeros((1,self.net_depth+len(si)-1))
             ohe_si[0,-1] = si[2]*1.0/self.filter_upper_bound
             ohe_si[0,-2] = si[1]
@@ -549,8 +550,12 @@ class AdaCNNAdaptingQLearner(object):
             ohe_sj[0, -2] = sj[1]
             ohe_sj[0, int(sj[0])] = 1.0
 
-            self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
-                        self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
+            #self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
+            #            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
+            self.q[ai][si] = reward + self.discount_rate * np.max(
+                [self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]
+            )
+
         else:
             self.q[ai][si]=reward
 
