@@ -1,6 +1,7 @@
 __author__ = 'Thushan Ganegedara'
 
 import tensorflow as tf
+import numpy as np
 
 def update_v():
     ops = []
@@ -22,6 +23,9 @@ if __name__ == '__main__':
                         config=tf.ConfigProto(allow_soft_placement=True))
     _ = tf.device('/gpu:0')
 
-    a = tf.placeholder(dtype=tf.float32,shape=(None,),name='a')
-    print(session.run(b))
+    ind = tf.placeholder(tf.int32)
+    a = tf.placeholder(dtype=tf.float32,shape=(10,10),name='a')
+    b = tf.slice(a,[0,0],[10,ind])
+    print(session.run(b,feed_dict={a:np.random.random((10,10)),ind:2}))
+    print(session.run(b, feed_dict={a: np.random.random((10, 10)), ind: 5}))
     session.close()

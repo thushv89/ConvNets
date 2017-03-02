@@ -366,10 +366,11 @@ class AdaCNNAdaptingQLearner(object):
         # deterministic selection (if epsilon is not 1 or q is not empty)
         elif np.random.random()>self.epsilon:
             self.rl_logger.debug('Choosing action deterministic...')
+            # we create this copy_actions in case we need to change the order the actions processed
+            # without changing the original action space (self.actions)
             copy_actions = list(self.actions)
 
-            q_for_actions = []
-            q_for_actions = self.regressor.predict(self.get_ohe_state_ndarray(state)).tolist()
+            q_for_actions = self.regressor.predict(self.get_ohe_state_ndarray(state)).flatten().tolist()
 
             self.rl_logger.debug('\tActions: %s',self.actions)
             self.rl_logger.debug('\tPredicted Q: %s',q_for_actions)
