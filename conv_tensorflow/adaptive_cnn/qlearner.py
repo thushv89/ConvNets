@@ -331,7 +331,7 @@ class AdaCNNAdaptingQLearner(object):
     def clean_Q(self):
         self.rl_logger.debug('Cleaning Q values (removing old ones)')
         if len(self.q)>self.q_length:
-            self.q.popitem(last=True)
+            self.q = self.q.popitem(last=True)
 
 
     def output_action(self,data,ni):

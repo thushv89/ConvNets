@@ -1222,6 +1222,7 @@ if __name__=='__main__':
                     distMSE = 0.0
                     for li in range(num_labels):
                         distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
+                    distMSE = np.sqrt(distMSE)
 
                     filter_dict = {}
                     for op_i,op in enumerate(cnn_ops):
@@ -1414,7 +1415,7 @@ if __name__=='__main__':
                     if current_state is not None and current_action is not None:
 
                         feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
-                        next_valid_loss, next_valid_predictions = session.run([tf_valid_loss, tf_valid_predictions],
+                        next_valid_predictions = session.run(tf_valid_predictions,
                                                                               feed_dict=feed_valid_dict)
                         next_valid_accuracy_after = accuracy(next_valid_predictions, batch_valid_labels)
 
@@ -1425,7 +1426,7 @@ if __name__=='__main__':
                                              prev_valid_batch_id * batch_size:(prev_valid_batch_id + 1) * batch_size, :]
 
                         feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
-                        prev_valid_loss, prev_valid_predictions = session.run([tf_valid_loss, tf_valid_predictions],
+                        prev_valid_predictions = session.run(tf_valid_predictions,
                                                                               feed_dict=feed_valid_dict)
                         prev_valid_accuracy_after = accuracy(prev_valid_predictions, batch_valid_labels)
 
