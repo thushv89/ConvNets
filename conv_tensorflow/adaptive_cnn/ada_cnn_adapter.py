@@ -806,7 +806,7 @@ research_parameters = {
 
 interval_parameters = {
     'history_dump_interval':500,
-    'policy_interval' : 10, #number of batches to process for each policy iteration
+    'policy_interval' : 20, #number of batches to process for each policy iteration
     'test_interval' : 25
 }
 
@@ -1247,15 +1247,14 @@ if __name__=='__main__':
                         )
                         _ = session.run(update_ops)
 
-                        changed_var_names = [v.name for v in changed_vars]
+                        #changed_var_names = [v.name for v in changed_vars]
+                        #logger.debug('All variable names: %s', str([v.name for v in tf.all_variables()]))
+                        #logger.debug('Changed var names: %s', str(changed_var_names))
+                        #changed_var_values = session.run(changed_vars)
 
-                        logger.debug('All variable names: %s', str([v.name for v in tf.all_variables()]))
-                        logger.debug('Changed var names: %s', str(changed_var_names))
-                        changed_var_values = session.run(changed_vars)
-
-                        logger.debug('Changed Variable Values')
-                        for n, v in zip(changed_var_names,changed_var_values):
-                            logger.debug('\t%s,%s',n,str(v.shape))
+                        #logger.debug('Changed Variable Values')
+                        #for n, v in zip(changed_var_names,changed_var_values):
+                            #logger.debug('\t%s,%s',n,str(v.shape))
 
                         # optimize the newly added fiterls only
                         if ai[0]=='add':

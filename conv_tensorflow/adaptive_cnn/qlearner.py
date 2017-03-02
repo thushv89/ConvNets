@@ -296,8 +296,13 @@ class AdaCNNAdaptingQLearner(object):
 
         self.fit_interval = params['fit_interval'] #GP calculating interval (10)
         self.even_tries = params['even_tries']
-        self.q = {} # store Q values dict[a][state] = q_value
-        self.regressors = {} # store logistic regressors
+        self.q = OrderedDict() # store Q values dict[a,state] = q_value
+
+        self.regressor = MLPRegressor(activation='relu', batch_size='auto',
+                                      hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
+                                      learning_rate_init=0.001, max_iter=100,
+                                      random_state=1, shuffle=True,
+                                      solver='sgd', momentum=0.9)
 
         self.epsilon = params['epsilon']
         self.net_depth = params['net_depth']
@@ -309,28 +314,24 @@ class AdaCNNAdaptingQLearner(object):
         console.setLevel(logging_level)
         self.rl_logger.addHandler(console)
 
-        self.q_length = 30
         self.local_time_stamp = 0
         self.actions = [
             ('add',16),('remove',16),('add',32),('remove',32),
             ('finetune', 0),('do_nothing',0)
         ]
-        #
+        self.q_length = 10 * len(self.actions)
+
         self.past_mean_accuracy = 0
 
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
         self.q = restore_data['q']
-        self.regressors = restore_data['lrs']
+        self.regressor = restore_data['lrs']
 
     def clean_Q(self):
         self.rl_logger.debug('Cleaning Q values (removing old ones)')
-        #self.rl_logger.debug('Current size: ')
-        for ai,state_q_dict in self.q.items():
-            self.rl_logger.debug('\tItems in q for %s: %d',ai,len(state_q_dict))
-            if len(state_q_dict)>self.q_length:
-                for _ in range(len(state_q_dict)-self.q_length):
-                    self.q[ai].popitem(last=True)
+        if len(self.q)>self.q_length:
+            self.q.popitem(last=True)
 
 
     def output_action(self,data,ni):
@@ -366,17 +367,13 @@ class AdaCNNAdaptingQLearner(object):
         elif np.random.random()>self.epsilon:
             self.rl_logger.debug('Choosing action deterministic...')
             copy_actions = list(self.actions)
-            np.random.shuffle(copy_actions)
 
             q_for_actions = []
-            for a in copy_actions:
-                ohe_state = np.zeros((1, self.net_depth + len(state) - 1))
-                ohe_state[0, -1] = state[2]*1.0/self.filter_upper_bound
-                ohe_state[0, -2] = state[1]
-                ohe_state[0, int(state[0])] = 1.0
-                q_val = self.regressors[a].predict(ohe_state)
-                q_for_actions.append(q_val)
-                self.rl_logger.debug('\tAction: %s Predicted Q: %.5f',a,q_val)
+            q_for_actions = self.regressor.predict(self.get_ohe_state_ndarray(state)).tolist()
+
+            self.rl_logger.debug('\tActions: %s',self.actions)
+            self.rl_logger.debug('\tPredicted Q: %s',q_for_actions)
+
             argsort_q_for_actions = np.argsort(q_for_actions).flatten()
             #if abs(np.asscalar(q_for_actions[argsort_q_for_actions[-1]]) -
             #               np.asscalar(q_for_actions[argsort_q_for_actions[-2]]))>0.001:
@@ -403,7 +400,9 @@ class AdaCNNAdaptingQLearner(object):
 
             while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
                 self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
-                self.q[action][state]=-1.0
+                self.q[self.get_ohe_state(state)] = np.zeros(len(self.actions)).tolist()
+                self.q[self.get_ohe_state(state)][self.actions.index(action)] = -1.0
+
                 del q_for_actions[restricted_action_space.index(action)]
                 restricted_action_space.remove(action)
 
@@ -459,7 +458,6 @@ class AdaCNNAdaptingQLearner(object):
 
         self.rl_logger.debug('Finally Selected action: %s'%str(action))
 
-
         # decay epsilon
         if self.local_time_stamp>2*len(self.actions):
             self.epsilon = max(self.epsilon*0.95,0.1)
@@ -471,6 +469,19 @@ class AdaCNNAdaptingQLearner(object):
 
         return state,action
 
+
+    def get_ohe_state(self,s):
+        ohe_state = np.zeros((1, self.net_depth + len(s) - 1))
+        ohe_state[0, -1] = s[2] * 1.0 / self.filter_upper_bound
+        ohe_state[0, -2] = s[1]
+        ohe_state[0, int(s[0])] = 1.0
+
+        return tuple(ohe_state.flatten())
+
+    def get_ohe_state_ndarray(self,s):
+        return np.asarray(self.get_ohe_state(s)).reshape(1,-1)
+
+
     def update_policy(self, data):
         # data['states'] => list of states
         # data['actions'] => list of actions
@@ -478,27 +489,21 @@ class AdaCNNAdaptingQLearner(object):
         # data['prev_accuracy'] => validation accuracy (seen)
 
         if self.local_time_stamp>0 and self.local_time_stamp%self.fit_interval==0:
-            self.rl_logger.info('Training the Approximator...')
-            for a in self.regressors.keys():
-                self.rl_logger.debug('Action: %s ', a)
-                self.rl_logger.debug('Total data: %d', len(self.q[a]))
-                x,y = zip(*self.q[a].items())
-                x,y = np.asarray(x).flatten().reshape(-1,len(data['states'])),np.asarray(y).reshape(-1,1)
-                # since the state contain layer id, let us make the layer id one-hot encoded
-                ohe_x = np.zeros((x.shape[0],self.net_depth),dtype=np.float32)
-                ohe_x[np.arange(x.shape[0]),x[:,0].astype(np.int32)] = 1.0
-                ohe_x = np.append(ohe_x,x[:,1:],axis=1)
-                ohe_x[:,-1] = ohe_x[:,-1]*1.0/self.filter_upper_bound
+            self.rl_logger.info('Training the Q Approximator...')
 
-                assert x.shape[0]== len(self.q[a])
-                self.rl_logger.debug('X: %s, Y: %s',str(np.asarray(ohe_x)[:3,:]),str(np.asarray(y)[:3]))
-                self.regressors[a].fit(ohe_x,y)
+            self.rl_logger.debug('(Q) Total data: %d', len(self.q))
+            x,y = zip(*self.q.items())
+            x,y = np.asarray(x).flatten().reshape(len(self.q),-1),np.asarray(y).flatten().reshape(len(self.q),-1)
+            # since the state contain layer id, let us make the layer id one-hot encoded
+            assert x.shape[0]== len(self.q)
+            self.rl_logger.debug('X (shape): %s, Y (shape): %s', x.shape, y.shape)
+            self.rl_logger.debug('X: %s, Y: %s',str(x[:3,:]),str(y[:3]))
+            self.regressor.fit(x,y)
 
             self.clean_Q()
 
         mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
         #reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
-
 
         si,ai = data['states'],data['actions']
 
@@ -529,35 +534,20 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('\tAction: %s',ai)
         self.rl_logger.debug('\tReward: %.3f',reward)
 
-        # Q[a][(state,q)]
-        if ai not in self.q:
-            self.regressors[ai]=MLPRegressor(activation='relu', batch_size='auto',
-                                              hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
-                                              learning_rate_init=0.001, max_iter=100,
-                                              random_state=1, shuffle=True,
-                                              solver='sgd',momentum=0.9)
-            #self.regressors[ai] = GaussianProcessRegressor()
-            self.q[ai]=OrderedDict([(si,reward)])
-
         if self.local_time_stamp>len(self.actions)*self.even_tries+1:
-            ohe_si = np.zeros((1,self.net_depth+len(si)-1))
-            ohe_si[0,-1] = si[2]*1.0/self.filter_upper_bound
-            ohe_si[0,-2] = si[1]
-            ohe_si[0,int(si[0])] = 1.0
-
-            ohe_sj = np.zeros((1, self.net_depth + len(sj) - 1))
-            ohe_sj[0, -1] = sj[2]*1.0/self.filter_upper_bound
-            ohe_sj[0, -2] = sj[1]
-            ohe_sj[0, int(sj[0])] = 1.0
 
             #self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
             #            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
-            self.q[ai][si] = reward + self.discount_rate * np.max(
-                [self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]
+            sample = reward + self.discount_rate * np.max(
+                [self.regressor.predict(self.get_ohe_state_ndarray(sj)).tolist()]
             )
 
+            self.q[self.get_ohe_state(si)] = np.zeros((len(self.actions))).tolist()
+            self.q[self.get_ohe_state(si)][self.actions.index(ai)] = sample
+
         else:
-            self.q[ai][si]=reward
+            self.q[self.get_ohe_state(si)]=np.zeros((len(self.actions))).tolist()
+            self.q[self.get_ohe_state(si)][self.actions.index(ai)] = reward
 
         self.past_mean_accuracy = mean_accuracy
         self.local_time_stamp += 1
