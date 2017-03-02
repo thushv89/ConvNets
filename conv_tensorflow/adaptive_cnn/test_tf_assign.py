@@ -21,6 +21,7 @@ if __name__ == '__main__':
     session = tf.InteractiveSession(graph=graph,
                         config=tf.ConfigProto(allow_soft_placement=True))
     _ = tf.device('/gpu:0')
-    b  = tf.matrix_band_part(tf.random_normal([3,3]),-1, 2)
+
+    a = tf.placeholder(dtype=tf.float32,shape=(None,),name='a')
     print(session.run(b))
     session.close()

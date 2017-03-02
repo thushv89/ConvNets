@@ -15,6 +15,7 @@ from data_pool import Pool
 from collections import Counter
 from scipy.misc import imsave
 import getopt
+from functools import partial
 
 ##################################################################
 # AdaCNN Adapter
@@ -315,13 +316,12 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
     learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
     optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
 
+    replace_amnt = filter_indices_to_replace.size
 
     if 'conv' in op:
         [(grads_w[op], w), (grads_b[op], b)] = optimizer.compute_gradients(loss, [w, b])
 
         transposed_shape = [cnn_hyps[op]['weights'][3],cnn_hyps[op]['weights'][0],cnn_hyps[op]['weights'][1], cnn_hyps[op]['weights'][2]]
-
-        replace_amnt = filter_indices_to_replace.size
 
         logger.debug('Applying gradients for %s',op)
         logger.debug('\tAnd filter IDs: %s',filter_indices_to_replace)
@@ -355,8 +355,6 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
         transposed_shape = [cnn_hyps[next_op]['weights'][2], cnn_hyps[next_op]['weights'][0], cnn_hyps[next_op]['weights'][1],
                             cnn_hyps[next_op]['weights'][3]]
 
-        replace_amnt = filter_indices_to_replace.size
-
         logger.debug('Applying gradients for %s', next_op)
         logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
 
@@ -372,8 +370,6 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
         grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
 
     elif 'fulcon' in next_op:
-
-        replace_amnt = filter_indices_to_replace.size
 
         logger.debug('Applying gradients for %s', next_op)
         logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
@@ -1015,6 +1011,17 @@ if __name__=='__main__':
 
         pred_test = predict_with_dataset(tf_test_dataset,cnn_ops,cnn_hyperparameters,weights,biases)
 
+        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
+                                                                 biases,use_dropout)
+        pool_loss = calc_loss(pool_logits, tf_pool_labels,False,None)
+
+        tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
+        tf_slice_optimize = optimize_all_affected_with_indices(
+            pool_loss, tf_indices,
+            current_op, weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
+        )
+
+
         logger.info('Tensorflow functions defined')
         logger.info('Variables initialized...')
 
@@ -1263,13 +1270,13 @@ if __name__=='__main__':
                             # currently no way to generally slice using gather
                             # need to do a transoformation to do this.
                             # change both weights and biases in the current op
-                            pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
+                            '''pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
                                                                  biases,use_dropout)
                             pool_loss = calc_loss(pool_logits, tf_pool_labels,False,None)
                             tf_slice_optimize = optimize_all_affected_with_indices(
                                 pool_loss, np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
                                 current_op, weights[current_op], biases[current_op], cnn_hyperparameters, cnn_ops
-                            )
+                            )'''
 
                             pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
                                                         hard_pool.get_pool_data()['pool_labels']
@@ -1285,7 +1292,7 @@ if __name__=='__main__':
                                                                                   tf_pool_labels: pbatch_labels})
 
                         # redefine tensorflow ops as they changed sizes
-                        logger.info('Redefining Tensorflow ops (logits, loss, optimize,...)')
+                        '''logger.info('Redefining Tensorflow ops (logits, loss, optimize,...)')
                         logits, act_means = get_logits_with_ops(tf_dataset, cnn_ops,
                                                         cnn_hyperparameters, weights, biases,use_dropout)
                         loss = calc_loss(logits, tf_labels,True,tf_data_weights)
@@ -1298,7 +1305,7 @@ if __name__=='__main__':
                         tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels,False,None)
 
                         pred_test = predict_with_dataset(tf_test_dataset, cnn_ops,
-                                                         cnn_hyperparameters, weights, biases)
+                                                         cnn_hyperparameters, weights, biases)'''
 
                     elif 'conv' in current_op and (ai[0]=='replace'):
 
@@ -1361,13 +1368,13 @@ if __name__=='__main__':
                         # currently no way to generally slice using gather
                         # need to do a transoformation to do this.
                         # change both weights and biases in the current op
-                        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
+                        '''pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights,
                                                              biases,use_dropout)
                         pool_loss = calc_loss(pool_logits,tf_pool_labels,False,None)
                         tf_slice_optimize = optimize_all_affected_with_indices(
                                 pool_loss,indices_of_filters_replace,current_op,
                                 weights[current_op],biases[current_op],cnn_hyperparameters,cnn_ops
-                        )
+                        )'''
 
                         pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
 
