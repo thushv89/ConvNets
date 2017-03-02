@@ -1438,11 +1438,10 @@ if __name__=='__main__':
                     # updating the policy
                     if current_state is not None and current_action is not None:
 
-                        print(cnn_hyperparameters)
                         feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
                         _ = session.run(tf_valid_logits,feed_dict=feed_valid_dict)
                         next_valid_predictions = session.run(tf_valid_predictions,
-                                                                              feed_dict=feed_valid_dict)
+                                                             feed_dict=feed_valid_dict)
                         next_valid_accuracy_after = accuracy(next_valid_predictions, batch_valid_labels)
 
                         batch_valid_data = train_dataset[

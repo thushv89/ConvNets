@@ -518,17 +518,17 @@ class AdaCNNAdaptingQLearner(object):
         if ai[0]=='add':
             new_filter_size=si[2]+ai[1]
             sj = (si[0],si[1],new_filter_size)
-            #reward = mean_accuracy * (mean_accuracy - self.past_mean_accuracy) - (0.1*ai[1] / self.filter_upper_bound)
+            reward = mean_accuracy - (1.0*ai[1] / self.filter_upper_bound)
         elif ai[0]=='remove':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
-            #reward = mean_accuracy * (mean_accuracy - self.past_mean_accuracy) + (0.1*ai[1] / self.filter_upper_bound)
+            reward = mean_accuracy + (1.0*ai[1] / self.filter_upper_bound)
         else:
             new_filter_size = si[2]
             sj = (si[0], si[1], new_filter_size)
-            #reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
+            reward = mean_accuracy
 
-        reward = mean_accuracy
+        #reward = mean_accuracy
 
         self.rl_logger.debug('Update Summary ')
         self.rl_logger.debug('\tState: %s',si)
