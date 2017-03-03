@@ -16,6 +16,8 @@ from collections import Counter
 from scipy.misc import imsave
 import getopt
 from functools import partial
+import time
+
 
 ##################################################################
 # AdaCNN Adapter
@@ -209,8 +211,8 @@ def optimize_func(loss,global_step,start_lr=start_lr):
             [(grads_w,w),(grads_b,b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
 
             # update velocity vector
-            weight_velocity_vectors[op] = -(research_parameters['momentum']* weight_velocity_vectors[op] - (learning_rate*grads_w))
-            bias_velocity_vectors[op] = -(research_parameters['momentum'] * bias_velocity_vectors[op] - (learning_rate*grads_b))
+            weight_velocity_vectors[op] = research_parameters['momentum']*weight_velocity_vectors[op] + (learning_rate*grads_w)
+            bias_velocity_vectors[op] = research_parameters['momentum']*bias_velocity_vectors[op] + (learning_rate*grads_b)
 
             optimize_ops.append(optimizer.apply_gradients(
                         [(weight_velocity_vectors[op],weights[op]),(bias_velocity_vectors[op],biases[op])]
@@ -926,6 +928,13 @@ if __name__=='__main__':
     error_logger.addHandler(errHandler)
     error_logger.info('#Batch_ID,Loss(Train),Loss(Valid Seen),Loss(Valid Unseen),Valid(Seen),Valid(Unseen),Test')
 
+    perf_logger = logging.getLogger('time_logger')
+    perf_logger.setLevel(logging.INFO)
+    perfHandler = logging.FileHandler(output_dir + os.sep + 'time.log', mode='w')
+    perfHandler.setFormatter(logging.Formatter('%(message)s'))
+    perf_logger.addHandler(perfHandler)
+    perf_logger.info('#Batch_ID,Time(Full),Time(Train),Op count, Var count')
+
     if research_parameters['adapt_structure']:
         cnn_structure_logger = logging.getLogger('cnn_structure_logger')
         cnn_structure_logger.setLevel(logging.INFO)
@@ -1094,6 +1103,8 @@ if __name__=='__main__':
 
         for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
 
+            t0 = time.clock() # starting time for a batch
+
             logger.debug('='*80)
             logger.debug('tf op count: %d',len(graph.get_operations()))
             logger.debug('=' * 80)
@@ -1132,10 +1143,12 @@ if __name__=='__main__':
             #print(batch_labels_int)
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels, tf_data_weights:batch_weights}
 
+            t0_train = time.clock()
             for _ in range(iterations_per_batch):
                 _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
                         [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
                 )
+            t1_train = time.clock()
 
             # this snippet logs the normalized class distribution every specified interval
             if chunk_batch_id%research_parameters['log_distribution_every']==0:
@@ -1438,8 +1451,9 @@ if __name__=='__main__':
                     # updating the policy
                     if current_state is not None and current_action is not None:
 
+                        logger.info('Calculating Valid accuracy Gains')
                         feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
-                        _ = session.run(tf_valid_logits,feed_dict=feed_valid_dict)
+                        #_ = session.run(tf_valid_logits,feed_dict=feed_valid_dict)
                         next_valid_predictions = session.run(tf_valid_predictions,
                                                              feed_dict=feed_valid_dict)
                         next_valid_accuracy_after = accuracy(next_valid_predictions, batch_valid_labels)
@@ -1451,7 +1465,7 @@ if __name__=='__main__':
                                              prev_valid_batch_id * batch_size:(prev_valid_batch_id + 1) * batch_size, :]
 
                         feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
-                        _ = session.run(tf_valid_logits, feed_dict=feed_valid_dict)
+                        #_ = session.run(tf_valid_logits, feed_dict=feed_valid_dict)
                         prev_valid_predictions = session.run(tf_valid_predictions,feed_dict=feed_valid_dict)
 
                         prev_valid_accuracy_after = accuracy(prev_valid_predictions, batch_valid_labels)
@@ -1495,3 +1509,7 @@ if __name__=='__main__':
 
                     pool_dist_logger.info(pool_dist_string)
 
+            t1 = time.clock()
+            op_count = len(graph.get_operations())
+            var_count = len(tf.global_variables()) + len(tf.local_variables()) + len(tf.model_variables())
+            perf_logger.info('%d,%.5f,%.5f,%d,%d',batch_id,t1-t0,t1_train-t0_train,op_count,var_count)

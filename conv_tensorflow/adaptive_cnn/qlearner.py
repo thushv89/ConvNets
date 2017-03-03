@@ -330,9 +330,10 @@ class AdaCNNAdaptingQLearner(object):
 
     def clean_Q(self):
         self.rl_logger.debug('Cleaning Q values (removing old ones)')
+        self.rl_logger.debug('\tSize of Q before: %d',len(self.q))
         if len(self.q)>self.q_length:
-            self.q = self.q.popitem(last=True)
-
+            self.q.popitem(last=True)
+            self.rl_logger.debug('\tSize of Q after: %d', len(self.q))
 
     def output_action(self,data,ni):
         action = None
@@ -518,11 +519,11 @@ class AdaCNNAdaptingQLearner(object):
         if ai[0]=='add':
             new_filter_size=si[2]+ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy - (1.0*ai[1] / self.filter_upper_bound)
+            reward = mean_accuracy - (0.1*new_filter_size / self.filter_upper_bound)
         elif ai[0]=='remove':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy + (1.0*ai[1] / self.filter_upper_bound)
+            reward = mean_accuracy + (0.1*new_filter_size / self.filter_upper_bound)
         else:
             new_filter_size = si[2]
             sj = (si[0], si[1], new_filter_size)
@@ -540,12 +541,11 @@ class AdaCNNAdaptingQLearner(object):
             #self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
             #            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
             sample = reward + self.discount_rate * np.max(
-                [self.regressor.predict(self.get_ohe_state_ndarray(sj)).tolist()]
+                self.regressor.predict(self.get_ohe_state_ndarray(sj)).flatten()
             )
-
+            self.rl_logger.debug('Sample value: %.5f',sample)
             self.q[self.get_ohe_state(si)] = np.zeros((len(self.actions))).tolist()
             self.q[self.get_ohe_state(si)][self.actions.index(ai)] = sample
-
         else:
             self.q[self.get_ohe_state(si)]=np.zeros((len(self.actions))).tolist()
             self.q[self.get_ohe_state(si)][self.actions.index(ai)] = reward
