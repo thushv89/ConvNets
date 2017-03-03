@@ -498,8 +498,225 @@ def get_cnn_string_from_ops(cnn_ops,cnn_hyps):
 
     return current_cnn_string
 
+def add_with_action(op, tf_action_info, tf_activations):
+    global cnn_hyperparameters, tf_cnn_hyperparameters
+    global logger,weights,biases
+    global weight_velocity_vectors,bias_velocity_vectors
 
-def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
+    update_ops = []
+
+    for tmp_op in reversed(cnn_ops):
+        if 'conv' in tmp_op:
+            last_conv_id = tmp_op
+            break
+
+    logger.debug('Running action add for op %s',op)
+
+    amount_to_add = tf_action_info[2]
+    #logger.debug('\tAdding %d filter for %s action recieved',amount_to_add,op)
+    assert 'conv' in op
+
+    # change both weights and biase in the current op
+    logger.debug('\tConcatting %s(old) and %s(new)',str(tf.shape(weights[op]).eval()),
+                 str([tf_cnn_hyperparameters[op]['weights'][0],tf_cnn_hyperparameters[op]['weights'][1],tf_cnn_hyperparameters[op]['weights'][2],amount_to_add]))
+
+    tf_new_weights = tf.concat(3,[weights[op],
+                                        tf.truncated_normal([tf_cnn_hyperparameters[op]['weights'][0],
+                                                             tf_cnn_hyperparameters[op]['weights'][1],tf_cnn_hyperparameters[op]['weights'][2],amount_to_add],stddev=0.02)
+                                        ])
+    tf_new_biases = tf.concat(0,[biases[op],tf.truncated_normal([amount_to_add],stddev=0.001)])
+
+    # updating velocity vectors
+    '''if research_parameters['optimizer']=='Momentum':
+        weight_velocity_vectors[op] = tf.concat(3,[weight_velocity_vectors[op],
+                                              tf.zeros([cnn_hyps[op]['weights'][0],
+                                                        cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2],amount_to_add],dtype=tf.float32)
+                                              ])
+        bias_velocity_vectors[op] = tf.concat(0,[bias_velocity_vectors[op],tf.zeros([amount_to_add],dtype=tf.float32)])'''
+
+    logger.debug('\tSummary of changes to weights of %s ...',op)
+    logger.debug('\t\tNew Weights: %s',str(tf.shape(tf_new_weights[op]).eval()))
+
+    update_ops.append(tf.assign(weights[op], tf_new_weights[op], validate_shape=False))
+    update_ops.append(tf.assign(biases[op], tf_new_biases[op], validate_shape = False))
+
+    # ================ Changes to next_op ===============
+    # Very last convolutional layer
+    # this is different from other layers
+    # as a change in this require changes to FC layer
+    if op==last_conv_id:
+        # change FC layer
+        tf_new_weights['fulcon_out'] = tf.concat(0,[weights['fulcon_out'],tf.truncated_normal([amount_to_add,num_labels],stddev=0.01)])
+
+        logger.debug('\tSummary of changes to weights of fulcon_out')
+        logger.debug('\t\tCurrent Weights: %s',str(tf.shape(weights['fulcon_out']).eval()))
+        logger.debug('\t\tNew Weights: %s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
+
+        # updating velocity vectors
+        '''if research_parameters['optimizer'] == 'Momentum':
+            weight_velocity_vectors['fulcon_out'] = tf.concat(0,[weight_velocity_vectors['fulcon_out'],tf.zeros([amount_to_add,num_labels])])'''
+
+        update_ops.append(tf.assign(weights['fulcon_out'], tf_new_weights['fulcon_out'], validate_shape=False))
+
+    else:
+
+        # change in hyperparameter of next conv op
+        next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(op)+1:] if 'conv' in tmp_op][0]
+        assert op!=next_conv_op
+
+        # change only the weights in next conv_op
+        tf_new_weights[next_conv_op]=tf.concat(2,[weights[next_conv_op],
+                                      tf.truncated_normal([tf_cnn_hyperparameters[next_conv_op]['weights'][0],tf_cnn_hyperparameters[next_conv_op]['weights'][1],
+                                                           amount_to_add,tf_cnn_hyperparameters[next_conv_op]['weights'][3]],stddev=0.01)])
+
+        if research_parameters['optimizer']=='Momentum':
+            weight_velocity_vectors[next_conv_op] = tf.concat(2,[
+                weight_velocity_vectors[next_conv_op],
+                tf.zeros([tf_cnn_hyperparameters[next_conv_op]['weights'][0],tf_cnn_hyperparameters[next_conv_op]['weights'][1],
+                          amount_to_add,tf_cnn_hyperparameters[next_conv_op]['weights'][3]])]
+                                                         )
+
+        update_ops.append(tf.assign(weights[next_conv_op], tf_new_weights[next_conv_op], validate_shape=False))
+        tf_cnn_hyperparameters[next_conv_op]['weights'][2]+=amount_to_add
+
+    return update_ops
+
+def remove_with_action(op, tf_action_info, tf_activations):
+    global cnn_hyperparameters, tf_cnn_hyperparameters
+    global logger,weights,biases
+    global weight_velocity_vectors,bias_velocity_vectors
+
+    update_ops = []
+
+    for tmp_op in reversed(cnn_ops):
+        if 'conv' in tmp_op:
+            last_conv_id = tmp_op
+            break
+
+    # this is trickier than adding weights
+    # We remove the given number of filters
+    # which have the least rolling mean activation averaged over whole map
+    amount_to_rmv = tf_action_info[2]
+    assert 'conv' in op
+
+    if research_parameters['remove_filters_by']=='Activation':
+        indices_of_filters_keep = (np.argsort(layer_activations).flatten()[amount_to_rmv:]).astype('int32')
+        raise NotImplementedError
+    elif research_parameters['remove_filters_by']=='Distance':
+        # calculate cosine distance for F filters (FxF matrix)
+        # take one side of diagonal, find (f1,f2) pairs with least distance
+        # select indices amnt f2 indices
+        logger.debug('\tRemoving %d filters for op %s',amount_to_rmv,op)
+        reshaped_weight = tf.transpose(weights[op],[3,0,1,2])
+        reshaped_weight = tf.reshape(weights[op],[tf_cnn_hyperparameters[op]['weights'][3],
+                                                  tf_cnn_hyperparameters[op]['weights'][0]*tf_cnn_hyperparameters[op]['weights'][1]*tf_cnn_hyperparameters[op]['weights'][2]]
+                                     )
+        cos_sim_weights = tf.matmul(reshaped_weight,tf.transpose(reshaped_weight))/ tf.matmul(
+            tf.sqrt(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)),
+            tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)))
+        )
+        logger.debug('\t\tSize of cos sim: %s', tf.shape(cos_sim_weights).eval())
+        upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1)
+        zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim, tf.zeros(shape=[tf_cnn_hyperparameters[op]['weights'][3]]))
+        flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim,shape=[-1])
+        logger.debug('\t\tSize of flattened cos sim: %s', tf.shape(flattened_cos_sim).eval())
+
+        # we are finding top amount_to_rmv + epsilon amount because
+        # to avoid k_values = {...,(83,1)(139,94)(139,83),...} like incidents
+        # above case will ignore both indices of (139,83) resulting in a reduction < amount_to_rmv
+        [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim,
+                                                          k=min(tf_cnn_hyperparameters[op]['weights'][3], amount_to_rmv + 10))
+
+        logger.debug('\t\tSize of highest sim indices: %s', tf.shape(high_sim_indices).eval())
+        tf_indices_to_remove_1 = tf.mod(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3])
+        tf_indices_to_remove_2 = tf.floor_div(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3])
+        logger.debug('\t\tSimilarity summary')
+        logger.debug('\t\t\tValues: %s', high_sim_values.eval()[:10])
+        logger.debug('\t\t\tIndices: %s', tf_indices_to_remove_1.eval()[:10])
+
+        assert not np.any(indices_to_remove_1) >= cnn_hyps[op]['weights'][3]
+        assert not np.any(indices_to_remove_2) >= cnn_hyps[op]['weights'][3]
+        assert indices_to_remove_2.size == indices_to_remove_1.size
+
+        unique_indices_to_remove = set()
+        for idx1, idx2 in zip(indices_to_remove_1, indices_to_remove_2):
+            if idx1 not in unique_indices_to_remove:
+                unique_indices_to_remove.add(idx1)
+            else:
+                unique_indices_to_remove.add(idx2)
+
+            if len(unique_indices_to_remove) == amount_to_rmv:
+                break
+
+        logger.debug('\t\tSize of indices to remove: %s/%d', len(unique_indices_to_remove),
+                     cnn_hyps[op]['weights'][3])
+        indices_of_filters_keep = list(set(np.arange(cnn_hyps[op]['weights'][3])) - unique_indices_to_remove)
+        logger.debug('\t\tSize of indices to keep: %s/%d', len(indices_of_filters_keep), cnn_hyps[op]['weights'][3])
+
+    # currently no way to generally slice using gather
+    # need to do a transoformation to do this.
+    # change both weights and biase in the current op
+
+    tf_new_weights=tf.transpose(weights[op],[3,0,1,2])
+    tf_new_weights = tf.gather_nd(tf_new_weights,[[idx] for idx in indices_of_filters_keep])
+    tf_new_weights = tf.transpose(tf_new_weights,[1,2,3,0])
+    logger.debug('\tSize after feature map reduction: %s,%s',op,tf.shape(tf_new_weights).eval())
+
+    update_ops.append(tf.assign(weights[op],tf_new_weights,validate_shape=False))
+
+    tf_new_biases=tf.gather(biases[op],indices_of_filters_keep)
+    update_ops.append(tf.assign(biases[op],tf_new_biases,validate_shape=False))
+
+    if research_parameters['optimizer'] == 'Momentum':
+        weight_velocity_vectors[op] = tf.transpose(weight_velocity_vectors[op], [3, 0, 1, 2])
+        weight_velocity_vectors[op] = tf.gather_nd(weight_velocity_vectors[op], [[idx] for idx in indices_of_filters_keep])
+        weight_velocity_vectors[op] = tf.transpose(weight_velocity_vectors[op], [1, 2, 3, 0])
+
+        bias_velocity_vectors[op] = tf.gather(bias_velocity_vectors[op],indices_of_filters_keep)
+
+    # change out hyperparameter of op
+    cnn_hyps[op]['weights'][3]-=amount_to_rmv
+
+    assert tf.shape(tf_new_weights[op]).eval()[3]==cnn_hyperparameters[op]['weights'][3]
+
+    if op==last_conv_id:
+
+        tf_new_weights['fulcon_out'] = tf.gather_nd(weights['fulcon_out'],[[idx] for idx in indices_of_filters_keep])
+
+        update_ops.append(tf.assign(weights['fulcon_out'],tf_new_weights['fulcon_out'],validate_shape=False))
+
+        if research_parameters['optimizer']=='Momentum':
+            weight_velocity_vectors['fulcon_out']=tf.gather_nd(weight_velocity_vectors['fulcon_out'],[[idx] for idx in indices_of_filters_keep])
+
+        cnn_hyps['fulcon_out']['in']-=amount_to_rmv
+        logger.debug('\tSize after feature map reduction: fulcon_out,%s',str(tf.shape(tf_new_weights['fulcon_out']).eval()))
+
+    else:
+        # change in hyperparameter of next conv op
+        next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(op)+1:] if 'conv' in tmp_op][0]
+        assert op!=next_conv_op
+
+        # change only the weights in next conv_op
+
+        tf_new_weights[next_conv_op] = tf.transpose(weights[next_conv_op],[2,0,1,3])
+        tf_new_weights[next_conv_op] = tf.gather_nd(tf_new_weights[next_conv_op],[[idx] for idx in indices_of_filters_keep])
+        tf_new_weights[next_conv_op] = tf.transpose(tf_new_weights[next_conv_op],[1,2,0,3])
+
+        logger.debug('\tSize after feature map reduction: %s,%s',next_conv_op,str(tf.shape(tf_new_weights[next_conv_op]).eval()))
+        update_ops.append(tf.assign(weights[next_conv_op],tf_new_weights[next_conv_op],validate_shape=False))
+
+        if research_parameters['optimizer']=='Momentum':
+            weight_velocity_vectors[next_conv_op] = tf.transpose(weight_velocity_vectors[next_conv_op],[2,0,1,3])
+            weight_velocity_vectors[next_conv_op] = tf.gather_nd(weight_velocity_vectors[next_conv_op],[[idx] for idx in indices_of_filters_keep])
+            weight_velocity_vectors[next_conv_op] = tf.transpose(weight_velocity_vectors[next_conv_op],[1,2,3,0])
+
+        cnn_hyps[next_conv_op]['weights'][2]-=amount_to_rmv
+        logger.debug('')
+        assert tf.shape(tf_new_weights[next_conv_op]).eval()[2] ==cnn_hyperparameters[next_conv_op]['weights'][2]
+
+    return update_ops
+
+def adapt_cnn_with_tf_ops(cnn_ops,tf_action_info, tf_activations):
     '''
     Adapt the network by either adding feature maps or removing
      Furthermore, if momentum optimizer is used this also adapt the velocity vectors
@@ -512,6 +729,7 @@ def adapt_cnn_with_tf_ops(cnn_ops,cnn_hyps,si,ai,layer_activations):
     :return:
     '''
 
+    global tf_cnn_hyperparameters
     global logger,weights,biases
     global weight_velocity_vectors,bias_velocity_vectors
 
@@ -1069,6 +1287,11 @@ if __name__=='__main__':
                     tmp_op, weights[tmp_op], biases[tmp_op], tf_indices_size
                 )
 
+        tf_action_info = tf.placeholder([3],dtype=tf.int32,name='tf_action') # [op_id,action_id,amount] (action_id 0 - add, 1 -remove)
+        tf_running_activations = tf.placeholder((None,),dtype=tf.float32,name='running_activations')
+        update_ops, changed_vars,chaged_ops = adapt_cnn_with_tf_ops(
+                                cnn_ops, tf_action_info, tf_running_activations
+                                )
         logger.info('Tensorflow functions defined')
         logger.info('Variables initialized...')
 
@@ -1303,12 +1526,24 @@ if __name__=='__main__':
                     # where all magic happens (adding and removing filters)
                     si,ai = current_state,current_action
                     current_op = cnn_ops[si[0]]
-                    if 'conv' in current_op and (ai[0]=='add' or ai[0]=='remove'):
+                    if 'conv' in current_op and ai[0]=='add' :
 
-                        update_ops, changed_vars,chaged_ops = adapt_cnn_with_tf_ops(
-                                cnn_ops, cnn_hyperparameters,si, ai, rolling_ativation_means[current_op]
-                        )
+                        # TODO: feed dict
                         _ = session.run(update_ops)
+
+                        # change out hyperparameter of op
+                        cnn_hyperparameters[op]['weights'][3]+=amount_to_add
+                        assert tf_cnn_hyperparameters[op]['weights'][2]==weights[op].get_shape().as_list()[2]
+
+                        if 'fulcon' in next_conv_op:
+                            cnn_hyperparameters['fulcon_out']['in']+=amount_to_add
+                            logger.debug('\t%s in: %d','fulcon_out',cnn_hyperparameters['fulcon_out']['in'])
+
+                            logger.debug('\tSummary of changes to weights of %s',next_conv_op)
+                            logger.debug('\t\tCurrent Weights: %s',str(tf.shape(weights[next_conv_op]).eval()))
+
+                            assert tf_cnn_hyperparameters[next_conv_op]['weights'][2]==tf.shape(tf_new_weights[next_conv_op]).eval()[2]
+
                         update_tf_hyperparameters(session)
 
                         #changed_var_names = [v.name for v in changed_vars]
@@ -1321,27 +1556,27 @@ if __name__=='__main__':
                             #logger.debug('\t%s,%s',n,str(v.shape))
 
                         # optimize the newly added fiterls only
-                        if ai[0]=='add':
+                        pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
+                                                    hard_pool.get_pool_data()['pool_labels']
 
-                            pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
-                                                        hard_pool.get_pool_data()['pool_labels']
+                        # this was done to increase performance and reduce overfitting
+                        # instead of optimizing with every single batch in the pool
+                        # we select few at random
+                        for pool_id in range((hard_pool.get_size() // batch_size) - 1):
+                            if np.random.random() < research_parameters['replace_op_train_rate']:
+                                pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
+                                pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
+                                _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
+                                                                        tf_pool_labels: pbatch_labels}
+                                                )
+                                _ = session.run(tf_slice_optimize[current_op],
+                                                feed_dict={tf_pool_dataset: pbatch_data,
+                                                           tf_pool_labels: pbatch_labels,
+                                                           tf_indices:np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
+                                                           tf_indices_size:ai[1]}
+                                                )
 
-                            # this was done to increase performance and reduce overfitting
-                            # instead of optimizing with every single batch in the pool
-                            # we select few at random
-                            for pool_id in range((hard_pool.get_size() // batch_size) - 1):
-                                if np.random.random() < research_parameters['replace_op_train_rate']:
-                                    pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
-                                    pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
-                                    _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
-                                                                            tf_pool_labels: pbatch_labels}
-                                                    )
-                                    _ = session.run(tf_slice_optimize[current_op],
-                                                    feed_dict={tf_pool_dataset: pbatch_data,
-                                                               tf_pool_labels: pbatch_labels,
-                                                               tf_indices:np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
-                                                               tf_indices_size:ai[1]}
-                                                    )
+                    elif 'conv' in current_op and ai[0]=='remove' :
 
                     elif 'conv' in current_op and (ai[0]=='replace'):
 
