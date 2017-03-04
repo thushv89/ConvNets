@@ -1036,7 +1036,7 @@ if __name__=='__main__':
         logger.info('Chunk Size: %d',chunk_size)
         logger.info('Batches in Chunk : %d',batches_in_chunk)
 
-        previous_loss = 0 # used for the check to start adapting
+        previous_loss = 1e5 # used for the check to start adapting
         start_adapting = False
         for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
 
@@ -1086,14 +1086,6 @@ if __name__=='__main__':
                         [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
                 )
             t1_train = time.clock()
-
-            if research_parameters['adapt_structure'] and \
-                    not start_adapting and previous_loss-l<research_parameters['loss_diff_threshold']:
-                start_adapting = True
-                logger.info('='*80)
-                logger.info('Loss Stabilized: Starting structural adaptations...')
-                logger.info('=' * 80)
-            previous_loss = l
 
             # this snippet logs the normalized class distribution every specified interval
             if chunk_batch_id%research_parameters['log_distribution_every']==0:
@@ -1185,6 +1177,13 @@ if __name__=='__main__':
                                   prev_valid_accuracy,next_valid_accuracy,
                                   np.mean(test_accuracies)
                                   )
+                if research_parameters['adapt_structure'] and \
+                        not start_adapting and previous_loss - mean_train_loss < research_parameters['loss_diff_threshold']:
+                    start_adapting = True
+                    logger.info('=' * 80)
+                    logger.info('Loss Stabilized: Starting structural adaptations...')
+                    logger.info('=' * 80)
+                previous_loss = mean_train_loss
 
                 if research_parameters['save_train_test_images']:
                     local_dir = output_dir+ os.sep + 'saved_images_'+str(batch_id)
