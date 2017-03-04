@@ -747,7 +747,7 @@ research_parameters = {
     'optimizer':'SGD','momentum':0.9,
     'remove_filters_by':'Distance',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
-    'loss_diff_threshold':0.01
+    'loss_diff_threshold':0.02
 
 }
 
@@ -1088,7 +1088,7 @@ if __name__=='__main__':
             t1_train = time.clock()
 
             if research_parameters['adapt_structure'] and \
-                    not start_adapting and abs(previous_loss-1)<0.01:
+                    not start_adapting and previous_loss-l<research_parameters['loss_diff_threshold']:
                 start_adapting = True
                 logger.info('='*80)
                 logger.info('Loss Stabilized: Starting structural adaptations...')
