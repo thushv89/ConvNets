@@ -725,16 +725,15 @@ def init_tf_hyperparameters():
             }
 
 
-def update_tf_hyperparameters(session):
+def update_tf_hyperparameters(op,tf_weight_shape,tf_in_size):
     global cnn_ops, cnn_hyperparameters, tf_cnn_hyperparameters
     update_ops = []
-    for op in cnn_ops:
-        if 'conv' in op:
-            update_ops.append(tf.assign(tf_cnn_hyperparameters[op]['weights'],cnn_hyperparameters[op]['weights']))
-        if 'fulcon' in op:
-            update_ops.append(tf.assign(tf_cnn_hyperparameters[op]['in'],cnn_hyperparameters[op]['in']))
-            update_ops.append(tf.assign(tf_cnn_hyperparameters[op]['out'],cnn_hyperparameters[op]['out']))
-    session.run(update_ops)
+    if 'conv' in op:
+        update_ops.append(tf.assign(tf_cnn_hyperparameters[op]['weights'],tf_weight_shape))
+    if 'fulcon' in op:
+        update_ops.append(tf.assign(tf_cnn_hyperparameters[op]['in'],tf_in_size))
+
+    return update_ops
 
 
 weights,biases = None,None
@@ -748,6 +747,7 @@ research_parameters = {
     'optimizer':'SGD','momentum':0.9,
     'remove_filters_by':'Distance',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
+    'loss_diff_threshold':0.01
 
 }
 
@@ -984,14 +984,25 @@ if __name__=='__main__':
                                         name='tf_action')  # [op_id,action_id,amount] (action_id 0 - add, 1 -remove)
         tf_running_activations = tf.placeholder(shape=(None,), dtype=tf.float32, name='running_activations')
 
+        tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
+        tf_in_size = tf.placeholder(dtype=tf.int32)
+        tf_update_hyp_ops={}
         for tmp_op in cnn_ops:
             if 'conv' in tmp_op:
+                tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op,tf_weight_shape,tf_in_size)
                 tf_add_filters_ops[tmp_op] = add_with_action(tmp_op,tf_action_info,tf_running_activations)
                 tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
                 tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
                     pool_loss, tf_indices,
                     tmp_op, weights[tmp_op], biases[tmp_op], tf_indices_size
                 )
+            elif 'fulcon' in tmp_op:
+                tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
+
+        if research_parameters['optimize_end_to_end']:
+            optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
+        else:
+            raise NotImplementedError
 
         logger.info('Tensorflow functions defined')
         logger.info('Variables initialized...')
@@ -1025,6 +1036,8 @@ if __name__=='__main__':
         logger.info('Chunk Size: %d',chunk_size)
         logger.info('Batches in Chunk : %d',batches_in_chunk)
 
+        previous_loss = 0 # used for the check to start adapting
+        start_adapting = False
         for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
 
             t0 = time.clock() # starting time for a batch
@@ -1073,6 +1086,14 @@ if __name__=='__main__':
                         [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
                 )
             t1_train = time.clock()
+
+            if research_parameters['adapt_structure'] and \
+                    not start_adapting and abs(previous_loss-1)<0.01:
+                start_adapting = True
+                logger.info('='*80)
+                logger.info('Loss Stabilized: Starting structural adaptations...')
+                logger.info('=' * 80)
+            previous_loss = l
 
             # this snippet logs the normalized class distribution every specified interval
             if chunk_batch_id%research_parameters['log_distribution_every']==0:
@@ -1193,7 +1214,7 @@ if __name__=='__main__':
                 mean_train_loss = 0.0
                 train_losses = []
 
-            if research_parameters['adapt_structure']:
+            if start_adapting and research_parameters['adapt_structure']:
 
                 # calculate rolling mean of data distribution (amounts of different classes)
                 for li in range(num_labels):
@@ -1251,6 +1272,10 @@ if __name__=='__main__':
                         cnn_hyperparameters[current_op]['weights'][3]+=amount_to_add
                         assert cnn_hyperparameters[current_op]['weights'][2]==tf.shape(weights[current_op]).eval()[2]
 
+                        session.run(tf_update_hyp_ops[current_op], feed_dict={
+                            tf_weight_shape:cnn_hyperparameters[current_op]['weights']
+                        })
+
                         if current_op == last_conv_id:
                             cnn_hyperparameters['fulcon_out']['in']+=amount_to_add
 
@@ -1258,6 +1283,9 @@ if __name__=='__main__':
                             logger.debug('\tSummary of changes to weights of fulcon_out')
                             logger.debug('\t\tNew Weights: %s', str(tf.shape(weights['fulcon_out']).eval()))
 
+                            session.run(tf_update_hyp_ops['fulcon_out'],feed_dict={
+                                tf_in_size:cnn_hyperparameters['fulcon_out']['in']
+                            })
                         else:
 
                             next_conv_op = \
@@ -1270,7 +1298,9 @@ if __name__=='__main__':
                             cnn_hyperparameters[next_conv_op]['weights'][2] += amount_to_add
                             assert cnn_hyperparameters[next_conv_op]['weights'][2]==tf.shape(weights[next_conv_op]).eval()[2]
 
-                        update_tf_hyperparameters(session)
+                            session.run(tf_update_hyp_ops[next_conv_op], feed_dict={
+                                tf_weight_shape: cnn_hyperparameters[next_conv_op]['weights']
+                            })
 
                         #changed_var_names = [v.name for v in changed_vars]
                         #logger.debug('All variable names: %s', str([v.name for v in tf.all_variables()]))
@@ -1310,8 +1340,8 @@ if __name__=='__main__':
                                             tf_running_activations: rolling_ativation_means[current_op]
                                         })
                         rm_indices = rm_indices.flatten()
-
                         amount_to_rmv = ai[1]
+
                         if research_parameters['remove_filters_by'] == 'Activation':
                             raise NotImplementedError
 
@@ -1334,11 +1364,18 @@ if __name__=='__main__':
                         cnn_hyperparameters[current_op]['weights'][3] -= amount_to_rmv
                         assert tf.shape(weights[current_op]).eval()[3] == cnn_hyperparameters[current_op]['weights'][3]
 
+                        session.run(tf_update_hyp_ops[current_op], feed_dict={
+                            tf_weight_shape: cnn_hyperparameters[current_op]['weights']
+                        })
+
                         if current_op == last_conv_id:
                             cnn_hyperparameters['fulcon_out']['in'] -= amount_to_rmv
                             logger.debug('\tSize after feature map reduction: fulcon_out,%s',
                                          str(tf.shape(weights['fulcon_out']).eval()))
 
+                            session.run(tf_update_hyp_ops['fulcon_out'], feed_dict={
+                                tf_in_size: cnn_hyperparameters['fulcon_out']['in']
+                            })
                         else:
                             next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(current_op) + 1:] if 'conv' in tmp_op][0]
                             assert current_op != next_conv_op
@@ -1350,7 +1387,9 @@ if __name__=='__main__':
                             assert tf.shape(weights[next_conv_op]).eval()[2] == \
                                    cnn_hyperparameters[next_conv_op]['weights'][2]
 
-                        update_tf_hyperparameters(session)
+                            session.run(tf_update_hyp_ops[next_conv_op], feed_dict={
+                                tf_weight_shape: cnn_hyperparameters[next_conv_op]['weights']
+                            })
 
                     elif 'conv' in current_op and (ai[0]=='replace'):
 
@@ -1432,11 +1471,6 @@ if __name__=='__main__':
                         #pool_loss = calc_loss(pool_logits, tf_pool_labels, False, None)
 
                         op = cnn_ops[si[0]]
-                        if research_parameters['optimize_end_to_end']:
-                            optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
-                        else:
-                            optimize_with_variable, upd_lr = optimize_with_variable_func(pool_loss, global_step, [op,'fulcon_out'])
-
                         pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
 
                         logger.debug('Only tuning following variables...')
