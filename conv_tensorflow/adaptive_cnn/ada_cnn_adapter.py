@@ -498,7 +498,11 @@ def get_cnn_string_from_ops(cnn_ops,cnn_hyps):
 
     return current_cnn_string
 
-def add_with_action(op, tf_action_info, tf_activations):
+
+def add_with_action(
+        op, tf_action_info, tf_weights_this, tf_bias_this,
+        tf_weights_next, ttf_activations
+):
     global cnn_hyperparameters, tf_cnn_hyperparameters
     global logger,weights,biases
     global weight_velocity_vectors,bias_velocity_vectors
@@ -517,11 +521,8 @@ def add_with_action(op, tf_action_info, tf_activations):
     assert 'conv' in op
 
     # calculating new weights
-    tf_new_weights = tf.concat(3,[weights[op],
-                                        tf.truncated_normal([tf_cnn_hyperparameters[op]['weights'][0],
-                                                             tf_cnn_hyperparameters[op]['weights'][1],tf_cnn_hyperparameters[op]['weights'][2],amount_to_add],stddev=0.02)
-                                        ])
-    tf_new_biases = tf.concat(0,[biases[op],tf.truncated_normal([amount_to_add],stddev=0.001)])
+    tf_new_weights = tf.concat(3,[weights[op],tf_weights_this])
+    tf_new_biases = tf.concat(0,[biases[op],tf_bias_this])
 
     # updating velocity vectors
     '''if research_parameters['optimizer']=='Momentum':
@@ -540,8 +541,9 @@ def add_with_action(op, tf_action_info, tf_activations):
     # as a change in this require changes to FC layer
     if op==last_conv_id:
         # change FC layer
-        tf_new_weights = tf.concat(0,[weights['fulcon_out'],tf.truncated_normal([amount_to_add,num_labels],stddev=0.01)])
-
+        # the reshaping is required because our placeholder for weights_next is Rank 4
+        tf_weights_next = tf.reshape(tf_weights_next,[-1])
+        tf_new_weights = tf.concat(0,[weights['fulcon_out'],tf_weights_next])
 
         # updating velocity vectors
         '''if research_parameters['optimizer'] == 'Momentum':
@@ -556,9 +558,7 @@ def add_with_action(op, tf_action_info, tf_activations):
         assert op!=next_conv_op
 
         # change only the weights in next conv_op
-        tf_new_weights=tf.concat(2,[weights[next_conv_op],
-                                      tf.truncated_normal([tf_cnn_hyperparameters[next_conv_op]['weights'][0],tf_cnn_hyperparameters[next_conv_op]['weights'][1],
-                                                           amount_to_add,tf_cnn_hyperparameters[next_conv_op]['weights'][3]],stddev=0.01)])
+        tf_new_weights=tf.concat(2,[weights[next_conv_op],tf_weights_next])
 
         '''if research_parameters['optimizer']=='Momentum':
             weight_velocity_vectors[next_conv_op] = tf.concat(2,[
@@ -949,16 +949,17 @@ if __name__=='__main__':
         tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TestDataset')
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TestLabels')
 
+        # if using momentum
         if research_parameters['optimizer']=='Momentum':
             init_velocity_vectors(cnn_ops,cnn_hyperparameters)
 
         init_op = tf.global_variables_initializer()
         _ = session.run(init_op)
 
+        # Tensorflow operations related to training data
         logits,act_means = get_logits_with_ops(tf_dataset,weights,biases,use_dropout)
         loss = calc_loss(logits,tf_labels,True,tf_data_weights)
         loss_vec = calc_loss_vector(logits,tf_labels)
-
         pred = predict_with_logits(logits)
         optimize,upd_lr = optimize_func(loss,global_step,start_lr)
         inc_gstep = inc_global_step(global_step)
@@ -966,16 +967,19 @@ if __name__=='__main__':
         init_op = tf.global_variables_initializer()
         _ = session.run(init_op)
 
-        # valid predict function
+        # Tensorflow operations for validation data
         tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,weights,biases,False)
         tf_valid_predictions = predict_with_logits(tf_valid_logits)
         tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels,False,None)
 
+        # Tensorflow operations for test data
         pred_test = predict_with_dataset(tf_test_dataset, weights,biases)
 
+        # Tensorflow operations for hard_pool
         pool_logits, _ = get_logits_with_ops(tf_pool_dataset, weights, biases,use_dropout)
         pool_loss = calc_loss(pool_logits, tf_pool_labels,False,None)
 
+        # Tensorflow operations that are defined one for each convolution operation
         tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
         tf_indices_size = tf.placeholder(tf.int32)
         tf_slice_optimize = {}
@@ -984,13 +988,19 @@ if __name__=='__main__':
                                         name='tf_action')  # [op_id,action_id,amount] (action_id 0 - add, 1 -remove)
         tf_running_activations = tf.placeholder(shape=(None,), dtype=tf.float32, name='running_activations')
 
+        tf_weights_this = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32,name='new_weights_current')
+        tf_bias_this = tf.placeholder(shape=(None,), dtype=tf.float32, name='new_bias_current')
+        tf_weights_next = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32,name='new_weights_next')
+
         tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
         tf_in_size = tf.placeholder(dtype=tf.int32)
         tf_update_hyp_ops={}
+
         for tmp_op in cnn_ops:
             if 'conv' in tmp_op:
                 tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op,tf_weight_shape,tf_in_size)
-                tf_add_filters_ops[tmp_op] = add_with_action(tmp_op,tf_action_info,tf_running_activations)
+                tf_add_filters_ops[tmp_op] = add_with_action(tmp_op,tf_action_info,tf_weights_this,
+                                                             tf_bias_this,tf_weights_next,tf_running_activations)
                 tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
                 tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
                     pool_loss, tf_indices,
@@ -1075,9 +1085,7 @@ if __name__=='__main__':
                 batch_weights = np.ones((batch_size,))
             else:
                 raise NotImplementedError
-            #print(cnt)
-            #print(batch_weights)
-            #print(batch_labels_int)
+
             feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels, tf_data_weights:batch_weights}
 
             t0_train = time.clock()
@@ -1249,17 +1257,28 @@ if __name__=='__main__':
                     current_op = cnn_ops[si[0]]
                     if 'conv' in current_op and ai[0]=='add' :
 
-                        _ = session.run(tf_add_filters_ops[current_op],
-                                        feed_dict={
-                                            tf_action_info:np.asarray([si[0],1,ai[1]]),
-                                            tf_running_activations:rolling_ativation_means[current_op]
-                                        })
-
                         amount_to_add = ai[1]
                         for tmp_op in reversed(cnn_ops):
                             if 'conv' in tmp_op:
                                 last_conv_id = tmp_op
                                 break
+
+                        _ = session.run(tf_add_filters_ops[current_op],
+                                        feed_dict={
+                                            tf_action_info:np.asarray([si[0],1,ai[1]]),
+                                            tf_weights_this:np.random.normal(scale=0.01,size=(
+                                                cnn_hyperparameters[op]['weights'][0],cnn_hyperparameters[op]['weights'][1],
+                                                cnn_hyperparameters[op]['weights'][2],amount_to_add)),
+                                            tf_bias_this:np.random.normal(scale=0.01,size=(amount_to_add)),
+
+                                            tf_weights_next:np.random.normal(scale=0.01,size=(
+                                                cnn_hyperparameters[next_conv_op]['weights'][0],cnn_hyperparameters[next_conv_op]['weights'][1],
+                                                amount_to_add,cnn_hyperparameters[next_conv_op]['weights'][3])
+                                                                             ) if last_conv_id != current_op else
+                                            np.random.normal(scale=0.01,size=(amount_to_add,num_labels)),
+
+                                            tf_running_activations:rolling_ativation_means[current_op]
+                                        })
 
                         # change both weights and biase in the current op
                         logger.debug('\tAdding %d new weights',amount_to_add)
