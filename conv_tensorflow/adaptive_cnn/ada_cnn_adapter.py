@@ -75,6 +75,7 @@ def get_final_x(cnn_ops,cnn_hyps):
 
 
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
+    global tf_layer_activations
     weights,biases = {},{}
 
     logger.info('Initializing the iConvNet (conv_global,pool_global,classifier)...\n')
@@ -87,6 +88,8 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
             biases[op] = tf.Variable(tf.constant(
                 np.random.random()*0.001,shape=[cnn_hyps[op]['weights'][3]]
             ),validate_shape = False, expected_shape = [cnn_hyps[op]['weights'][3]],name=op+'_bias',dtype=tf.float32)
+
+            tf_layer_activations[op] = tf.Variable(tf.zeros(shape=[cnn_hyps[op]['weights'][3]], dtype=tf.float32, name = op+'_activations'),validate_shape=False)
 
             logger.debug('Weights for %s initialized with size %s',op,str(cnn_hyps[op]['weights']))
             logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['weights'][3])
@@ -139,12 +142,15 @@ def initialize_cnn_with_ops_fixed(cnn_ops,cnn_hyps):
 
     return weights,biases
 
-def get_logits_with_ops(dataset, weights, biases, use_dropout):
+def get_logits_with_ops(dataset, use_dropout):
     global cnn_ops,tf_cnn_hyperparameters
+    global tf_layer_activations
+    global weights,biases
 
     logger.debug('Defining the logit calculation ...')
     logger.debug('\tCurrent set of operations: %s'%cnn_ops)
-    act_means = {}
+    activation_ops = []
+
     x = dataset
     logger.debug('\tReceived data for X(%s)...'%x.get_shape().as_list())
 
@@ -170,7 +176,7 @@ def get_logits_with_ops(dataset, weights, biases, use_dropout):
             #logger.debug('\t\t Relu with x(%s) and b(%s)'%(tf.shape(x).eval(),tf.shape(biases[op]).eval()))
             x = tf.nn.relu(x + biases[op])
             #logger.debug('\t\tX after %s:%s'%tf.shape(weights[op]).eval())
-            act_means[op]=tf.reduce_mean(x,[0,1,2])
+            activation_ops.append(tf.assign(tf_layer_activations[op],tf.reduce_mean(x,[0,1,2]),validate_shape=False))
 
         if 'pool' in op:
             logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,cnn_hyperparameters[op]['kernel'],cnn_hyperparameters[op]['stride']))
@@ -196,7 +202,7 @@ def get_logits_with_ops(dataset, weights, biases, use_dropout):
     if use_dropout:
         x = tf.nn.dropout(x,1-dropout_rate)
 
-    return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out'],act_means
+    return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out'],activation_ops
 
 
 def calc_loss(logits,labels,weighted=False,tf_data_weights=None):
@@ -443,6 +449,7 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
 
     return grad_ops
 
+
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
 
@@ -453,8 +460,8 @@ def predict_with_logits(logits):
     return prediction
 
 
-def predict_with_dataset(dataset, weights,biases):
-    logits,_ = get_logits_with_ops(dataset,weights,biases,False)
+def predict_with_dataset(dataset):
+    logits,_ = get_logits_with_ops(dataset,False)
     prediction = tf.nn.softmax(logits)
     return prediction
 
@@ -633,8 +640,9 @@ def remove_with_action(op, tf_action_info, tf_activations):
     assert 'conv' in op
 
     if research_parameters['remove_filters_by']=='Activation':
-        indices_of_filters_keep = (np.argsort(layer_activations).flatten()[amount_to_rmv:]).astype('int32')
-        raise NotImplementedError
+        neg_activations = -1.0 * tf_activations
+        [min_act_values,tf_unique_rm_ind] = tf.nn.top_k(tf_layer_activations[op],k=amount_to_rmv,name='min_act_indices')
+
     elif research_parameters['remove_filters_by']=='Distance':
         # calculate cosine distance for F filters (FxF matrix)
         # take one side of diagonal, find (f1,f2) pairs with least distance
@@ -665,11 +673,12 @@ def remove_with_action(op, tf_action_info, tf_activations):
         tf_indices_to_rm = tf.reshape(tf.stack([tf_indices_to_remove_1,tf_indices_to_remove_2],name='all_rm_indices'),shape=[-1])
         # return both values and indices of unique values (discard indices)
         tf_unique_rm_ind,_ = tf.unique(tf_indices_to_rm,name='unique_rm_indices')
-        tf_indices_to_rm = tf.reshape(tf.slice(tf_unique_rm_ind,[0],[amount_to_rmv]),shape=[amount_to_rmv,1],name='indices_to_rm')
-        tf_rm_ind_scatter = tf.scatter_nd(tf_indices_to_rm,tf.ones(shape=[amount_to_rmv],dtype=tf.int32),shape=[tf_cnn_hyperparameters[op]['weights'][3]])
 
-        tf_indices_to_keep_boolean = tf.equal(tf_rm_ind_scatter,tf.constant(0,dtype=tf.int32))
-        tf_indices_to_keep = tf.reshape(tf.where(tf_indices_to_keep_boolean),shape=[-1,1],name='indices_to_keep')
+    tf_indices_to_rm = tf.reshape(tf.slice(tf_unique_rm_ind,[0],[amount_to_rmv]),shape=[amount_to_rmv,1],name='indices_to_rm')
+    tf_rm_ind_scatter = tf.scatter_nd(tf_indices_to_rm,tf.ones(shape=[amount_to_rmv],dtype=tf.int32),shape=[tf_cnn_hyperparameters[op]['weights'][3]])
+
+    tf_indices_to_keep_boolean = tf.equal(tf_rm_ind_scatter,tf.constant(0,dtype=tf.int32))
+    tf_indices_to_keep = tf.reshape(tf.where(tf_indices_to_keep_boolean),shape=[-1,1],name='indices_to_keep')
 
     # currently no way to generally slice using gather
     # need to do a transoformation to do this.
@@ -724,6 +733,7 @@ def remove_with_action(op, tf_action_info, tf_activations):
             update_ops.append(tf.assign(tf_weight_vels[next_conv_op],weight_vel,validate_shape=False))
 
     return update_ops,tf_indices_to_rm
+
 
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
     global logger
@@ -783,6 +793,7 @@ def update_tf_hyperparameters(op,tf_weight_shape,tf_in_size):
 
 
 weights,biases = None,None
+tf_layer_activations = {}
 
 research_parameters = {
     'save_train_test_images':False,
@@ -978,7 +989,6 @@ if __name__=='__main__':
                                                   filter_upper_bound=512,
                                                   net_depth=layer_count,
                                                   n_conv = len([op for op in cnn_ops if 'conv' in op]),
-                                                  upper_bound=10,
                                                   epsilon=0.99)
 
         global_step = tf.Variable(0, dtype=tf.int32,trainable=False,name='global_step')
@@ -1018,7 +1028,7 @@ if __name__=='__main__':
         _ = session.run(init_op)
 
         # Tensorflow operations related to training data
-        logits,act_means = get_logits_with_ops(tf_dataset,weights,biases,use_dropout)
+        logits,tf_activation_ops = get_logits_with_ops(tf_dataset,use_dropout)
         loss = calc_loss(logits,tf_labels,True,tf_data_weights)
         loss_vec = calc_loss_vector(logits,tf_labels)
         pred = predict_with_logits(logits)
@@ -1033,15 +1043,15 @@ if __name__=='__main__':
         _ = session.run(init_op)
 
         # Tensorflow operations for validation data
-        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,weights,biases,False)
+        tf_valid_logits, _ = get_logits_with_ops(tf_valid_dataset,False)
         tf_valid_predictions = predict_with_logits(tf_valid_logits)
         tf_valid_loss = calc_loss(tf_valid_logits,tf_valid_labels,False,None)
 
         # Tensorflow operations for test data
-        pred_test = predict_with_dataset(tf_test_dataset, weights,biases)
+        pred_test = predict_with_dataset(tf_test_dataset)
 
         # Tensorflow operations for hard_pool
-        pool_logits, _ = get_logits_with_ops(tf_pool_dataset, weights, biases,use_dropout)
+        pool_logits, _ = get_logits_with_ops(tf_pool_dataset,use_dropout)
         pool_loss = calc_loss(pool_logits, tf_pool_labels,False,None)
 
         if research_parameters['adapt_structure']:
@@ -1088,7 +1098,7 @@ if __name__=='__main__':
                     tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
 
             if research_parameters['optimize_end_to_end']:
-                optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
+                optimize_with_pool, upd_lr = optimize_func(pool_loss, global_step, start_lr)
             else:
                 raise NotImplementedError
 
@@ -1173,13 +1183,14 @@ if __name__=='__main__':
             t0_train = time.clock()
             for _ in range(iterations_per_batch):
                 if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
-                    _, activation_means, l, l_vec, _, _, updated_lr, predictions = session.run(
-                        [logits, act_means, loss, loss_vec, optimize, velocity_update,upd_lr, pred], feed_dict=feed_dict
+                    _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
+                        [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
                     )
                 else:
-                    _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
-                            [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
+                    _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
+                            [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
                     )
+
             t1_train = time.clock()
 
             # this snippet logs the normalized class distribution every specified interval
@@ -1209,8 +1220,13 @@ if __name__=='__main__':
             assert not np.isnan(l)
 
             # rolling activation mean update
-            for op,op_activations in activation_means.items():
-                rolling_ativation_means[op]=(1-act_decay)*rolling_ativation_means[op] + decay*activation_means[op]
+            for op,op_activations in current_activations.items():
+                logger.debug('checking %s',op)
+                logger.debug('\tRolling size (%s): %s',op,rolling_ativation_means[op].shape)
+                logger.debug('\tCurrent size (%s): %s', op, op_activations.shape)
+            for op, op_activations in current_activations.items():
+                assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
+                rolling_ativation_means[op]=(1-act_decay)*rolling_ativation_means[op] + decay*current_activations[op]
 
             train_losses.append(l)
 
@@ -1359,7 +1375,6 @@ if __name__=='__main__':
                         # tf_wvelocity_next = tf.zeros([amount_to_add,num_labels])
                         # tf_wvelocity_next =tf.zeros([tf_cnn_hyperparameters[next_conv_op]['weights'][0],tf_cnn_hyperparameters[next_conv_op]['weights'][1],
                         #              amount_to_add,tf_cnn_hyperparameters[next_conv_op]['weights'][3]])
-
                         _ = session.run(tf_add_filters_ops[current_op],
                                         feed_dict={
                                             tf_action_info:np.asarray([si[0],1,ai[1]]),
@@ -1447,14 +1462,24 @@ if __name__=='__main__':
                         # this was done to increase performance and reduce overfitting
                         # instead of optimizing with every single batch in the pool
                         # we select few at random
+
+                        rolling_ativation_means[current_op] = np.append(rolling_ativation_means[current_op],np.zeros(ai[1]))
+
+                        logger.debug('\tSize of Rolling mean vector for %s: %s', current_op,
+                                     rolling_ativation_means[current_op].shape)
+
+                        # This is a pretty important step
+                        # Unless you run this onces, the sizes of weights do not change
+                        _ = session.run([logits,tf_activation_ops],feed_dict=feed_dict)
                         for pool_id in range((hard_pool.get_size() // batch_size) - 1):
                             if np.random.random() < research_parameters['replace_op_train_rate']:
                                 pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
                                 pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
+
                                 _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
                                                                         tf_pool_labels: pbatch_labels}
                                                 )
-                                _ = session.run(tf_slice_optimize[current_op],
+                                current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
                                                 feed_dict={tf_pool_dataset: pbatch_data,
                                                            tf_pool_labels: pbatch_labels,
                                                            tf_indices:np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
@@ -1472,14 +1497,14 @@ if __name__=='__main__':
                         amount_to_rmv = ai[1]
 
                         if research_parameters['remove_filters_by'] == 'Activation':
-                            raise NotImplementedError
+                            logger.debug('\tRemoving filters for op %s', current_op)
+                            logger.debug('\t\t\tIndices: %s', rm_indices[:10])
 
                         elif research_parameters['remove_filters_by'] == 'Distance':
                             logger.debug('\tRemoving filters for op %s', current_op)
 
                             logger.debug('\t\tSimilarity summary')
                             logger.debug('\t\t\tIndices: %s', rm_indices[:10])
-
 
                             logger.debug('\t\tSize of indices to remove: %s/%d', rm_indices.size,
                                          cnn_hyperparameters[current_op]['weights'][3])
@@ -1523,6 +1548,13 @@ if __name__=='__main__':
                                 tf_weight_shape: cnn_hyperparameters[next_conv_op]['weights']
                             })
 
+                        rolling_ativation_means[current_op] = np.delete(rolling_ativation_means[current_op],
+                                                                rm_indices.flatten())
+                        logger.debug('\tSize of Rolling mean vector for %s: %d',current_op,rolling_ativation_means[current_op].shape)
+
+                        # This is a pretty important step
+                        # Unless you run this onces, the sizes of weights do not change
+                        _ = session.run([logits, tf_activation_ops], feed_dict=feed_dict)
 
                     elif 'conv' in current_op and (ai[0]=='replace'):
 
@@ -1556,7 +1588,7 @@ if __name__=='__main__':
                             pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
                             pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
                             if research_parameters['optimizer']=='SGD':
-                                _, _, _ = session.run([pool_logits,pool_loss,optimize_with_variable],feed_dict=pool_feed_dict)
+                                _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
 
                     cnn_structure_logger.info(
                         '%d:%s:%s%s', batch_id, current_state,current_action,get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
@@ -1596,11 +1628,11 @@ if __name__=='__main__':
                                                'prev_accuracy': prev_valid_accuracy_after-prev_valid_accuracy})
 
                     #reset rolling activation means because network changed
-                    rolling_ativation_means = {}
-                    for op in cnn_ops:
-                        if 'conv' in op:
-                            logger.debug("Resetting activation means to zero for %s with %d",op,cnn_hyperparameters[op]['weights'][3])
-                            rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
+                    #rolling_ativation_means = {}
+                    #for op in cnn_ops:
+                    #    if 'conv' in op:
+                    #        logger.debug("Resetting activation means to zero for %s with %d",op,cnn_hyperparameters[op]['weights'][3])
+                    #        rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
 
                     logger.debug('Resetting both data distribution means')
 
