@@ -306,6 +306,7 @@ class AdaCNNAdaptingQLearner(object):
 
         self.epsilon = params['epsilon']
         self.net_depth = params['net_depth']
+        self.n_conv = params['n_conv'] # number of convolutional layers
 
         self.rl_logger = logging.getLogger('Adapting Policy Logger')
         self.rl_logger.setLevel(logging_level)
@@ -315,6 +316,8 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.addHandler(console)
 
         self.local_time_stamp = 0
+        self.global_time_stamp = 0
+
         self.actions = [
             ('add',16),('remove',16),('add',32),('remove',32),
             ('finetune', 0),('do_nothing',0)
@@ -350,9 +353,9 @@ class AdaCNNAdaptingQLearner(object):
             return state, self.actions[-1]
 
         # we try actions evenly otherwise cannot have the approximator
-        if self.local_time_stamp<len(self.actions)*self.even_tries:
+        if self.global_time_stamp<len(self.actions)*self.even_tries:
             self.rl_logger.debug('Choosing aciton evenly...')
-            action = self.actions[self.local_time_stamp%len(self.actions)]
+            action = self.actions[self.global_time_stamp%len(self.actions)]
 
             if action[0]=='add':
                 next_filter_count =data['filter_counts'][ni]+action[1]
@@ -461,8 +464,8 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('Finally Selected action: %s'%str(action))
 
         # decay epsilon
-        if self.local_time_stamp>2*len(self.actions):
-            self.epsilon = max(self.epsilon*0.95,0.1)
+        if self.global_time_stamp>2*len(self.actions):
+            self.epsilon = max(self.epsilon*0.9,0.1)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
@@ -490,7 +493,7 @@ class AdaCNNAdaptingQLearner(object):
         # data['next_accuracy'] => validation accuracy (unseen)
         # data['prev_accuracy'] => validation accuracy (seen)
 
-        if self.local_time_stamp>0 and self.local_time_stamp%self.fit_interval==0:
+        if self.global_time_stamp>0 and self.global_time_stamp%self.fit_interval==0:
             self.rl_logger.info('Training the Q Approximator...')
 
             self.rl_logger.debug('(Q) Total data: %d', len(self.q))
@@ -536,7 +539,7 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('\tAction: %s',ai)
         self.rl_logger.debug('\tReward: %.3f',reward)
 
-        if self.local_time_stamp>len(self.actions)*self.even_tries+1:
+        if self.global_time_stamp>len(self.actions)*self.even_tries+1:
 
             #self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
             #            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
@@ -551,8 +554,12 @@ class AdaCNNAdaptingQLearner(object):
             self.q[self.get_ohe_state(si)][self.actions.index(ai)] = reward
 
         self.past_mean_accuracy = mean_accuracy
-        self.local_time_stamp += 1
 
+        self.local_time_stamp += 1
+        if self.local_time_stamp%self.n_conv == 0:
+            self.global_time_stamp += 1
+
+        self.rl_logger.debug('Global/Local time step: %d/%d\n',self.global_time_stamp,self.local_time_stamp)
     def get_Q(self):
         q_pred_dict = {}
         #for ai in self.q.keys():

@@ -542,10 +542,11 @@ def get_cnn_string_from_ops(cnn_ops,cnn_hyps):
 
 def add_with_action(
         op, tf_action_info, tf_weights_this, tf_bias_this,
-        tf_weights_next, ttf_activations
+        tf_weights_next, tf_activations, tf_wvelocity_this,
+        tf_bvelocity_this, tf_wvelocity_next
 ):
     global cnn_hyperparameters, tf_cnn_hyperparameters
-    global logger,weights,biases
+    global logger,weights,biases,tf_weight_vels,tf_bias_vels
     global weight_velocity_vectors,bias_velocity_vectors
 
     update_ops = []
@@ -566,12 +567,12 @@ def add_with_action(
     tf_new_biases = tf.concat(0,[biases[op],tf_bias_this])
 
     # updating velocity vectors
-    '''if research_parameters['optimizer']=='Momentum':
-        weight_velocity_vectors[op] = tf.concat(3,[weight_velocity_vectors[op],
-                                              tf.zeros([cnn_hyps[op]['weights'][0],
-                                                        cnn_hyps[op]['weights'][1],cnn_hyps[op]['weights'][2],amount_to_add],dtype=tf.float32)
-                                              ])
-        bias_velocity_vectors[op] = tf.concat(0,[bias_velocity_vectors[op],tf.zeros([amount_to_add],dtype=tf.float32)])'''
+    if research_parameters['optimizer']=='Momentum':
+
+        weight_vel = tf.concat(3,[tf_weight_vels[op], tf_wvelocity_this])
+        bias_vel = tf.concat(0,[tf_bias_vels[op],tf_bvelocity_this])
+        update_ops.append(tf.assign(tf_weight_vels[op],weight_vel,validate_shape=False))
+        update_ops.append(tf.assign(tf_bias_vels[op],bias_vel,validate_shape=False))
 
     update_ops.append(tf.assign(weights[op], tf_new_weights, validate_shape=False))
     update_ops.append(tf.assign(biases[op], tf_new_biases, validate_shape = False))
@@ -583,12 +584,14 @@ def add_with_action(
     if op==last_conv_id:
         # change FC layer
         # the reshaping is required because our placeholder for weights_next is Rank 4
-        tf_weights_next = tf.reshape(tf_weights_next,[-1])
+        tf_weights_next = tf.squeeze(tf_weights_next)
         tf_new_weights = tf.concat(0,[weights['fulcon_out'],tf_weights_next])
 
         # updating velocity vectors
-        '''if research_parameters['optimizer'] == 'Momentum':
-            weight_velocity_vectors['fulcon_out'] = tf.concat(0,[weight_velocity_vectors['fulcon_out'],tf.zeros([amount_to_add,num_labels])])'''
+        if research_parameters['optimizer'] == 'Momentum':
+            tf_wvelocity_next = tf.squeeze(tf_wvelocity_next)
+            weight_vel = tf.concat(0,[tf_weight_vels['fulcon_out'],tf_wvelocity_next])
+            update_ops.append(tf.assign(tf_weight_vels['fulcon_out'],weight_vel,validate_shape=False))
 
         update_ops.append(tf.assign(weights['fulcon_out'], tf_new_weights, validate_shape=False))
 
@@ -601,19 +604,19 @@ def add_with_action(
         # change only the weights in next conv_op
         tf_new_weights=tf.concat(2,[weights[next_conv_op],tf_weights_next])
 
-        '''if research_parameters['optimizer']=='Momentum':
-            weight_velocity_vectors[next_conv_op] = tf.concat(2,[
-                weight_velocity_vectors[next_conv_op],
-                tf.zeros([tf_cnn_hyperparameters[next_conv_op]['weights'][0],tf_cnn_hyperparameters[next_conv_op]['weights'][1],
-                          amount_to_add,tf_cnn_hyperparameters[next_conv_op]['weights'][3]])]
-                                                         )'''
+        if research_parameters['optimizer']=='Momentum':
+
+            weight_vel = tf.concat(2,[tf_weight_vels[next_conv_op], tf_wvelocity_next])
+            update_ops.append(tf.assign(tf_weight_vels[next_conv_op], weight_vel, validate_shape=False))
+
         update_ops.append(tf.assign(weights[next_conv_op], tf_new_weights, validate_shape=False))
 
     return update_ops
 
+
 def remove_with_action(op, tf_action_info, tf_activations):
     global cnn_hyperparameters, tf_cnn_hyperparameters
-    global logger,weights,biases
+    global logger,weights,biases,tf_weight_vels,tf_bias_vels
     global weight_velocity_vectors,bias_velocity_vectors
 
     update_ops = []
@@ -656,7 +659,6 @@ def remove_with_action(op, tf_action_info, tf_activations):
         [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim,
                                                           k=amount_to_rmv, name='top_k_indices')
 
-
         tf_indices_to_remove_1 = tf.reshape(tf.mod(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]),shape=[-1],name='mod_indices')
         tf_indices_to_remove_2 = tf.reshape(tf.floor_div(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]),shape=[-1],name='floor_div_indices')
         # concat both mod and floor_div indices
@@ -683,12 +685,15 @@ def remove_with_action(op, tf_action_info, tf_activations):
     tf_new_biases=tf.reshape(tf.gather(biases[op],tf_indices_to_keep),shape=[-1],name='new_bias')
     update_ops.append(tf.assign(biases[op],tf_new_biases,validate_shape=False))
 
-    '''if research_parameters['optimizer'] == 'Momentum':
-        weight_velocity_vectors[op] = tf.transpose(weight_velocity_vectors[op], [3, 0, 1, 2])
-        weight_velocity_vectors[op] = tf.gather_nd(weight_velocity_vectors[op], [[idx] for idx in indices_of_filters_keep])
-        weight_velocity_vectors[op] = tf.transpose(weight_velocity_vectors[op], [1, 2, 3, 0])
+    if research_parameters['optimizer'] == 'Momentum':
+        weight_vel = tf.transpose(tf_weight_vels[op], [3, 0, 1, 2])
+        weight_vel = tf.gather_nd(weight_vel, tf_indices_to_keep)
+        weight_vel = tf.transpose(weight_vel, [1, 2, 3, 0])
 
-        bias_velocity_vectors[op] = tf.gather(bias_velocity_vectors[op],indices_of_filters_keep)'''
+        bias_vel = tf.reshape(tf.gather(tf_bias_vels[op],tf_indices_to_keep),[-1])
+
+        update_ops.append(tf.assign(tf_weight_vels[op], weight_vel, validate_shape=False))
+        update_ops.append(tf.assign(tf_bias_vels[op],bias_vel,validate_shape=False))
 
     if op==last_conv_id:
 
@@ -696,8 +701,9 @@ def remove_with_action(op, tf_action_info, tf_activations):
 
         update_ops.append(tf.assign(weights['fulcon_out'],tf_new_weights,validate_shape=False))
 
-        '''if research_parameters['optimizer']=='Momentum':
-            weight_velocity_vectors['fulcon_out']=tf.gather_nd(weight_velocity_vectors['fulcon_out'],[[idx] for idx in indices_of_filters_keep])'''
+        if research_parameters['optimizer']=='Momentum':
+            weight_vel=tf.gather_nd(tf_weight_vels['fulcon_out'],tf_indices_to_keep)
+            update_ops.append(tf.assign(tf_weight_vels['fulcon_out'],weight_vel,validate_shape=False))
 
     else:
         # change in hyperparameter of next conv op
@@ -712,10 +718,12 @@ def remove_with_action(op, tf_action_info, tf_activations):
 
         update_ops.append(tf.assign(weights[next_conv_op],tf_new_weights,validate_shape=False))
 
-        '''if research_parameters['optimizer']=='Momentum':
-            weight_velocity_vectors[next_conv_op] = tf.transpose(weight_velocity_vectors[next_conv_op],[2,0,1,3])
-            weight_velocity_vectors[next_conv_op] = tf.gather_nd(weight_velocity_vectors[next_conv_op],[[idx] for idx in indices_of_filters_keep])
-            weight_velocity_vectors[next_conv_op] = tf.transpose(weight_velocity_vectors[next_conv_op],[1,2,3,0])'''
+        if research_parameters['optimizer']=='Momentum':
+            weight_vel = tf.transpose(tf_weight_vels[next_conv_op],[2,0,1,3])
+            weight_vel = tf.gather_nd(weight_vel,tf_indices_to_keep)
+            weight_vel = tf.transpose(weight_vel,[1,2,0,3])
+
+            update_ops.append(tf.assign(tf_weight_vels[next_conv_op],weight_vel,validate_shape=False))
 
     return update_ops,tf_indices_to_rm
 
@@ -781,7 +789,7 @@ weights,biases = None,None
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : False,
+    'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
@@ -902,7 +910,6 @@ if __name__=='__main__':
         cnn_structure_logger.addHandler(structHandler)
         cnn_structure_logger.info('#batch_id:state:action:#layer_1_hyperparameters#layer_2_hyperparameters#...')
 
-
     if research_parameters['log_class_distribution']:
         class_dist_logger = logging.getLogger('class_dist_logger')
         class_dist_logger.setLevel(logging.INFO)
@@ -930,7 +937,8 @@ if __name__=='__main__':
     logger.info('\tTrain Size: %d'%dataset_size)
     logger.info('='*80)
 
-    cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
+    #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
+    cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#C,3,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -971,6 +979,7 @@ if __name__=='__main__':
                                                   even_tries = 5,
                                                   filter_upper_bound=512,
                                                   net_depth=layer_count,
+                                                  n_conv = len([op for op in cnn_ops if 'conv' in op]),
                                                   upper_bound=10,
                                                   epsilon=0.99)
 
@@ -1051,6 +1060,17 @@ if __name__=='__main__':
             tf_bias_this = tf.placeholder(shape=(None,), dtype=tf.float32, name='new_bias_current')
             tf_weights_next = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32,name='new_weights_next')
 
+            #tf_wvelocity_this = tf.zeros([cnn_hyps[op]['weights'][0],
+            #          cnn_hyps[op]['weights'][1], cnn_hyps[op]['weights'][2], amount_to_add], dtype=tf.float32)
+            # tf_bvelocity_this = tf.zeros([amount_to_add],dtype=tf.float32)
+            # tf_wvelocity_next = tf.zeros([amount_to_add,num_labels])
+            # tf_wvelocity_next =tf.zeros([tf_cnn_hyperparameters[next_conv_op]['weights'][0],tf_cnn_hyperparameters[next_conv_op]['weights'][1],
+            #              amount_to_add,tf_cnn_hyperparameters[next_conv_op]['weights'][3]])
+
+            tf_wvelocity_this = tf.placeholder(shape=[None,None,None,None], dtype=tf.float32)
+            tf_bvelocity_this = tf.placeholder(shape=(None,),dtype=tf.float32)
+            tf_wvelocity_next = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32)
+
             tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
             tf_in_size = tf.placeholder(dtype=tf.int32)
             tf_update_hyp_ops={}
@@ -1059,7 +1079,8 @@ if __name__=='__main__':
                 if 'conv' in tmp_op:
                     tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op,tf_weight_shape,tf_in_size)
                     tf_add_filters_ops[tmp_op] = add_with_action(tmp_op,tf_action_info,tf_weights_this,
-                                                                 tf_bias_this,tf_weights_next,tf_running_activations)
+                                                                 tf_bias_this,tf_weights_next,tf_running_activations,
+                                                                 tf_wvelocity_this,tf_bvelocity_this,tf_wvelocity_next)
                     tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
                     tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
                         pool_loss, tf_indices,
@@ -1330,21 +1351,39 @@ if __name__=='__main__':
                                 last_conv_id = tmp_op
                                 break
 
+                        if current_op != last_conv_id:
+                            next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(current_op) + 1:] if 'conv' in tmp_op][0]
+
+                        # tf_wvelocity_this = tf.zeros([cnn_hyps[op]['weights'][0],
+                        #          cnn_hyps[op]['weights'][1], cnn_hyps[op]['weights'][2], amount_to_add], dtype=tf.float32)
+                        # tf_bvelocity_this = tf.zeros([amount_to_add],dtype=tf.float32)
+                        # tf_wvelocity_next = tf.zeros([amount_to_add,num_labels])
+                        # tf_wvelocity_next =tf.zeros([tf_cnn_hyperparameters[next_conv_op]['weights'][0],tf_cnn_hyperparameters[next_conv_op]['weights'][1],
+                        #              amount_to_add,tf_cnn_hyperparameters[next_conv_op]['weights'][3]])
+
                         _ = session.run(tf_add_filters_ops[current_op],
                                         feed_dict={
                                             tf_action_info:np.asarray([si[0],1,ai[1]]),
                                             tf_weights_this:np.random.normal(scale=0.01,size=(
-                                                cnn_hyperparameters[op]['weights'][0],cnn_hyperparameters[op]['weights'][1],
-                                                cnn_hyperparameters[op]['weights'][2],amount_to_add)),
+                                                cnn_hyperparameters[current_op]['weights'][0],cnn_hyperparameters[current_op]['weights'][1],
+                                                cnn_hyperparameters[current_op]['weights'][2],amount_to_add)),
                                             tf_bias_this:np.random.normal(scale=0.01,size=(amount_to_add)),
 
                                             tf_weights_next:np.random.normal(scale=0.01,size=(
                                                 cnn_hyperparameters[next_conv_op]['weights'][0],cnn_hyperparameters[next_conv_op]['weights'][1],
                                                 amount_to_add,cnn_hyperparameters[next_conv_op]['weights'][3])
                                                                              ) if last_conv_id != current_op else
-                                            np.random.normal(scale=0.01,size=(amount_to_add,num_labels)),
+                                            np.random.normal(scale=0.01,size=(amount_to_add,num_labels,1,1)),
+                                            tf_running_activations:rolling_ativation_means[current_op],
 
-                                            tf_running_activations:rolling_ativation_means[current_op]
+                                            tf_wvelocity_this:np.zeros(shape=(
+                                                cnn_hyperparameters[current_op]['weights'][0],cnn_hyperparameters[current_op]['weights'][1],
+                                                cnn_hyperparameters[current_op]['weights'][2],amount_to_add),dtype=np.float32),
+                                            tf_bvelocity_this:np.zeros(shape=(amount_to_add,),dtype=np.float32),
+                                            tf_wvelocity_next:np.zeros(shape=(
+                                                cnn_hyperparameters[next_conv_op]['weights'][0],cnn_hyperparameters[next_conv_op]['weights'][1],
+                                                amount_to_add,cnn_hyperparameters[next_conv_op]['weights'][3]),dtype=np.float32) if last_conv_id != current_op else
+                                            np.zeros(shape=(amount_to_add,num_labels,1,1),dtype=np.float32),
                                         })
 
                         # change both weights and biase in the current op
@@ -1581,7 +1620,7 @@ if __name__=='__main__':
                     for val in hard_pool.get_class_distribution():
                         pool_dist_string += str(val)+','
 
-                    pool_dist_logger.info(pool_dist_string)
+                    pool_dist_logger.info('%s%d',pool_dist_string,hard_pool.get_size())
 
             t1 = time.clock()
             op_count = len(graph.get_operations())
