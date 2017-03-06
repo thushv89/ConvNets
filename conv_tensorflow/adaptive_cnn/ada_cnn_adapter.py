@@ -107,6 +107,38 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
     return weights,biases
 
 
+def initialize_cnn_with_ops_fixed(cnn_ops,cnn_hyps):
+    weights,biases = {},{}
+
+    logger.info('Initializing the iConvNet (conv_global,pool_global,classifier)...\n')
+    for op in cnn_ops:
+        if 'conv' in op:
+            weights[op] = tf.Variable(tf.truncated_normal(
+                cnn_hyps[op]['weights'],
+                stddev=2./max(100,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
+            ),validate_shape = True,name=op+'_weights',dtype=tf.float32)
+            biases[op] = tf.Variable(tf.constant(
+                np.random.random()*0.001,shape=[cnn_hyps[op]['weights'][3]]
+            ),validate_shape = True,name=op+'_bias',dtype=tf.float32)
+
+            logger.debug('Weights for %s initialized with size %s',op,str(cnn_hyps[op]['weights']))
+            logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['weights'][3])
+
+        if 'fulcon' in op:
+            weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
+                [cnn_hyps[op]['in'],cnn_hyps[op]['out']],
+                stddev=2./cnn_hyps[op]['in']
+            ), validate_shape = True, name=op+'_weights',dtype=tf.float32)
+            biases[op] = tf.Variable(tf.constant(
+                np.random.random()*0.001,shape=[cnn_hyps[op]['out']]
+            ), validate_shape = True, name=op+'_bias',dtype=tf.float32)
+
+            logger.debug('Weights for %s initialized with size %d,%d',
+                op,cnn_hyps[op]['in'],cnn_hyps[op]['out'])
+            logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['out'])
+
+    return weights,biases
+
 def get_logits_with_ops(dataset, weights, biases, use_dropout):
     global cnn_ops,tf_cnn_hyperparameters
 
@@ -192,35 +224,44 @@ def optimize_func(loss,global_step,start_lr=start_lr):
 
     optimize_ops = []
     # Optimizer.
-    if research_parameters['optimizer'] == 'SGD':
-        learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
-        optimize_ops.append(tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss))
+    learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
+    optimize_ops.append(tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss))
 
-    elif research_parameters['optimizer'] == 'Momentum':
+    return optimize_ops,learning_rate
+
+def optimize_with_momenutm_func(loss, global_step, start_lr=start_lr):
+    global tf_weight_vels,tf_bias_vels
+    vel_update_ops, optimize_ops = [],[]
+
+    if research_parameters['adapt_structure'] or research_parameters['use_custom_momentum_opt']:
         # custom momentum optimizing
         # apply_gradient([g,v]) does the following v -= eta*g
         # eta is learning_rate
         # Since what we need is
         # v(t+1) = mu*v(t) - eta*g
         # theta(t+1) = theta(t) + v(t+1) --- (2)
-        # we form (2) in the form theta(t+1) -= 1.0*(-v(t+1))
+        # we form (2) in the form v(t+1) = mu*v(t) + eta*g
+        # theta(t+1) = theta(t) - v(t+1)
         optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
         learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
 
-        for op in weight_velocity_vectors.keys():
+        for op in tf_weight_vels.keys():
             [(grads_w,w),(grads_b,b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
 
             # update velocity vector
-            weight_velocity_vectors[op] = research_parameters['momentum']*weight_velocity_vectors[op] + (learning_rate*grads_w)
-            bias_velocity_vectors[op] = research_parameters['momentum']*bias_velocity_vectors[op] + (learning_rate*grads_b)
+            vel_update_ops.append(tf.assign(tf_weight_vels[op], research_parameters['momentum']*tf_weight_vels[op] + grads_w))
+            vel_update_ops.append(tf.assign(tf_bias_vels[op], research_parameters['momentum']*tf_bias_vels[op] + grads_b))
 
             optimize_ops.append(optimizer.apply_gradients(
-                        [(weight_velocity_vectors[op],weights[op]),(bias_velocity_vectors[op],biases[op])]
+                        [(tf_weight_vels[op]*learning_rate,weights[op]),(tf_bias_vels[op]*learning_rate,biases[op])]
             ))
     else:
-        raise NotImplementedError
+        learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
+        optimize_ops.append(
+            tf.train.MomentumOptimizer(learning_rate=learning_rate,
+                                       momentum=research_parameters['momentum']).minimize(loss))
 
-    return optimize_ops,learning_rate
+    return optimize_ops,vel_update_ops,learning_rate
 
 
 def optimize_with_variable_func(loss,global_step,var_ops):
@@ -700,7 +741,7 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
     return train_dataset,train_ohe_labels
 
 
-weight_velocity_vectors, bias_velocity_vectors = {}, {}
+tf_weight_vels, tf_bias_vels = {}, {}
 def init_velocity_vectors(cnn_ops,cnn_hyps):
     global weight_velocity_vectors,bias_velocity_vectors
 
@@ -724,7 +765,6 @@ def init_tf_hyperparameters():
                 'out': tf.Variable(cnn_hyperparameters[op]['out'], dtype=tf.int32, name='hyp_' + op + '_out')
             }
 
-
 def update_tf_hyperparameters(op,tf_weight_shape,tf_in_size):
     global cnn_ops, cnn_hyperparameters, tf_cnn_hyperparameters
     update_ops = []
@@ -741,14 +781,16 @@ weights,biases = None,None
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : True,
+    'adapt_structure' : False,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
-    'optimizer':'SGD','momentum':0.9,
+    'optimizer':'Momentum','momentum':0.9,
+    'use_custom_momentum_opt':True,
     'remove_filters_by':'Distance',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
     'loss_diff_threshold':0.02,
-    'debugging':True if logging_level==logging.DEBUG else False
+    'debugging':True if logging_level==logging.DEBUG else False,
+    'stop_training_at':5000
 }
 
 interval_parameters = {
@@ -762,7 +804,7 @@ state_action_history = {}
 cnn_ops, cnn_hyperparameters, tf_cnn_hyperparameters = None,None,{}
 
 if __name__=='__main__':
-    global weights,biases
+    global weights,biases,tf_weight_vels,tf_bias_vels
     global weight_velocity_vectors,bias_velocity_vectors
     global cnn_ops,cnn_hyperparameters
 
@@ -914,7 +956,10 @@ if __name__=='__main__':
         cnn_ops,cnn_hyperparameters = get_ops_hyps_from_string(cnn_string)
         init_tf_hyperparameters()
 
-        weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
+        if research_parameters['adapt_structure']:
+            weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
+        else:
+            weights, biases = initialize_cnn_with_ops_fixed(cnn_ops, cnn_hyperparameters)
 
         # -1 is because we don't want to count pool_global
         layer_count = len([op for op in cnn_ops if 'conv' in op or 'pool' in op])-1
@@ -923,8 +968,8 @@ if __name__=='__main__':
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
                                                   discount_rate=0.9,
                                                   fit_interval = 5,
-                                                  even_tries = 3,
-                                                  filter_upper_bound=1024,
+                                                  even_tries = 5,
+                                                  filter_upper_bound=512,
                                                   net_depth=layer_count,
                                                   upper_bound=10,
                                                   epsilon=0.99)
@@ -951,7 +996,16 @@ if __name__=='__main__':
 
         # if using momentum
         if research_parameters['optimizer']=='Momentum':
-            init_velocity_vectors(cnn_ops,cnn_hyperparameters)
+            for tmp_op in cnn_ops:
+                if 'conv' in tmp_op:
+                    tf_weight_vels[tmp_op] = tf.Variable(tf.zeros(shape=cnn_hyperparameters[tmp_op]['weights'], dtype=tf.float32),name='w_vel_'+tmp_op)
+                    tf_bias_vels[tmp_op] = tf.Variable(tf.zeros(shape=[cnn_hyperparameters[tmp_op]['weights'][3]], dtype=tf.float32),name='b_vel_'+tmp_op)
+                elif 'fulcon' in tmp_op:
+                    tf_weight_vels[tmp_op] = tf.Variable(tf.zeros(shape=[cnn_hyperparameters[tmp_op]['in'], cnn_hyperparameters[tmp_op]['out']], dtype=tf.float32),
+                                                           name='w_vel_'+tmp_op)
+                    tf_bias_vels[tmp_op] = tf.Variable(tf.zeros(shape=[cnn_hyperparameters[tmp_op]['out']], dtype=tf.float32),name='b_vel_'+tmp_op)
+
+            #init_velocity_vectors(cnn_ops,cnn_hyperparameters)
 
         init_op = tf.global_variables_initializer()
         _ = session.run(init_op)
@@ -961,7 +1015,11 @@ if __name__=='__main__':
         loss = calc_loss(logits,tf_labels,True,tf_data_weights)
         loss_vec = calc_loss_vector(logits,tf_labels)
         pred = predict_with_logits(logits)
-        optimize,upd_lr = optimize_func(loss,global_step,start_lr)
+        if research_parameters['optimizer']=='SGD':
+            optimize,upd_lr = optimize_func(loss,global_step,start_lr)
+        elif research_parameters['optimizer']=='Momentum':
+            optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, start_lr)
+
         inc_gstep = inc_global_step(global_step)
 
         init_op = tf.global_variables_initializer()
@@ -979,40 +1037,41 @@ if __name__=='__main__':
         pool_logits, _ = get_logits_with_ops(tf_pool_dataset, weights, biases,use_dropout)
         pool_loss = calc_loss(pool_logits, tf_pool_labels,False,None)
 
-        # Tensorflow operations that are defined one for each convolution operation
-        tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
-        tf_indices_size = tf.placeholder(tf.int32)
-        tf_slice_optimize = {}
-        tf_add_filters_ops,tf_rm_filters_ops = {},{}
-        tf_action_info = tf.placeholder(shape=[3], dtype=tf.int32,
-                                        name='tf_action')  # [op_id,action_id,amount] (action_id 0 - add, 1 -remove)
-        tf_running_activations = tf.placeholder(shape=(None,), dtype=tf.float32, name='running_activations')
+        if research_parameters['adapt_structure']:
+            # Tensorflow operations that are defined one for each convolution operation
+            tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
+            tf_indices_size = tf.placeholder(tf.int32)
+            tf_slice_optimize = {}
+            tf_add_filters_ops,tf_rm_filters_ops = {},{}
+            tf_action_info = tf.placeholder(shape=[3], dtype=tf.int32,
+                                            name='tf_action')  # [op_id,action_id,amount] (action_id 0 - add, 1 -remove)
+            tf_running_activations = tf.placeholder(shape=(None,), dtype=tf.float32, name='running_activations')
 
-        tf_weights_this = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32,name='new_weights_current')
-        tf_bias_this = tf.placeholder(shape=(None,), dtype=tf.float32, name='new_bias_current')
-        tf_weights_next = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32,name='new_weights_next')
+            tf_weights_this = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32,name='new_weights_current')
+            tf_bias_this = tf.placeholder(shape=(None,), dtype=tf.float32, name='new_bias_current')
+            tf_weights_next = tf.placeholder(shape=[None,None,None,None],dtype=tf.float32,name='new_weights_next')
 
-        tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
-        tf_in_size = tf.placeholder(dtype=tf.int32)
-        tf_update_hyp_ops={}
+            tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
+            tf_in_size = tf.placeholder(dtype=tf.int32)
+            tf_update_hyp_ops={}
 
-        for tmp_op in cnn_ops:
-            if 'conv' in tmp_op:
-                tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op,tf_weight_shape,tf_in_size)
-                tf_add_filters_ops[tmp_op] = add_with_action(tmp_op,tf_action_info,tf_weights_this,
-                                                             tf_bias_this,tf_weights_next,tf_running_activations)
-                tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
-                tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
-                    pool_loss, tf_indices,
-                    tmp_op, weights[tmp_op], biases[tmp_op], tf_indices_size
-                )
-            elif 'fulcon' in tmp_op:
-                tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
+            for tmp_op in cnn_ops:
+                if 'conv' in tmp_op:
+                    tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op,tf_weight_shape,tf_in_size)
+                    tf_add_filters_ops[tmp_op] = add_with_action(tmp_op,tf_action_info,tf_weights_this,
+                                                                 tf_bias_this,tf_weights_next,tf_running_activations)
+                    tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
+                    tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
+                        pool_loss, tf_indices,
+                        tmp_op, weights[tmp_op], biases[tmp_op], tf_indices_size
+                    )
+                elif 'fulcon' in tmp_op:
+                    tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
 
-        if research_parameters['optimize_end_to_end']:
-            optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
-        else:
-            raise NotImplementedError
+            if research_parameters['optimize_end_to_end']:
+                optimize_with_variable, upd_lr = optimize_func(pool_loss, global_step, start_lr)
+            else:
+                raise NotImplementedError
 
         logger.info('Tensorflow functions defined')
         logger.info('Variables initialized...')
@@ -1049,6 +1108,9 @@ if __name__=='__main__':
         previous_loss = 1e5 # used for the check to start adapting
         start_adapting = False
         for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
+
+            if batch_id>=research_parameters['stop_training_at']:
+                break
 
             t0 = time.clock() # starting time for a batch
 
@@ -1090,9 +1152,14 @@ if __name__=='__main__':
 
             t0_train = time.clock()
             for _ in range(iterations_per_batch):
-                _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
-                        [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
-                )
+                if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
+                    _, activation_means, l, l_vec, _, _, updated_lr, predictions = session.run(
+                        [logits, act_means, loss, loss_vec, optimize, velocity_update,upd_lr, pred], feed_dict=feed_dict
+                    )
+                else:
+                    _, activation_means, l,l_vec, _,updated_lr, predictions = session.run(
+                            [logits,act_means,loss,loss_vec,optimize,upd_lr,pred], feed_dict=feed_dict
+                    )
             t1_train = time.clock()
 
             # this snippet logs the normalized class distribution every specified interval
