@@ -1,5 +1,4 @@
 
-import tensorflow as tf
 import numpy as np
 from collections import Counter
 
@@ -64,9 +63,8 @@ class Pool(object):
         :return: None
         '''
 
-        _,tf_hard_indices = tf.nn.top_k(loss,k=int(fraction*self.batch_size),sorted=False,name='top_hard')
-        add_size = tf_hard_indices.get_shape().as_list()[0]
-        hard_indices = tf_hard_indices.eval()
+        hard_indices = np.argsort(loss).flatten()[::-1][:int(fraction * self.batch_size)]
+        add_size = hard_indices.size
 
         # if position has more space for all the hard_examples
         if self.position + add_size <= self.size - 1:
