@@ -32,7 +32,7 @@ logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-start_lr = 0.001
+start_lr = 0.01
 decay_learning_rate = False
 dropout_rate = 0.25
 use_dropout = False
@@ -641,7 +641,7 @@ def remove_with_action(op, tf_action_info, tf_activations):
 
     if research_parameters['remove_filters_by']=='Activation':
         neg_activations = -1.0 * tf_activations
-        [min_act_values,tf_unique_rm_ind] = tf.nn.top_k(tf_layer_activations[op],k=amount_to_rmv,name='min_act_indices')
+        [min_act_values,tf_unique_rm_ind] = tf.nn.top_k(neg_activations,k=amount_to_rmv,name='min_act_indices')
 
     elif research_parameters['remove_filters_by']=='Distance':
         # calculate cosine distance for F filters (FxF matrix)
@@ -665,7 +665,7 @@ def remove_with_action(op, tf_action_info, tf_activations):
         # to avoid k_values = {...,(83,1)(139,94)(139,83),...} like incidents
         # above case will ignore both indices of (139,83) resulting in a reduction < amount_to_rmv
         [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim,
-                                                          k=amount_to_rmv, name='top_k_indices')
+                                                          k=tf.minimum(amount_to_rmv+10,tf_cnn_hyperparameters[op]['weights'][3]), name='top_k_indices')
 
         tf_indices_to_remove_1 = tf.reshape(tf.mod(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]),shape=[-1],name='mod_indices')
         tf_indices_to_remove_2 = tf.reshape(tf.floor_div(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]),shape=[-1],name='floor_div_indices')
@@ -757,7 +757,6 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
     return train_dataset,train_ohe_labels
 
 
-tf_weight_vels, tf_bias_vels = {}, {}
 def init_velocity_vectors(cnn_ops,cnn_hyps):
     global weight_velocity_vectors,bias_velocity_vectors
 
@@ -768,6 +767,7 @@ def init_velocity_vectors(cnn_ops,cnn_hyps):
         elif 'fulcon' in op:
             weight_velocity_vectors[op] = tf.zeros(shape=[cnn_hyps[op]['in'],cnn_hyps[op]['out']],dtype=tf.float32)
             bias_velocity_vectors[op] = tf.zeros(shape=[cnn_hyps[op]['out']],dtype=tf.float32)
+
 
 def init_tf_hyperparameters():
     global cnn_ops, cnn_hyperparameters,tf_cnn_hyperparameters
@@ -781,6 +781,7 @@ def init_tf_hyperparameters():
                 'out': tf.Variable(cnn_hyperparameters[op]['out'], dtype=tf.int32, name='hyp_' + op + '_out')
             }
 
+
 def update_tf_hyperparameters(op,tf_weight_shape,tf_in_size):
     global cnn_ops, cnn_hyperparameters, tf_cnn_hyperparameters
     update_ops = []
@@ -792,6 +793,7 @@ def update_tf_hyperparameters(op,tf_weight_shape,tf_in_size):
     return update_ops
 
 
+tf_weight_vels, tf_bias_vels = {}, {}
 weights,biases = None,None
 tf_layer_activations = {}
 
@@ -803,7 +805,7 @@ research_parameters = {
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
     'use_custom_momentum_opt':True,
-    'remove_filters_by':'Distance',
+    'remove_filters_by':'Activation',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
     'loss_diff_threshold':0.02,
     'debugging':True if logging_level==logging.DEBUG else False,
@@ -897,6 +899,22 @@ if __name__=='__main__':
     console.setLevel(logging_level)
     logger.addHandler(console)
 
+    hyp_logger = logging.getLogger('hyperparameter_logger')
+    hyp_logger.setLevel(logging.INFO)
+    hypHandler = logging.FileHandler(output_dir + os.sep + 'Hyperparameter.log', mode='w')
+    hypHandler.setFormatter(logging.Formatter('%(message)s'))
+    hyp_logger.addHandler(hypHandler)
+    hyp_logger.info('#Starting hyperparameters')
+    hyp_logger.info(cnn_hyperparameters)
+    hyp_logger.info('#Dataset info')
+    hyp_logger.info(dataset_info)
+    hyp_logger.info('Learning rate: %.5f',start_lr)
+    hyp_logger.info('Batch size: %d',batch_size)
+    hyp_logger.info('#Research parameters')
+    hyp_logger.info(research_parameters)
+    hyp_logger.info('#Interval parameters')
+    hyp_logger.info(interval_parameters)
+
     error_logger = logging.getLogger('error_logger')
     error_logger.setLevel(logging.INFO)
     errHandler = logging.FileHandler(output_dir + os.sep + 'Error.log', mode='w')
@@ -947,7 +965,7 @@ if __name__=='__main__':
     logger.info('='*80)
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
-    cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#C,3,1,64#Terminate,0,0,0"
+    cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#C,3,1,128#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -984,8 +1002,8 @@ if __name__=='__main__':
         # Adapting Policy Learner
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
                                                   discount_rate=0.9,
-                                                  fit_interval = 5,
-                                                  even_tries = 5,
+                                                  fit_interval = 10,
+                                                  even_tries = 3,
                                                   filter_upper_bound=512,
                                                   net_depth=layer_count,
                                                   n_conv = len([op for op in cnn_ops if 'conv' in op]),
@@ -1053,7 +1071,7 @@ if __name__=='__main__':
         # Tensorflow operations for hard_pool
         pool_logits, _ = get_logits_with_ops(tf_pool_dataset,use_dropout)
         pool_loss = calc_loss(pool_logits, tf_pool_labels,False,None)
-
+        pool_pred = predict_with_dataset(tf_pool_dataset)
         if research_parameters['adapt_structure']:
             # Tensorflow operations that are defined one for each convolution operation
             tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
@@ -1098,10 +1116,9 @@ if __name__=='__main__':
                     tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
 
             if research_parameters['optimize_end_to_end']:
-                optimize_with_pool, upd_lr = optimize_func(pool_loss, global_step, start_lr)
+                optimize_with_pool, upd_lr = optimize_with_momenutm_func(pool_loss, global_step, start_lr*0.1)
             else:
                 raise NotImplementedError
-
 
         logger.info('Tensorflow functions defined')
         logger.info('Variables initialized...')
@@ -1463,9 +1480,12 @@ if __name__=='__main__':
                         # instead of optimizing with every single batch in the pool
                         # we select few at random
 
+                        logger.info('\t(Before) Size of Rolling mean vector for %s: %s', current_op,
+                                     rolling_ativation_means[current_op].shape)
+
                         rolling_ativation_means[current_op] = np.append(rolling_ativation_means[current_op],np.zeros(ai[1]))
 
-                        logger.debug('\tSize of Rolling mean vector for %s: %s', current_op,
+                        logger.info('\tSize of Rolling mean vector for %s: %s', current_op,
                                      rolling_ativation_means[current_op].shape)
 
                         # This is a pretty important step
@@ -1548,9 +1568,10 @@ if __name__=='__main__':
                                 tf_weight_shape: cnn_hyperparameters[next_conv_op]['weights']
                             })
 
-                        rolling_ativation_means[current_op] = np.delete(rolling_ativation_means[current_op],
-                                                                rm_indices.flatten())
-                        logger.debug('\tSize of Rolling mean vector for %s: %d',current_op,rolling_ativation_means[current_op].shape)
+                        logger.info('\t(Before) Size of Rolling mean vector for %s: %s', current_op,
+                                    rolling_ativation_means[current_op].shape)
+                        rolling_ativation_means[current_op] = np.delete(rolling_ativation_means[current_op], rm_indices)
+                        logger.info('\tSize of Rolling mean vector for %s: %s',current_op,rolling_ativation_means[current_op].shape)
 
                         # This is a pretty important step
                         # Unless you run this onces, the sizes of weights do not change
@@ -1587,8 +1608,8 @@ if __name__=='__main__':
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                             pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
                             pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
-                            if research_parameters['optimizer']=='SGD':
-                                _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
+
+                            _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
 
                     cnn_structure_logger.info(
                         '%d:%s:%s%s', batch_id, current_state,current_action,get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
@@ -1597,7 +1618,7 @@ if __name__=='__main__':
                     # updating the policy
                     if current_state is not None and current_action is not None:
 
-                        logger.info('Calculating Valid accuracy Gains')
+                        '''logger.info('Calculating Valid accuracy Gains')
                         feed_valid_dict = {tf_valid_dataset: batch_valid_data, tf_valid_labels: batch_valid_labels}
                         #_ = session.run(tf_valid_logits,feed_dict=feed_valid_dict)
                         next_valid_predictions = session.run(tf_valid_predictions,
@@ -1614,18 +1635,27 @@ if __name__=='__main__':
                         #_ = session.run(tf_valid_logits, feed_dict=feed_valid_dict)
                         prev_valid_predictions = session.run(tf_valid_predictions,feed_dict=feed_valid_dict)
 
-                        prev_valid_accuracy_after = accuracy(prev_valid_predictions, batch_valid_labels)
+                        prev_valid_accuracy_after = accuracy(prev_valid_predictions, batch_valid_labels)'''
+                        pool_accuracy = []
+                        for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+
+                            _, _, _, p_predictions = session.run([pool_logits, pool_loss, optimize_with_pool, pool_pred], feed_dict=pool_feed_dict)
+                            pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
                         logger.info('Updating the Policy for Layer %s', cnn_ops[current_state[0]])
                         logger.info('\tState: %s', str(current_state))
                         logger.info('\tAction: %s', str(current_action))
-                        logger.info('\tValid accuracy Gain: %.2f (Unseen) %.2f (seen)',
-                                    (next_valid_accuracy_after - next_valid_accuracy),
-                                    (prev_valid_accuracy_after-prev_valid_accuracy)
-                                    )
+                        #logger.info('\tValid accuracy Gain: %.2f (Unseen) %.2f (seen)',
+                        #            (next_valid_accuracy_after - next_valid_accuracy),
+                        #            (prev_valid_accuracy_after-prev_valid_accuracy)
+                        #            )
                         adapter.update_policy({'states': current_state, 'actions': current_action,
-                                               'next_accuracy': next_valid_accuracy_after - next_valid_accuracy,
-                                               'prev_accuracy': prev_valid_accuracy_after-prev_valid_accuracy})
+                                               'next_accuracy': None,
+                                               'prev_accuracy': None,
+                                               'pool_accuracy': np.mean(pool_accuracy)})
 
                     #reset rolling activation means because network changed
                     #rolling_ativation_means = {}

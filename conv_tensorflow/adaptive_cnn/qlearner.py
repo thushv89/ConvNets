@@ -507,7 +507,8 @@ class AdaCNNAdaptingQLearner(object):
 
             self.clean_Q()
 
-        mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
+        #mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
+        mean_accuracy = data['pool_accuracy']/100.0
         #reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
 
         si,ai = data['states'],data['actions']
