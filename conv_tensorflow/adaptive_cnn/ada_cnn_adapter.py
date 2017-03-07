@@ -32,7 +32,7 @@ logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-start_lr = 0.01
+start_lr = 0.001
 decay_learning_rate = False
 dropout_rate = 0.25
 use_dropout = False
@@ -224,18 +224,17 @@ def calc_loss_vector(logits,labels):
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
 
 
-def optimize_func(loss,global_step,start_lr=start_lr):
+def optimize_func(loss,global_step,learning_rate):
     global research_parameters
     global weights,biases
 
     optimize_ops = []
     # Optimizer.
-    learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
     optimize_ops.append(tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss))
 
     return optimize_ops,learning_rate
 
-def optimize_with_momenutm_func(loss, global_step, start_lr=start_lr):
+def optimize_with_momenutm_func(loss, global_step, learning_rate):
     global tf_weight_vels,tf_bias_vels
     vel_update_ops, optimize_ops = [],[]
 
@@ -249,7 +248,6 @@ def optimize_with_momenutm_func(loss, global_step, start_lr=start_lr):
         # we form (2) in the form v(t+1) = mu*v(t) + eta*g
         # theta(t+1) = theta(t) - v(t+1)
         optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
-        learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
 
         for op in tf_weight_vels.keys():
             [(grads_w,w),(grads_b,b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
@@ -262,7 +260,6 @@ def optimize_with_momenutm_func(loss, global_step, start_lr=start_lr):
                         [(tf_weight_vels[op]*learning_rate,weights[op]),(tf_bias_vels[op]*learning_rate,biases[op])]
             ))
     else:
-        learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
         optimize_ops.append(
             tf.train.MomentumOptimizer(learning_rate=learning_rate,
                                        momentum=research_parameters['momentum']).minimize(loss))
@@ -899,22 +896,6 @@ if __name__=='__main__':
     console.setLevel(logging_level)
     logger.addHandler(console)
 
-    hyp_logger = logging.getLogger('hyperparameter_logger')
-    hyp_logger.setLevel(logging.INFO)
-    hypHandler = logging.FileHandler(output_dir + os.sep + 'Hyperparameter.log', mode='w')
-    hypHandler.setFormatter(logging.Formatter('%(message)s'))
-    hyp_logger.addHandler(hypHandler)
-    hyp_logger.info('#Starting hyperparameters')
-    hyp_logger.info(cnn_hyperparameters)
-    hyp_logger.info('#Dataset info')
-    hyp_logger.info(dataset_info)
-    hyp_logger.info('Learning rate: %.5f',start_lr)
-    hyp_logger.info('Batch size: %d',batch_size)
-    hyp_logger.info('#Research parameters')
-    hyp_logger.info(research_parameters)
-    hyp_logger.info('#Interval parameters')
-    hyp_logger.info(interval_parameters)
-
     error_logger = logging.getLogger('error_logger')
     error_logger.setLevel(logging.INFO)
     errHandler = logging.FileHandler(output_dir + os.sep + 'Error.log', mode='w')
@@ -965,9 +946,30 @@ if __name__=='__main__':
     logger.info('='*80)
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
-    cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#C,3,1,128#Terminate,0,0,0"
+    if not research_parameters['adapt_structure']:
+        cnn_string = "C,5,1,512#P,3,2,0#C,5,1,512#C,3,1,512#Terminate,0,0,0"
+    else:
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#C,3,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
+
+    cnn_ops,cnn_hyperparameters = get_ops_hyps_from_string(cnn_string)
+
+    hyp_logger = logging.getLogger('hyperparameter_logger')
+    hyp_logger.setLevel(logging.INFO)
+    hypHandler = logging.FileHandler(output_dir + os.sep + 'Hyperparameter.log', mode='w')
+    hypHandler.setFormatter(logging.Formatter('%(message)s'))
+    hyp_logger.addHandler(hypHandler)
+    hyp_logger.info('#Starting hyperparameters')
+    hyp_logger.info(cnn_hyperparameters)
+    hyp_logger.info('#Dataset info')
+    hyp_logger.info(dataset_info)
+    hyp_logger.info('Learning rate: %.5f', start_lr)
+    hyp_logger.info('Batch size: %d', batch_size)
+    hyp_logger.info('#Research parameters')
+    hyp_logger.info(research_parameters)
+    hyp_logger.info('#Interval parameters')
+    hyp_logger.info(interval_parameters)
 
     # Resetting this every policy interval
     rolling_data_distribution = {}
@@ -988,10 +990,11 @@ if __name__=='__main__':
         hardness = 0.5
         hard_pool = Pool(size=12800,batch_size=batch_size,image_size=image_size,num_channels=num_channels,num_labels=num_labels,assert_test=False)
 
-        cnn_ops,cnn_hyperparameters = get_ops_hyps_from_string(cnn_string)
+
+
         init_tf_hyperparameters()
 
-        if research_parameters['adapt_structure']:
+        if research_parameters['adapt_structure'] or research_parameters['use_custom_momentum_opt']:
             weights,biases = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
         else:
             weights, biases = initialize_cnn_with_ops_fixed(cnn_ops, cnn_hyperparameters)
@@ -1051,9 +1054,9 @@ if __name__=='__main__':
         loss_vec = calc_loss_vector(logits,tf_labels)
         pred = predict_with_logits(logits)
         if research_parameters['optimizer']=='SGD':
-            optimize,upd_lr = optimize_func(loss,global_step,start_lr)
+            optimize,upd_lr = optimize_func(loss,global_step,tf.constant(start_lr,dtype=tf.float32))
         elif research_parameters['optimizer']=='Momentum':
-            optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, start_lr)
+            optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, tf.constant(start_lr,dtype=tf.float32))
 
         inc_gstep = inc_global_step(global_step)
 
@@ -1116,7 +1119,9 @@ if __name__=='__main__':
                     tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
 
             if research_parameters['optimize_end_to_end']:
-                optimize_with_pool, upd_lr = optimize_with_momenutm_func(pool_loss, global_step, start_lr*0.1)
+                # Lower learning rates for pool op doesnt help
+                # Momentum or SGD for pooling?
+                optimize_with_pool, _ = optimize_func(pool_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
             else:
                 raise NotImplementedError
 
@@ -1156,7 +1161,7 @@ if __name__=='__main__':
         start_adapting = False
         for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
 
-            if batch_id>=research_parameters['stop_training_at']:
+            if batch_id+1>=research_parameters['stop_training_at']:
                 break
 
             t0 = time.clock() # starting time for a batch
