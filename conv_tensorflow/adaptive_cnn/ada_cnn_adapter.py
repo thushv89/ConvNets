@@ -959,7 +959,7 @@ if __name__=='__main__':
         structHandler = logging.FileHandler(output_dir + os.sep + 'cnn_structure.log', mode='w')
         structHandler.setFormatter(logging.Formatter('%(message)s'))
         cnn_structure_logger.addHandler(structHandler)
-        cnn_structure_logger.info('#batch_id:state:action:#layer_1_hyperparameters#layer_2_hyperparameters#...')
+        cnn_structure_logger.info('#batch_id:state:action:reward:#layer_1_hyperparameters#layer_2_hyperparameters#...')
 
     if research_parameters['log_class_distribution']:
         class_dist_logger = logging.getLogger('class_dist_logger')
@@ -1032,8 +1032,6 @@ if __name__=='__main__':
         hardness = 0.5
         hard_pool = Pool(size=12800,batch_size=batch_size,image_size=image_size,num_channels=num_channels,num_labels=num_labels,assert_test=False)
 
-
-
         init_tf_hyperparameters()
 
         if research_parameters['adapt_structure'] or research_parameters['use_custom_momentum_opt']:
@@ -1051,7 +1049,7 @@ if __name__=='__main__':
                 convolution_op_ids.append(op_i)
 
         # Adapting Policy Learner
-        adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
+        adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.5,
                                                   discount_rate=0.9,
                                                   fit_interval = 10,
                                                   even_tries = 3,
@@ -1701,10 +1699,6 @@ if __name__=='__main__':
 
                             _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
 
-                    cnn_structure_logger.info(
-                        '%d:%s:%s%s', batch_id, current_state,current_action,get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
-                    )
-
                     # updating the policy
                     if current_state is not None and current_action is not None:
 
@@ -1747,6 +1741,10 @@ if __name__=='__main__':
                                                'prev_accuracy': None,
                                                'pool_accuracy': np.mean(pool_accuracy)})
 
+                    cnn_structure_logger.info(
+                        '%d:%s:%s:%.5f:%s', batch_id, current_state, current_action,np.mean(pool_accuracy),
+                        get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
+                    )
                     #reset rolling activation means because network changed
                     #rolling_ativation_means = {}
                     #for op in cnn_ops:

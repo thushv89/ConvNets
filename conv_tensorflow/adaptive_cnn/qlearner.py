@@ -331,6 +331,10 @@ class AdaCNNAdaptingQLearner(object):
 
         self.past_mean_accuracy = 0
 
+        self.prev_action = None
+        self.same_action_count = 0
+        self.same_action_threshold = 25
+
     def make_filter_bound_vector(self, n_fil,n_layer,conv_ids):
         fil_vec = []
         curr_fil = n_fil/2**(len(conv_ids)-1)
@@ -484,12 +488,23 @@ class AdaCNNAdaptingQLearner(object):
 
         # decay epsilon
         if self.global_time_stamp>2*len(self.actions):
+            # this is to reduce taking the same action over and over again
+            if self.same_action_count >= self.same_action_threshold:
+                self.epsilon = min(self.epsilon*2,1.0)
+
             self.epsilon = max(self.epsilon*0.9,0.1)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
         self.rl_logger.debug(state)
         self.rl_logger.debug('='*60)
+
+        if action == self.prev_action:
+            self.same_action_count += 1
+        else:
+            self.same_action_count = 0
+
+        self.prev_action = action
 
         return state,action
 
@@ -541,11 +556,11 @@ class AdaCNNAdaptingQLearner(object):
         if ai[0]=='add':
             new_filter_size=si[2]+ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy - (0.1*new_filter_size / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy #- (0.1*new_filter_size / self.filter_bound_vec[si[0]])
         elif ai[0]=='remove':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy + (0.1*new_filter_size / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy #+ (0.1*new_filter_size / self.filter_bound_vec[si[0]])
         else:
             new_filter_size = si[2]
             sj = (si[0], si[1], new_filter_size)
@@ -554,7 +569,6 @@ class AdaCNNAdaptingQLearner(object):
             if ai[0]=='do_nothing':
                 if np.random.random()<0.2:
                     reward = -1.0
-
 
         #reward = mean_accuracy
 
@@ -567,12 +581,15 @@ class AdaCNNAdaptingQLearner(object):
 
             #self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
             #            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
-            sample = reward + self.discount_rate * np.max(
+            new_q = reward + self.discount_rate * np.max(
                 self.regressor.predict(self.get_ohe_state_ndarray(sj)).flatten()
             )
-            self.rl_logger.debug('Sample value: %.5f',sample)
+            old_q = self.regressor.predict(self.get_ohe_state_ndarray(si)).flatten()[self.actions.index(ai)]
+
+            self.rl_logger.debug('Sample value: %.5f',new_q)
             self.q[self.get_ohe_state(si)] = np.zeros((len(self.actions))).tolist()
-            self.q[self.get_ohe_state(si)][self.actions.index(ai)] = sample
+            self.q[self.get_ohe_state(si)][self.actions.index(ai)] = (1-self.learning_rate)*old_q + self.learning_rate*new_q
+
         else:
             self.q[self.get_ohe_state(si)]=np.zeros((len(self.actions))).tolist()
             self.q[self.get_ohe_state(si)][self.actions.index(ai)] = reward
