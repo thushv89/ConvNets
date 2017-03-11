@@ -556,11 +556,11 @@ class AdaCNNAdaptingQLearner(object):
         if ai[0]=='add':
             new_filter_size=si[2]+ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy #- (0.1*new_filter_size / self.filter_bound_vec[si[0]])
-        elif ai[0]=='remove':
+            reward = mean_accuracy + (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+        elif ai[0]=='remove' or ai[0]=='replace':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy #+ (0.1*new_filter_size / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy + (0.1*new_filter_size / self.filter_bound_vec[si[0]])
         else:
             new_filter_size = si[2]
             sj = (si[0], si[1], new_filter_size)

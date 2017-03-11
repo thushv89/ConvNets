@@ -234,6 +234,7 @@ def optimize_func(loss,global_step,learning_rate):
 
     return optimize_ops,learning_rate
 
+
 def optimize_with_momenutm_func(loss, global_step, learning_rate):
     global tf_weight_vels,tf_bias_vels
     vel_update_ops, optimize_ops = [],[]
@@ -345,6 +346,74 @@ def optimize_with_tensor_slice_func(loss, filter_indices_to_replace, op, w, b):
     return grad_apply_op
 
 
+def optimize_with_min_indices_mom(loss, opt_ind_dict,indices_size, learning_rate):
+    global weights, biases
+    global tf_weight_vels, tf_bias_vels
+    global cnn_ops, cnn_hyperparameters, tf_cnn_hyperparameters
+
+    grad_ops,vel_update_ops = [],[]
+
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
+    for op in cnn_ops:
+
+        [(grads_w, w), (grads_b, b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
+
+        vel_update_ops.append(
+            tf.assign(tf_weight_vels[op], research_parameters['momentum'] * tf_weight_vels[op] + grads_w))
+        vel_update_ops.append(
+            tf.assign(tf_bias_vels[op], research_parameters['momentum'] * tf_bias_vels[op] + grads_b))
+
+        if 'conv' in op:
+
+            transposed_shape = [tf_cnn_hyperparameters[op]['weights'][3], tf_cnn_hyperparameters[op]['weights'][0],
+                                tf_cnn_hyperparameters[op]['weights'][1], tf_cnn_hyperparameters[op]['weights'][2]]
+
+            logger.debug('Applying gradients for %s', op)
+
+            mask_grads_w = tf.scatter_nd(
+                tf.reshape(opt_ind_dict[op], [-1, 1]),
+                tf.ones(shape=[indices_size, transposed_shape[1], transposed_shape[2], transposed_shape[3]],
+                        dtype=tf.float32),
+                shape=transposed_shape
+            )
+
+            mask_grads_w = tf.transpose(mask_grads_w, [1, 2, 3, 0])
+
+            mask_grads_b = tf.scatter_nd(
+                tf.reshape(opt_ind_dict[op], [-1, 1]),
+                tf.ones_like(opt_ind_dict[op], dtype=tf.float32),
+                shape=[tf_cnn_hyperparameters[op]['weights'][3]]
+            )
+
+            grads_w = tf_weight_vels[op] * learning_rate * mask_grads_w
+            grads_b = tf_bias_vels[op] * learning_rate * mask_grads_b
+            grad_ops.append(optimizer.apply_gradients([(grads_w, w), (grads_b, b)]))
+
+        elif 'fulcon' in op:
+
+            # use dropout (random) for this layer because we can't just train
+            # min activations of the last layer (classification)
+            logger.debug('Applying gradients for %s', op)
+
+            mask_grads_w = tf.scatter_nd(
+                tf.reshape(opt_ind_dict[op], [-1, 1]),
+                tf.ones(shape=[indices_size, tf_cnn_hyperparameters[op]['out']],
+                        dtype=tf.float32),
+                shape=[tf_cnn_hyperparameters[op]['in'], tf_cnn_hyperparameters[op]['out']]
+            )
+            mask_grads_b = tf.scatter_nd(
+                tf.reshape(opt_ind_dict[op], [-1,1]),
+                tf.ones_like(opt_ind_dict[op],dtype=tf.float32),
+                shape=[tf_cnn_hyperparameters[op]['out']]
+            )
+
+            grads_w = tf_weight_vels[op] * learning_rate * mask_grads_w
+            grads_b = tf_bias_vels[op] * learning_rate * mask_grads_b
+
+            grad_ops.append(
+                optimizer.apply_gradients([(grads_w, weights[op]), (grads_b, biases[op])]))
+
+
 def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b, indices_size):
     '''
     Any adaptation of a convolutional layer would result in a change in the following layer.
@@ -437,12 +506,6 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
 
         grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
         grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
-
-    if research_parameters['optimize_end_to_end']:
-        for tmp_op in cnn_ops[cnn_ops.index(next_op)+1:]:
-            if 'conv' in tmp_op or 'fulcon' in tmp_op:
-                [(grads_w[tmp_op], w), (grads_b[tmp_op], b)] = optimizer.compute_gradients(loss, [w, b])
-            grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op], biases[next_op])]))
 
     return grad_ops
 
@@ -659,6 +722,7 @@ def get_rm_indices_with_distance(op,tf_action_info):
 
     return tf_unique_rm_ind
 
+
 def remove_with_action(op, tf_action_info, tf_activations):
     global cnn_hyperparameters, tf_cnn_hyperparameters
     global logger,weights,biases,tf_weight_vels,tf_bias_vels
@@ -685,33 +749,6 @@ def remove_with_action(op, tf_action_info, tf_activations):
         # calculate cosine distance for F filters (FxF matrix)
         # take one side of diagonal, find (f1,f2) pairs with least distance
         # select indices amnt f2 indices
-
-        '''reshaped_weight = tf.transpose(weights[op],[3,0,1,2])
-        reshaped_weight = tf.reshape(weights[op],[tf_cnn_hyperparameters[op]['weights'][3],
-                                                  tf_cnn_hyperparameters[op]['weights'][0]*tf_cnn_hyperparameters[op]['weights'][1]*tf_cnn_hyperparameters[op]['weights'][2]]
-                                     )
-        cos_sim_weights = tf.matmul(reshaped_weight,tf.transpose(reshaped_weight),name='dot_prod_cos_sim')/ tf.matmul(
-            tf.sqrt(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)),
-            tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight**2,axis=1,keep_dims=True)))
-        ,name='norm_cos_sim')
-
-        upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1,name='upper_triang_cos_sim')
-        zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim, tf.zeros(shape=[tf_cnn_hyperparameters[op]['weights'][3]]),name='zero_diag_upper_triangle')
-        flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim,shape=[-1],name='flattend_cos_sim')
-
-        # we are finding top amount_to_rmv + epsilon amount because
-        # to avoid k_values = {...,(83,1)(139,94)(139,83),...} like incidents
-        # above case will ignore both indices of (139,83) resulting in a reduction < amount_to_rmv
-        [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim,
-                                                          k=tf.minimum(amount_to_rmv+10,tf_cnn_hyperparameters[op]['weights'][3]), name='top_k_indices')
-
-        tf_indices_to_remove_1 = tf.reshape(tf.mod(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]),shape=[-1],name='mod_indices')
-        tf_indices_to_remove_2 = tf.reshape(tf.floor_div(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]),shape=[-1],name='floor_div_indices')
-        # concat both mod and floor_div indices
-        tf_indices_to_rm = tf.reshape(tf.stack([tf_indices_to_remove_1,tf_indices_to_remove_2],name='all_rm_indices'),shape=[-1])
-        # return both values and indices of unique values (discard indices)
-        tf_unique_rm_ind,_ = tf.unique(tf_indices_to_rm,name='unique_rm_indices')'''
-
         tf_unique_rm_ind = get_rm_indices_with_distance(op,tf_action_info)
 
     tf_indices_to_rm = tf.reshape(tf.slice(tf_unique_rm_ind,[0],[amount_to_rmv]),shape=[amount_to_rmv,1],name='indices_to_rm')
@@ -849,7 +886,8 @@ research_parameters = {
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
     'loss_diff_threshold':0.02,
     'debugging':True if logging_level==logging.DEBUG else False,
-    'stop_training_at':11000
+    'stop_training_at':11000,
+    'train_min_activation':False
 }
 
 interval_parameters = {
@@ -1101,10 +1139,12 @@ if __name__=='__main__':
         loss = calc_loss(logits,tf_labels,True,tf_data_weights)
         loss_vec = calc_loss_vector(logits,tf_labels)
         pred = predict_with_logits(logits)
-        if research_parameters['optimizer']=='SGD':
-            optimize,upd_lr = optimize_func(loss,global_step,tf.constant(start_lr,dtype=tf.float32))
-        elif research_parameters['optimizer']=='Momentum':
-            optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, tf.constant(start_lr,dtype=tf.float32))
+
+        if not research_parameters['train_min_activation']:
+            if research_parameters['optimizer']=='SGD':
+                optimize,upd_lr = optimize_func(loss,global_step,tf.constant(start_lr,dtype=tf.float32))
+            elif research_parameters['optimizer']=='Momentum':
+                optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, tf.constant(start_lr,dtype=tf.float32))
 
         inc_gstep = inc_global_step(global_step)
 
@@ -1152,6 +1192,12 @@ if __name__=='__main__':
             tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
             tf_in_size = tf.placeholder(dtype=tf.int32)
             tf_update_hyp_ops={}
+
+            if research_parameters['train_min_activation']:
+                if research_parameters['optimizer']=='SGD':
+                    raise NotImplementedError
+                elif research_parameters['optimizer']=='Momentum':
+                    optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, tf.constant(start_lr,dtype=tf.float32))
 
             for tmp_op in cnn_ops:
                 if 'conv' in tmp_op:
@@ -1256,14 +1302,24 @@ if __name__=='__main__':
 
             t0_train = time.clock()
             for _ in range(iterations_per_batch):
-                if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
-                    _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
-                        [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
-                    )
+                if research_parameters['adapt_structure'] and research_parameters['train_min_activation']:
+                    if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
+                        _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
+                            [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
+                        )
+                    else:
+                        _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
+                                [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
+                        )
                 else:
-                    _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
-                            [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
-                    )
+                    if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
+                        _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
+                            [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
+                        )
+                    else:
+                        _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
+                                [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
+                        )
 
             t1_train = time.clock()
 
