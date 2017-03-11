@@ -293,6 +293,7 @@ class AdaCNNAdaptingQLearner(object):
         self.learning_rate = params['learning_rate']
         self.discount_rate = params['discount_rate']
         self.filter_upper_bound = params['filter_upper_bound']
+        self.filter_min_bound = params['filter_min_bound']
 
         self.fit_interval = params['fit_interval'] #GP calculating interval (10)
         self.even_tries = params['even_tries']
@@ -307,6 +308,9 @@ class AdaCNNAdaptingQLearner(object):
         self.epsilon = params['epsilon']
         self.net_depth = params['net_depth']
         self.n_conv = params['n_conv'] # number of convolutional layers
+        self.conv_ids = params['conv_ids']
+
+        self.filter_bound_vec = self.make_filter_bound_vector(self.filter_upper_bound, self.net_depth,self.conv_ids)
 
         self.rl_logger = logging.getLogger('Adapting Policy Logger')
         self.rl_logger.setLevel(logging_level)
@@ -314,17 +318,31 @@ class AdaCNNAdaptingQLearner(object):
         console.setFormatter(logging.Formatter(logging_format))
         console.setLevel(logging_level)
         self.rl_logger.addHandler(console)
-
+        self.rl_logger.debug('Conv ids: %s',self.conv_ids)
+        self.rl_logger.debug('Filter vector %s',self.filter_bound_vec)
         self.local_time_stamp = 0
         self.global_time_stamp = 0
 
         self.actions = [
-            ('add',16),('remove',16),('add',32),('remove',32),
+            ('add',16),('remove',16),('replace',16),('add',32),('remove',32),('replace',16),
             ('finetune', 0),('do_nothing',0)
         ]
         self.q_length = 10 * len(self.actions)
 
         self.past_mean_accuracy = 0
+
+    def make_filter_bound_vector(self, n_fil,n_layer,conv_ids):
+        fil_vec = []
+        curr_fil = n_fil/2**(len(conv_ids)-1)
+        for li in range(n_layer):
+            if li in conv_ids:
+                fil_vec.append(max(self.filter_min_bound,int(curr_fil)))
+                curr_fil *= 2
+            else:
+                fil_vec.append(0)
+
+        assert len(fil_vec)==n_layer
+        return fil_vec
 
     def restore_policy(self,**restore_data):
         # use this to restore from saved data
@@ -364,7 +382,7 @@ class AdaCNNAdaptingQLearner(object):
             else:
                 next_filter_count = data['filter_counts'][ni]
 
-            if next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+            if next_filter_count<=0 or next_filter_count>self.filter_bound_vec[ni]:
                 action = self.actions[-1]
 
         # deterministic selection (if epsilon is not 1 or q is not empty)
@@ -403,7 +421,7 @@ class AdaCNNAdaptingQLearner(object):
             else:
                 next_filter_count = data['filter_counts'][ni]
 
-            while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+            while next_filter_count<=0 or next_filter_count>self.filter_bound_vec[ni]:
                 self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
                 self.q[self.get_ohe_state(state)] = np.zeros(len(self.actions)).tolist()
                 self.q[self.get_ohe_state(state)][self.actions.index(action)] = -1.0
@@ -434,7 +452,8 @@ class AdaCNNAdaptingQLearner(object):
             # ================= Look ahead 1 step (Validate Predicted Action) =========================
             # make sure predicted action stride is not larger than resulting output.
             # make sure predicted kernel size is not larger than the resulting output
-            # To avoid such scenarios we create a restricted action space if this happens
+            # To avoid such scenarios we create a
+            #  action space if this happens
             restricted_action_space = list(self.actions)
             if action[0]=='add':
                 next_filter_count =data['filter_counts'][ni]+action[1]
@@ -442,7 +461,7 @@ class AdaCNNAdaptingQLearner(object):
                 next_filter_count =data['filter_counts'][ni]-action[1]
             else:
                 next_filter_count = data['filter_counts'][ni]
-            while next_filter_count<=0 or next_filter_count>self.filter_upper_bound:
+            while next_filter_count<=0 or next_filter_count>self.filter_bound_vec[ni]:
                 self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
                 restricted_action_space.remove(action)
 
@@ -477,7 +496,7 @@ class AdaCNNAdaptingQLearner(object):
 
     def get_ohe_state(self,s):
         ohe_state = np.zeros((1, self.net_depth + len(s) - 1))
-        ohe_state[0, -1] = s[2] * 1.0 / self.filter_upper_bound
+        ohe_state[0, -1] = s[2] * 1.0 / self.filter_bound_vec[int(s[0])]
         ohe_state[0, -2] = s[1]
         ohe_state[0, int(s[0])] = 1.0
 
@@ -509,7 +528,6 @@ class AdaCNNAdaptingQLearner(object):
 
         #mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
         mean_accuracy = data['pool_accuracy']/100.0
-        #reward = mean_accuracy*(mean_accuracy - self.past_mean_accuracy)
 
         si,ai = data['states'],data['actions']
 
@@ -523,15 +541,20 @@ class AdaCNNAdaptingQLearner(object):
         if ai[0]=='add':
             new_filter_size=si[2]+ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy - (0.1*new_filter_size / self.filter_upper_bound)
+            reward = mean_accuracy - (0.1*new_filter_size / self.filter_bound_vec[si[0]])
         elif ai[0]=='remove':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy + (0.1*new_filter_size / self.filter_upper_bound)
+            reward = mean_accuracy + (0.1*new_filter_size / self.filter_bound_vec[si[0]])
         else:
             new_filter_size = si[2]
             sj = (si[0], si[1], new_filter_size)
+
             reward = mean_accuracy
+            if ai[0]=='do_nothing':
+                if np.random.random()<0.2:
+                    reward = -1.0
+
 
         #reward = mean_accuracy
 
@@ -561,6 +584,8 @@ class AdaCNNAdaptingQLearner(object):
             self.global_time_stamp += 1
 
         self.rl_logger.debug('Global/Local time step: %d/%d\n',self.global_time_stamp,self.local_time_stamp)
+
+
     def get_Q(self):
         q_pred_dict = {}
         #for ai in self.q.keys():

@@ -618,6 +618,47 @@ def add_with_action(
     return update_ops
 
 
+def get_rm_indices_with_distance(op,tf_action_info):
+    global weights,biases
+
+    amount_to_rmv = tf_action_info[2]
+    reshaped_weight = tf.transpose(weights[op], [3, 0, 1, 2])
+    reshaped_weight = tf.reshape(weights[op], [tf_cnn_hyperparameters[op]['weights'][3],
+                                               tf_cnn_hyperparameters[op]['weights'][0] *
+                                               tf_cnn_hyperparameters[op]['weights'][1] *
+                                               tf_cnn_hyperparameters[op]['weights'][2]]
+                                 )
+    cos_sim_weights = tf.matmul(reshaped_weight, tf.transpose(reshaped_weight), name='dot_prod_cos_sim') / tf.matmul(
+        tf.sqrt(tf.reduce_sum(reshaped_weight ** 2, axis=1, keep_dims=True)),
+        tf.sqrt(tf.transpose(tf.reduce_sum(reshaped_weight ** 2, axis=1, keep_dims=True)))
+        , name='norm_cos_sim')
+
+    upper_triang_cos_sim = tf.matrix_band_part(cos_sim_weights, 0, -1, name='upper_triang_cos_sim')
+    zero_diag_triang_cos_sim = tf.matrix_set_diag(upper_triang_cos_sim,
+                                                  tf.zeros(shape=[tf_cnn_hyperparameters[op]['weights'][3]]),
+                                                  name='zero_diag_upper_triangle')
+    flattened_cos_sim = tf.reshape(zero_diag_triang_cos_sim, shape=[-1], name='flattend_cos_sim')
+
+    # we are finding top amount_to_rmv + epsilon amount because
+    # to avoid k_values = {...,(83,1)(139,94)(139,83),...} like incidents
+    # above case will ignore both indices of (139,83) resulting in a reduction < amount_to_rmv
+    [high_sim_values, high_sim_indices] = tf.nn.top_k(flattened_cos_sim,
+                                                      k=tf.minimum(amount_to_rmv + 10,
+                                                                   tf_cnn_hyperparameters[op]['weights'][3]),
+                                                      name='top_k_indices')
+
+    tf_indices_to_remove_1 = tf.reshape(tf.mod(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]), shape=[-1],
+                                        name='mod_indices')
+    tf_indices_to_remove_2 = tf.reshape(tf.floor_div(high_sim_indices, tf_cnn_hyperparameters[op]['weights'][3]),
+                                        shape=[-1], name='floor_div_indices')
+    # concat both mod and floor_div indices
+    tf_indices_to_rm = tf.reshape(tf.stack([tf_indices_to_remove_1, tf_indices_to_remove_2], name='all_rm_indices'),
+                                  shape=[-1])
+    # return both values and indices of unique values (discard indices)
+    tf_unique_rm_ind, _ = tf.unique(tf_indices_to_rm, name='unique_rm_indices')
+
+    return tf_unique_rm_ind
+
 def remove_with_action(op, tf_action_info, tf_activations):
     global cnn_hyperparameters, tf_cnn_hyperparameters
     global logger,weights,biases,tf_weight_vels,tf_bias_vels
@@ -645,7 +686,7 @@ def remove_with_action(op, tf_action_info, tf_activations):
         # take one side of diagonal, find (f1,f2) pairs with least distance
         # select indices amnt f2 indices
 
-        reshaped_weight = tf.transpose(weights[op],[3,0,1,2])
+        '''reshaped_weight = tf.transpose(weights[op],[3,0,1,2])
         reshaped_weight = tf.reshape(weights[op],[tf_cnn_hyperparameters[op]['weights'][3],
                                                   tf_cnn_hyperparameters[op]['weights'][0]*tf_cnn_hyperparameters[op]['weights'][1]*tf_cnn_hyperparameters[op]['weights'][2]]
                                      )
@@ -669,7 +710,9 @@ def remove_with_action(op, tf_action_info, tf_activations):
         # concat both mod and floor_div indices
         tf_indices_to_rm = tf.reshape(tf.stack([tf_indices_to_remove_1,tf_indices_to_remove_2],name='all_rm_indices'),shape=[-1])
         # return both values and indices of unique values (discard indices)
-        tf_unique_rm_ind,_ = tf.unique(tf_indices_to_rm,name='unique_rm_indices')
+        tf_unique_rm_ind,_ = tf.unique(tf_indices_to_rm,name='unique_rm_indices')'''
+
+        tf_unique_rm_ind = get_rm_indices_with_distance(op,tf_action_info)
 
     tf_indices_to_rm = tf.reshape(tf.slice(tf_unique_rm_ind,[0],[amount_to_rmv]),shape=[amount_to_rmv,1],name='indices_to_rm')
     tf_rm_ind_scatter = tf.scatter_nd(tf_indices_to_rm,tf.ones(shape=[amount_to_rmv],dtype=tf.int32),shape=[tf_cnn_hyperparameters[op]['weights'][3]])
@@ -806,7 +849,7 @@ research_parameters = {
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
     'loss_diff_threshold':0.02,
     'debugging':True if logging_level==logging.DEBUG else False,
-    'stop_training_at':5000
+    'stop_training_at':11000
 }
 
 interval_parameters = {
@@ -840,7 +883,7 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
-    behavior = 'stationary'
+    behavior = 'non-stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
@@ -855,12 +898,12 @@ if __name__=='__main__':
             dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
             dataset_size = 1280000
-            chunk_size = 51200
+            chunk_size = 25600
         elif behavior == 'stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-station-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-station-labels.pkl'
             dataset_size = 1280000
-            chunk_size = 51200
+            chunk_size = 25600
 
         test_size=10000
         test_dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-test-dataset.pkl'
@@ -932,8 +975,7 @@ if __name__=='__main__':
     pool_dist_logger.addHandler(poolHandler)
     pool_dist_logger.info('#Class distribution')
 
-    # Loading data
-    memmap_idx = 0
+    # Loading test data
     train_dataset,train_labels = None,None
 
     test_dataset,test_labels = load_data_from_memmap(dataset_info,test_dataset_filename,test_label_filename,0,test_size)
@@ -947,9 +989,9 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,512#P,3,2,0#C,5,1,512#C,3,1,512#Terminate,0,0,0"
+        cnn_string = "C,5,1,128#P,3,2,0#C,5,1,256#C,3,1,512#P,3,2,0#C,3,1,1024#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#C,3,1,64#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#C,3,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1002,12 +1044,20 @@ if __name__=='__main__':
         # -1 is because we don't want to count pool_global
         layer_count = len([op for op in cnn_ops if 'conv' in op or 'pool' in op])-1
 
+        # ids of the convolution ops
+        convolution_op_ids = []
+        for op_i, op in enumerate(cnn_ops):
+            if 'conv' in op:
+                convolution_op_ids.append(op_i)
+
         # Adapting Policy Learner
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=0.1,
                                                   discount_rate=0.9,
                                                   fit_interval = 10,
                                                   even_tries = 3,
-                                                  filter_upper_bound=512,
+                                                  filter_upper_bound=1024,
+                                                  filter_min_bound=128,
+                                                  conv_ids=convolution_op_ids,
                                                   net_depth=layer_count,
                                                   n_conv = len([op for op in cnn_ops if 'conv' in op]),
                                                   epsilon=0.99)
@@ -1080,7 +1130,8 @@ if __name__=='__main__':
             tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
             tf_indices_size = tf.placeholder(tf.int32)
             tf_slice_optimize = {}
-            tf_add_filters_ops,tf_rm_filters_ops = {},{}
+            tf_add_filters_ops,tf_rm_filters_ops,tf_replace_ind_ops = {},{},{}
+
             tf_action_info = tf.placeholder(shape=[3], dtype=tf.int32,
                                             name='tf_action')  # [op_id,action_id,amount] (action_id 0 - add, 1 -remove)
             tf_running_activations = tf.placeholder(shape=(None,), dtype=tf.float32, name='running_activations')
@@ -1111,6 +1162,7 @@ if __name__=='__main__':
                                                                  tf_bias_this,tf_weights_next,tf_running_activations,
                                                                  tf_wvelocity_this,tf_bvelocity_this,tf_wvelocity_next)
                     tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
+                    tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
                     tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
                         pool_loss, tf_indices,
                         tmp_op, weights[tmp_op], biases[tmp_op], tf_indices_size
@@ -1120,7 +1172,7 @@ if __name__=='__main__':
 
             if research_parameters['optimize_end_to_end']:
                 # Lower learning rates for pool op doesnt help
-                # Momentum or SGD for pooling?
+                # Momentum or SGD for pooling? Go with SGD
                 optimize_with_pool, _ = optimize_func(pool_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
             else:
                 raise NotImplementedError
@@ -1142,10 +1194,6 @@ if __name__=='__main__':
         current_state,current_action = None,None
         prev_valid_accuracy,next_valid_accuracy = 0,0
 
-        convolution_op_ids = []
-        for op_i, op in enumerate(cnn_ops):
-            if 'conv' in op:
-                convolution_op_ids.append(op_i)
         current_q_learn_op_id = 0
         logger.info('Convolutional Op IDs: %s',convolution_op_ids)
 
@@ -1159,7 +1207,9 @@ if __name__=='__main__':
 
         previous_loss = 1e5 # used for the check to start adapting
         start_adapting = False
-        for batch_id in range(ceil(dataset_size//batch_size)- batches_in_chunk + 1):
+        memmap_idx = 0
+
+        for batch_id in range(ceil(dataset_size//batch_size)-1):
 
             if batch_id+1>=research_parameters['stop_training_at']:
                 break
@@ -1180,7 +1230,11 @@ if __name__=='__main__':
             if chunk_batch_id==0:
                 # We load 1 extra batch (chunk_size+1) because we always make the valid batch the batch_id+1
                 logger.info('\tCurrent memmap start index: %d', memmap_idx)
-                train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size)
+                if memmap_idx+chunk_size+batch_size<dataset_size:
+                    train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size)
+                else:
+                    train_dataset, train_labels = load_data_from_memmap(dataset_info, dataset_filename, label_filename,
+                                                                        memmap_idx, chunk_size)
                 memmap_idx += chunk_size
                 logger.info('Loading dataset chunk of size (chunk size + batch size): %d',train_dataset.shape[0])
                 logger.info('\tNext memmap start index: %d',memmap_idx)
@@ -1273,7 +1327,7 @@ if __name__=='__main__':
             prev_valid_loss, prev_valid_predictions = session.run([tf_valid_loss,tf_valid_predictions],feed_dict=feed_valid_dict)
             prev_valid_accuracy = accuracy(prev_valid_predictions, batch_valid_labels)
 
-            if batch_id%interval_parameters['test_interval']==0:
+            if (batch_id+1)%interval_parameters['test_interval']==0:
                 mean_train_loss = np.mean(train_losses)
                 logger.info('='*60)
                 logger.info('\tBatch ID: %d'%batch_id)
@@ -1501,15 +1555,23 @@ if __name__=='__main__':
                                 pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
                                 pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
 
-                                _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
-                                                                        tf_pool_labels: pbatch_labels}
+                                if pool_id == 0:
+                                    _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
+                                                                            tf_pool_labels: pbatch_labels}
                                                 )
+
                                 current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
                                                 feed_dict={tf_pool_dataset: pbatch_data,
                                                            tf_pool_labels: pbatch_labels,
                                                            tf_indices:np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
                                                            tf_indices_size:ai[1]}
                                                 )
+
+                                # update rolling activation means
+                                for op, op_activations in current_activations.items():
+                                    assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
+                                    rolling_ativation_means[op] = (1 - act_decay) * rolling_ativation_means[
+                                        op] + decay * current_activations[op]
 
                     elif 'conv' in current_op and ai[0]=='remove' :
 
@@ -1592,7 +1654,30 @@ if __name__=='__main__':
                             # calculate cosine distance for F filters (FxF matrix)
                             # take one side of diagonal, find (f1,f2) pairs with least distance
                             # select indices amnt f2 indices
-                            raise NotImplementedError
+                            indices_of_filters_replace = session.run(tf_rm_filters_ops[current_op])
+
+                        for pool_id in range((hard_pool.get_size() // batch_size) - 1):
+                            if np.random.random() < research_parameters['replace_op_train_rate']:
+                                pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
+                                pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
+
+                                if pool_id==0:
+                                    _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
+                                                                            tf_pool_labels: pbatch_labels}
+                                                    )
+                                current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
+                                                feed_dict={tf_pool_dataset: pbatch_data,
+                                                           tf_pool_labels: pbatch_labels,
+                                                           tf_indices:indices_of_filters_replace,
+                                                           tf_indices_size:ai[1]}
+                                                )
+
+                                # update rolling activation means
+                                for op, op_activations in current_activations.items():
+                                    assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
+                                    rolling_ativation_means[op] = (1 - act_decay) * rolling_ativation_means[
+                                        op] + decay * current_activations[op]
+
 
                     elif 'conv' in current_op and ai[0]=='finetune':
                         # pooling takes place here

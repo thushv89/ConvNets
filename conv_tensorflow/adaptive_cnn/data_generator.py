@@ -427,7 +427,7 @@ if __name__ == '__main__':
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = int(batch_size*10) # number of samples sampled for each instance of the gaussian curve
 
-    dataset_type = 'cifar-10' #'cifar-10 imagenet-100
+    dataset_type = 'imagenet-100' #'cifar-10 imagenet-100
 
     if dataset_type == 'cifar-10':
         data_save_directory = 'data_non_station'
