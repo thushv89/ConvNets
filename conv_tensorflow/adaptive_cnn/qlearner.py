@@ -299,13 +299,12 @@ class AdaCNNAdaptingQLearner(object):
         self.even_tries = params['even_tries']
         self.q = OrderedDict() # store Q values dict[a,state] = q_value
 
-        self.regressor = MLPRegressor(activation='relu', batch_size='auto',
+        self.regressor = MLPRegressor(activation='tanh', batch_size='auto',
                                       hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
                                       learning_rate_init=0.001, max_iter=100,
                                       random_state=1, shuffle=True,
-                                      solver='sgd', momentum=0.9)
+                                      solver='sgd', momentum=0.9,early_stopping = True)
 
-        self.epsilon = params['epsilon']
         self.net_depth = params['net_depth']
         self.n_conv = params['n_conv'] # number of convolutional layers
         self.conv_ids = params['conv_ids']
@@ -324,16 +323,18 @@ class AdaCNNAdaptingQLearner(object):
         self.global_time_stamp = 0
 
         self.actions = [
-            ('add',16),('remove',16),('replace',16),('add',32),('remove',32),('replace',16),
+            ('add',16),('remove',8),('add',32),('remove',16),
             ('finetune', 0),('do_nothing',0)
         ]
-        self.q_length = 10 * len(self.actions)
+        self.q_length = 25 * len(self.actions)
 
         self.past_mean_accuracy = 0
 
         self.prev_action = None
-        self.same_action_count = 0
-        self.same_action_threshold = 25
+        self.same_action_count = [0 for _ in range(self.net_depth)]
+        self.epsilons = [params['epsilon'] for _ in range(self.net_depth)]
+
+        self.same_action_threshold = 10
 
     def make_filter_bound_vector(self, n_fil,n_layer,conv_ids):
         fil_vec = []
@@ -357,7 +358,8 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('Cleaning Q values (removing old ones)')
         self.rl_logger.debug('\tSize of Q before: %d',len(self.q))
         if len(self.q)>self.q_length:
-            self.q.popitem(last=True)
+            for _ in range(len(self.q)-self.q_length):
+                self.q.popitem(last=True)
             self.rl_logger.debug('\tSize of Q after: %d', len(self.q))
 
     def output_action(self,data,ni):
@@ -390,7 +392,7 @@ class AdaCNNAdaptingQLearner(object):
                 action = self.actions[-1]
 
         # deterministic selection (if epsilon is not 1 or q is not empty)
-        elif np.random.random()>self.epsilon:
+        elif np.random.random()>self.epsilons[ni]:
             self.rl_logger.debug('Choosing action deterministic...')
             # we create this copy_actions in case we need to change the order the actions processed
             # without changing the original action space (self.actions)
@@ -432,7 +434,7 @@ class AdaCNNAdaptingQLearner(object):
 
                 del q_for_actions[restricted_action_space.index(action)]
                 restricted_action_space.remove(action)
-
+                self.q[self.get_ohe_state(state)][self.actions.index(action)] = -5.0
                 # if we do not have any more possible actions
                 if len(restricted_action_space)==0:
                     action = self.actions[-1]
@@ -468,7 +470,8 @@ class AdaCNNAdaptingQLearner(object):
             while next_filter_count<=0 or next_filter_count>self.filter_bound_vec[ni]:
                 self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
                 restricted_action_space.remove(action)
-
+                self.q[self.get_ohe_state(state)] = np.zeros(len(self.actions)).tolist()
+                self.q[self.get_ohe_state(state)][self.actions.index(action)]=-5.0
                 # if we do not have any more possible actions
                 if len(restricted_action_space)==0:
                     action = self.actions[-1]
@@ -488,11 +491,11 @@ class AdaCNNAdaptingQLearner(object):
 
         # decay epsilon
         if self.global_time_stamp>2*len(self.actions):
-            # this is to reduce taking the same action over and over again
-            if self.same_action_count >= self.same_action_threshold:
-                self.epsilon = min(self.epsilon*2,1.0)
+            self.epsilons[ni] = max(self.epsilons[ni] * 0.9, 0.1)
 
-            self.epsilon = max(self.epsilon*0.9,0.1)
+            # this is to reduce taking the same action over and over again
+            if self.same_action_count[ni] >= self.same_action_threshold:
+                self.epsilons[ni] = min(self.epsilons[ni]*2,1.0)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
@@ -500,9 +503,9 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('='*60)
 
         if action == self.prev_action:
-            self.same_action_count += 1
+            self.same_action_count[ni] += 1
         else:
-            self.same_action_count = 0
+            self.same_action_count[ni] = 0
 
         self.prev_action = action
 
@@ -538,11 +541,10 @@ class AdaCNNAdaptingQLearner(object):
             self.rl_logger.debug('X (shape): %s, Y (shape): %s', x.shape, y.shape)
             self.rl_logger.debug('X: %s, Y: %s',str(x[:3,:]),str(y[:3]))
             self.regressor.fit(x,y)
-
             self.clean_Q()
 
         #mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
-        mean_accuracy = data['pool_accuracy']/100.0
+        mean_accuracy = (data['pool_accuracy']/100.0)*((data['pool_accuracy']-data['prev_pool_accuracy'])/100.0)
 
         si,ai = data['states'],data['actions']
 
@@ -557,18 +559,23 @@ class AdaCNNAdaptingQLearner(object):
             new_filter_size=si[2]+ai[1]
             sj = (si[0],si[1],new_filter_size)
             reward = mean_accuracy + (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
-        elif ai[0]=='remove' or ai[0]=='replace':
+        elif ai[0]=='remove':
             new_filter_size=si[2]-ai[1]
             sj = (si[0],si[1],new_filter_size)
-            reward = mean_accuracy + (0.1*new_filter_size / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+        elif ai[0]=='replace':
+            new_filter_size = si[2]
+            if new_filter_size/self.filter_bound_vec[si[0]]<0.5:
+                reward = -1.0
+            else:
+                reward = mean_accuracy
+        elif ai[0]=='finetune' or ai[0]=='do_nothing':
+            new_filter_size = si[2]
+            reward = mean_accuracy - (0.1 * (self.filter_bound_vec[si[0]] - new_filter_size) / self.filter_bound_vec[si[0]])
         else:
             new_filter_size = si[2]
             sj = (si[0], si[1], new_filter_size)
-
             reward = mean_accuracy
-            if ai[0]=='do_nothing':
-                if np.random.random()<0.2:
-                    reward = -1.0
 
         #reward = mean_accuracy
 
