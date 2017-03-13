@@ -13,6 +13,8 @@ from six.moves import cPickle as pickle
 import os
 from sklearn.neural_network import MLPRegressor
 from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.base import clone
+
 from collections import OrderedDict
 
 logging_level = logging.DEBUG
@@ -296,15 +298,18 @@ class AdaCNNAdaptingQLearner(object):
         self.filter_min_bound = params['filter_min_bound']
 
         self.fit_interval = params['fit_interval'] #GP calculating interval (10)
-        self.even_tries = params['even_tries']
-        self.q = OrderedDict() # store Q values dict[a,state] = q_value
+        self.target_update_rate = params['target_update_rate']
 
-        self.regressor = MLPRegressor(activation='tanh', batch_size='auto',
+        self.even_tries = params['even_tries']
+        self.batch_size = params['batch_size']
+
+        self.regressor = MLPRegressor(activation='relu', batch_size=self.batch_size,
                                       hidden_layer_sizes=(128, 64, 32), learning_rate='constant',
                                       learning_rate_init=0.001, max_iter=100,
                                       random_state=1, shuffle=True,
                                       solver='sgd', momentum=0.9,early_stopping = True)
 
+        self.target_network = None
         self.net_depth = params['net_depth']
         self.n_conv = params['n_conv'] # number of convolutional layers
         self.conv_ids = params['conv_ids']
@@ -323,18 +328,24 @@ class AdaCNNAdaptingQLearner(object):
         self.global_time_stamp = 0
 
         self.actions = [
-            ('add',16),('remove',8),('add',32),('remove',16),
+            ('add',16),('remove',8),
             ('finetune', 0),('do_nothing',0)
         ]
         self.q_length = 25 * len(self.actions)
 
         self.past_mean_accuracy = 0
 
-        self.prev_action = None
+        self.prev_action,self.prev_state = None,None
         self.same_action_count = [0 for _ in range(self.net_depth)]
         self.epsilons = [params['epsilon'] for _ in range(self.net_depth)]
 
         self.same_action_threshold = 10
+
+        # Of format {s1,a1,s2,a2,s3,a3} NOTE that this doesnt hold the current state
+        self.state_history_length = 4
+        self.current_state_history = []
+        # Format of {phi(s_t),a_t,r_t,phi(s_t+1)}
+        self.experience = []
 
     def make_filter_bound_vector(self, n_fil,n_layer,conv_ids):
         fil_vec = []
@@ -371,6 +382,7 @@ class AdaCNNAdaptingQLearner(object):
 
         state = (ni,data['distMSE'],data['filter_counts'][ni])
         self.rl_logger.info('Data for (Depth Index,DistMSE,Filter Count) %s'%str(state))
+        state_history_plus_new_state = list(self.current_state_history).append(state)
 
         # pooling operation always action='do nothing'
         if data['filter_counts'][ni]==0:
@@ -398,7 +410,8 @@ class AdaCNNAdaptingQLearner(object):
             # without changing the original action space (self.actions)
             copy_actions = list(self.actions)
 
-            q_for_actions = self.regressor.predict(self.get_ohe_state_ndarray(state)).flatten().tolist()
+            curr_x = np.asarray(self.get_ohe_state_history(state_history_plus_new_state)).reshape(1,-1)
+            q_for_actions = self.regressor.predict(curr_x).flatten().tolist()
 
             self.rl_logger.debug('\tActions: %s',self.actions)
             self.rl_logger.debug('\tPredicted Q: %s',q_for_actions)
@@ -429,12 +442,10 @@ class AdaCNNAdaptingQLearner(object):
 
             while next_filter_count<=0 or next_filter_count>self.filter_bound_vec[ni]:
                 self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
-                self.q[self.get_ohe_state(state)] = np.zeros(len(self.actions)).tolist()
-                self.q[self.get_ohe_state(state)][self.actions.index(action)] = -1.0
-
+                #TODO: introduce penalty for trying in invalid action
                 del q_for_actions[restricted_action_space.index(action)]
                 restricted_action_space.remove(action)
-                self.q[self.get_ohe_state(state)][self.actions.index(action)] = -5.0
+
                 # if we do not have any more possible actions
                 if len(restricted_action_space)==0:
                     action = self.actions[-1]
@@ -470,8 +481,9 @@ class AdaCNNAdaptingQLearner(object):
             while next_filter_count<=0 or next_filter_count>self.filter_bound_vec[ni]:
                 self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
                 restricted_action_space.remove(action)
-                self.q[self.get_ohe_state(state)] = np.zeros(len(self.actions)).tolist()
-                self.q[self.get_ohe_state(state)][self.actions.index(action)]=-5.0
+
+                #TODO: introduce penalty for trying in invalid action
+
                 # if we do not have any more possible actions
                 if len(restricted_action_space)==0:
                     action = self.actions[-1]
@@ -508,6 +520,7 @@ class AdaCNNAdaptingQLearner(object):
             self.same_action_count[ni] = 0
 
         self.prev_action = action
+        self.prev_state = state
 
         return state,action
 
@@ -520,9 +533,49 @@ class AdaCNNAdaptingQLearner(object):
 
         return tuple(ohe_state.flatten())
 
+
     def get_ohe_state_ndarray(self,s):
         return np.asarray(self.get_ohe_state(s)).reshape(1,-1)
 
+    def get_ohe_state_history(self,sh):
+        ohe_state_hist_list = []
+        for hist_item in range(self.state_history_length-1):
+            temp_arr = list(sh[hist_item][0])
+            temp_arr.extend(sh[hist_item][1])
+            ohe_state_hist_list.extend(temp_arr)
+
+        ohe_state_hist_list.extend(list(sh[-1][0]))
+        print(ohe_state_hist_list)
+        return tuple(ohe_state_hist_list)
+
+    def get_xy_with_experince(self, experience_slice):
+
+        x,y,rewards,sj = None,None,None,None
+
+        for [phi_t,ai,reward,phi_t_plus_1] in experience_slice:
+            # phi_t, ai, reward, phi_t_plus_1
+            if x is None:
+                x = np.asarray(self.get_ohe_state_history(phi_t)).reshape((1,-1))
+            else:
+                x = np.append(x,np.asarray(self.get_ohe_state_history(phi_t)).reshape((1,-1)),axis=0)
+
+            ohe_a = [1 if self.actions.index(ai)==act else 0 for act in range(len(self.actions))]
+            if y is None:
+                y = np.asarray(ohe_a).reshape(1,-1)
+            else:
+                y = np.append(y,np.asarray(ohe_a).reshape(1,-1),axis=0)
+
+            if rewards is None:
+                rewards = np.asarray(reward).reshape(1,-1)
+            else:
+                rewards = np.append(rewards,np.asarray(reward).reshape(1,-1),axis=0)
+
+            if sj is None:
+                sj = np.asarray(self.get_ohe_state_history(phi_t_plus_1)).reshape(1,-1)
+            else:
+                sj = np.append(sj,np.asarray(self.get_ohe_state_history(phi_t_plus_1)).reshape(1,-1),axis=0)
+
+        return x,y,rewards,sj
 
     def update_policy(self, data):
         # data['states'] => list of states
@@ -530,78 +583,93 @@ class AdaCNNAdaptingQLearner(object):
         # data['next_accuracy'] => validation accuracy (unseen)
         # data['prev_accuracy'] => validation accuracy (seen)
 
-        if self.local_time_stamp>0 and self.local_time_stamp%self.fit_interval==0:
-            self.rl_logger.info('Training the Q Approximator...')
+        if self.global_time_stamp>0 and len(self.experience)>self.batch_size and self.global_time_stamp%self.fit_interval==0:
+            self.rl_logger.info('Training the Q Approximator with Experience...')
+            self.rl_logger.debug('(Q) Total experience data: %d', len(self.experience))
 
-            self.rl_logger.debug('(Q) Total data: %d', len(self.q))
-            x,y = zip(*self.q.items())
-            x,y = np.asarray(x).flatten().reshape(len(self.q),-1),np.asarray(y).flatten().reshape(len(self.q),-1)
+            if len(self.experience)>self.batch_size:
+                exp_indices = np.random.randint(0,len(self.experience),(self.batch_size,))
+                self.rl_logger.debug('Experience indices: %s',exp_indices)
+                x,y,r,next_state = self.get_xy_with_experince([self.experience[ei] for ei in exp_indices])
+            else:
+                x,y,r,next_state = self.get_xy_with_experince(self.experience)
+
+            if self.target_network is not None:
+                target_q = r + self.discount_rate * np.max(self.target_network.predict(next_state),axis=1)
+            else:
+                target_q = r
+
+            y = y * target_q
+
             # since the state contain layer id, let us make the layer id one-hot encoded
-            assert x.shape[0]== len(self.q)
             self.rl_logger.debug('X (shape): %s, Y (shape): %s', x.shape, y.shape)
             self.rl_logger.debug('X: %s, Y: %s',str(x[:3,:]),str(y[:3]))
-            self.regressor.fit(x,y)
-            self.clean_Q()
+            self.regressor = self.regressor.partial_fit(x,y)
 
-        #mean_accuracy = (0.5*data['next_accuracy'] + 0.5*data['prev_accuracy'])/100.0
-        mean_accuracy = (data['pool_accuracy']/100.0)*((data['pool_accuracy']-data['prev_pool_accuracy'])/100.0)
+            if self.target_network is None:
+                self.target_network = clone(self.regressor)
 
-        si,ai = data['states'],data['actions']
+        if self.global_time_stamp>0 and self.global_time_stamp%self.target_update_rate==0:
+            self.target_network = clone(self.regressor)
 
+        mean_accuracy = (data['pool_accuracy']/100.0)
+
+        si,ai,sj = data['prev_state'],data['prev_action'],data['curr_state']
+        self.rl_logger.debug('Si,Ai,Sj: %s,%s,%s',si,ai,sj)
         # if si[2] (layer_depth) ==0 means a pooling operation in CNN
         # we don't do changes to pooling ops
         # so ignore them
-        if si[2]==0:
+        if si is None or si[2]==0:
             return
 
-        sj = si
+        new_filter_size = sj[2]
         if ai[0]=='add':
-            new_filter_size=si[2]+ai[1]
-            sj = (si[0],si[1],new_filter_size)
+            assert sj[2] == si[2]+ai[1]
             reward = mean_accuracy + (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='remove':
-            new_filter_size=si[2]-ai[1]
-            sj = (si[0],si[1],new_filter_size)
+            assert sj[2] == si[2]-ai[1]
             reward = mean_accuracy - (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='replace':
-            new_filter_size = si[2]
-            if new_filter_size/self.filter_bound_vec[si[0]]<0.5:
-                reward = -1.0
-            else:
-                reward = mean_accuracy
+            reward = mean_accuracy - (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='finetune' or ai[0]=='do_nothing':
             new_filter_size = si[2]
             reward = mean_accuracy - (0.1 * (self.filter_bound_vec[si[0]] - new_filter_size) / self.filter_bound_vec[si[0]])
         else:
-            new_filter_size = si[2]
-            sj = (si[0], si[1], new_filter_size)
             reward = mean_accuracy
 
-        #reward = mean_accuracy
+        # how the update on state_history looks like
+        # t=5 (s2,a2),(s3,a3),(s4,a4)
+        # t=6 (s3,a3),(s4,a4),(s5,a5)
+        # add previous action (the action we know the reward for) i.e not the current action
+        # as a one-hot vector
+
+        #phi_t (s_t-3,a_t-3),(s_t-2,a_t-2),(s_t-1,a_t-1),(s_t,a_t)
+        phi_t = list(self.current_state_history)
+        phi_t.append([si])
+
+        #current_state_h
+        self.current_state_history.append([si])
+        self.current_state_history[-1].append([1 if self.actions.index(ai)==act else 0 for act in range(len(self.actions))])
+
+        if len(self.current_state_history)>self.state_history_length:
+            del self.current_state_history[0]
+            assert len(self.current_state_history) == self.state_history_length
+
+        phi_t_plus_1 = list(self.current_state_history)
+        phi_t_plus_1.append([sj])
+
+        # update experience
+        if len(phi_t)>=self.state_history_length+1:
+            self.experience.append([phi_t,ai,reward,phi_t_plus_1])
+
+            if self.global_time_stamp<3:
+                self.rl_logger.debug('Latest Experience: ')
+                self.rl_logger.debug('\t%s\n',self.experience[-1])
 
         self.rl_logger.debug('Update Summary ')
         self.rl_logger.debug('\tState: %s',si)
         self.rl_logger.debug('\tAction: %s',ai)
         self.rl_logger.debug('\tReward: %.3f',reward)
-
-        if self.global_time_stamp>len(self.actions)*self.even_tries+1:
-
-            #self.q[ai][si] =(1-self.learning_rate)*self.regressors[ai].predict(ohe_si) +\
-            #            self.learning_rate*(reward+self.discount_rate*np.max([self.regressors[a].predict(ohe_sj) for a in self.regressors.keys()]))
-            new_q = reward + self.discount_rate * np.max(
-                self.regressor.predict(self.get_ohe_state_ndarray(sj)).flatten()
-            )
-            old_q = self.regressor.predict(self.get_ohe_state_ndarray(si)).flatten()[self.actions.index(ai)]
-
-            self.rl_logger.debug('Sample value: %.5f',new_q)
-            self.q[self.get_ohe_state(si)] = np.zeros((len(self.actions))).tolist()
-            self.q[self.get_ohe_state(si)][self.actions.index(ai)] = (1-self.learning_rate)*old_q + self.learning_rate*new_q
-
-        else:
-            self.q[self.get_ohe_state(si)]=np.zeros((len(self.actions))).tolist()
-            self.q[self.get_ohe_state(si)][self.actions.index(ai)] = reward
-
-        self.past_mean_accuracy = mean_accuracy
 
         self.local_time_stamp += 1
         if self.local_time_stamp%self.n_conv == 0:
@@ -616,4 +684,4 @@ class AdaCNNAdaptingQLearner(object):
         #    for si in self.q[ai].keys():
         #        if int(si[2]) not in q_pred_dict[ai]:
         #    q_pred_dict[ai]=np
-        return self.q
+        return dict()

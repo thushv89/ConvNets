@@ -1030,7 +1030,7 @@ if __name__=='__main__':
     if not research_parameters['adapt_structure']:
         cnn_string = "C,5,1,128#P,3,2,0#C,5,1,256#C,3,1,512#P,3,2,0#C,3,1,1024#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#C,3,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1090,14 +1090,17 @@ if __name__=='__main__':
         # Adapting Policy Learner
         adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=1.0,
                                                   discount_rate=0.9,
-                                                  fit_interval = 10,
-                                                  even_tries = 3,
+                                                  fit_interval = 1,
+                                                  even_tries = 2,
                                                   filter_upper_bound=1024,
                                                   filter_min_bound=256,
                                                   conv_ids=convolution_op_ids,
                                                   net_depth=layer_count,
                                                   n_conv = len([op for op in cnn_ops if 'conv' in op]),
-                                                  epsilon=0.99)
+                                                  epsilon=0.99,
+                                                  target_update_rate=5,
+                                                  batch_size=8,
+                                                  )
 
         global_step = tf.Variable(0, dtype=tf.int32,trainable=False,name='global_step')
 
@@ -1253,9 +1256,11 @@ if __name__=='__main__':
 
         previous_loss = 1e5 # used for the check to start adapting
         prev_pool_accuracy = 0
+        prev_state,prev_action = None,None
         start_adapting = False
 
         batch_id_multiplier = (dataset_size//batch_size) - interval_parameters['test_interval']
+
         for epoch in range(epochs):
             memmap_idx = 0
 
@@ -1762,7 +1767,7 @@ if __name__=='__main__':
                                 _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
 
                         # updating the policy
-                        if current_state is not None and current_action is not None:
+                        if prev_state is not None and prev_action is not None:
 
                             pool_accuracy = []
                             for pool_id in range((hard_pool.get_size()//batch_size)-1):
@@ -1773,15 +1778,26 @@ if __name__=='__main__':
                                 _, _, _, p_predictions = session.run([pool_logits, pool_loss, optimize_with_pool, pool_pred], feed_dict=pool_feed_dict)
                                 pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
+                            # don't use current state as the next state, current state is for a different layer
+                            next_state = [prev_state[0],distMSE,prev_state[2]]
+                            if prev_action[0]=='add':
+                                next_state[2] += prev_action[1]
+                            elif prev_action[0]=='remove':
+                                next_state[2] -= prev_action[1]
+                            next_state = tuple(next_state)
 
                             logger.info('Updating the Policy for Layer %s', cnn_ops[current_state[0]])
-                            logger.info('\tState: %s', str(current_state))
-                            logger.info('\tAction: %s', str(current_action))
+                            logger.info('\tState (prev): %s %s', str(current_state),str(prev_state))
+                            logger.info('\tAction (prev): %s %s', str(current_action),str(prev_action))
+
+                            logger.info('\tState (next): %s %s', str(current_state),str(next_state))
+
                             #logger.info('\tValid accuracy Gain: %.2f (Unseen) %.2f (seen)',
                             #            (next_valid_accuracy_after - next_valid_accuracy),
                             #            (prev_valid_accuracy_after-prev_valid_accuracy)
                             #            )
-                            adapter.update_policy({'states': current_state, 'actions': current_action,
+                            adapter.update_policy({'prev_state': prev_state, 'prev_action': prev_action,
+                                                   'curr_state': next_state,
                                                    'next_accuracy': None,
                                                    'prev_accuracy': None,
                                                    'pool_accuracy': np.mean(pool_accuracy),
@@ -1789,10 +1805,10 @@ if __name__=='__main__':
 
                             prev_pool_accuracy = np.mean(pool_accuracy)
 
-                        cnn_structure_logger.info(
-                            '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
-                            get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
-                        )
+                            cnn_structure_logger.info(
+                                '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
+                                get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
+                            )
                         #reset rolling activation means because network changed
                         #rolling_ativation_means = {}
                         #for op in cnn_ops:
@@ -1806,6 +1822,9 @@ if __name__=='__main__':
                         for li in range(num_labels):
                             rolling_data_distribution[li]=0.0
                             mean_data_distribution[li]=0.0
+
+                        prev_state = current_state
+                        prev_action = current_action
 
                     if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
                         with open(output_dir + os.sep + 'state_actions_' + str(epoch) + "_" + str(batch_id)+'.pickle', 'wb') as f:
