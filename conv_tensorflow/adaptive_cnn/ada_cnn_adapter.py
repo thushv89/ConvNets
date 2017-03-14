@@ -1030,7 +1030,7 @@ if __name__=='__main__':
     if not research_parameters['adapt_structure']:
         cnn_string = "C,5,1,128#P,3,2,0#C,5,1,256#C,3,1,512#P,3,2,0#C,3,1,1024#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1088,18 +1088,20 @@ if __name__=='__main__':
                 convolution_op_ids.append(op_i)
 
         # Adapting Policy Learner
-        adapter = qlearner.AdaCNNAdaptingQLearner(learning_rate=1.0,
-                                                  discount_rate=0.9,
-                                                  fit_interval = 1,
-                                                  even_tries = 2,
+        adapter = qlearner.AdaCNNAdaptingQLearner(discount_rate=0.9,
+                                                  fit_interval = 2,
+                                                  exploratory_tries = 1,
+                                                  exploratory_interval = 100,
                                                   filter_upper_bound=1024,
                                                   filter_min_bound=256,
                                                   conv_ids=convolution_op_ids,
                                                   net_depth=layer_count,
                                                   n_conv = len([op for op in cnn_ops if 'conv' in op]),
-                                                  epsilon=0.99,
-                                                  target_update_rate=5,
-                                                  batch_size=8,
+                                                  epsilon=1.0,
+                                                  target_update_rate=10,
+                                                  batch_size=32,
+                                                  persist_dir = output_dir,
+                                                  session = session
                                                   )
 
         global_step = tf.Variable(0, dtype=tf.int32,trainable=False,name='global_step')
@@ -1256,7 +1258,7 @@ if __name__=='__main__':
 
         previous_loss = 1e5 # used for the check to start adapting
         prev_pool_accuracy = 0
-        prev_state,prev_action = None,None
+        prev_state,prev_action,prev_invalid_actions = None,None,None
         start_adapting = False
 
         batch_id_multiplier = (dataset_size//batch_size) - interval_parameters['test_interval']
@@ -1489,7 +1491,7 @@ if __name__=='__main__':
                             elif 'pool' in op:
                                 filter_dict[op_i]=0
 
-                        current_state,current_action = adapter.output_action({'distMSE':distMSE,'filter_counts':filter_dict},convolution_op_ids[current_q_learn_op_id])
+                        current_state,current_action,curr_invalid_actions = adapter.output_action({'distMSE':distMSE,'filter_counts':filter_dict},convolution_op_ids[current_q_learn_op_id])
                         current_q_learn_op_id = (current_q_learn_op_id + 1) % len(
                             convolution_op_ids)  # we update each convolutional layer in a circular pattern
 
@@ -1499,13 +1501,15 @@ if __name__=='__main__':
                         # where all magic happens (adding and removing filters)
                         si,ai = current_state,current_action
                         current_op = cnn_ops[si[0]]
+
+                        for tmp_op in reversed(cnn_ops):
+                            if 'conv' in tmp_op:
+                                last_conv_id = tmp_op
+                                break
                         if 'conv' in current_op and ai[0]=='add' :
 
                             amount_to_add = ai[1]
-                            for tmp_op in reversed(cnn_ops):
-                                if 'conv' in tmp_op:
-                                    last_conv_id = tmp_op
-                                    break
+
 
                             if current_op != last_conv_id:
                                 next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(current_op) + 1:] if 'conv' in tmp_op][0]
@@ -1759,17 +1763,26 @@ if __name__=='__main__':
                             assert weights[op].name in [v.name for v in tf.trainable_variables()]
                             assert biases[op].name in [v.name for v in tf.trainable_variables()]
 
-                            for pool_id in range((hard_pool.get_size()//batch_size)-1):
-                                pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
-                                pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                                pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
 
-                                _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
+
+                            # without if can give problems in exploratory stage because of no data in the pool
+                            if hard_pool.get_size()>batch_size:
+                                for pool_id in range((hard_pool.get_size()//batch_size)-1):
+
+                                    pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                                    pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                                    pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+
+                                    if pool_id == 0:
+                                        _ = session.run([pool_logits, pool_loss], feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
+                                    _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
 
                         # updating the policy
                         if prev_state is not None and prev_action is not None:
 
                             pool_accuracy = []
+                            pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
+                                                        hard_pool.get_pool_data()['pool_labels']
                             for pool_id in range((hard_pool.get_size()//batch_size)-1):
                                 pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                                 pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
@@ -1801,7 +1814,8 @@ if __name__=='__main__':
                                                    'next_accuracy': None,
                                                    'prev_accuracy': None,
                                                    'pool_accuracy': np.mean(pool_accuracy),
-                                                   'prev_pool_accuracy': np.mean(prev_pool_accuracy)})
+                                                   'prev_pool_accuracy': np.mean(prev_pool_accuracy),
+                                                   'invalid_actions':prev_invalid_actions})
 
                             prev_pool_accuracy = np.mean(pool_accuracy)
 
@@ -1825,6 +1839,7 @@ if __name__=='__main__':
 
                         prev_state = current_state
                         prev_action = current_action
+                        prev_invalid_actions = curr_invalid_actions
 
                     if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
                         with open(output_dir + os.sep + 'state_actions_' + str(epoch) + "_" + str(batch_id)+'.pickle', 'wb') as f:
