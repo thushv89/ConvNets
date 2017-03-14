@@ -360,8 +360,8 @@ class AdaCNNAdaptingQLearner(object):
 
         self.input_size = 48
 
-        self.layer_info = [self.calculate_input_size(self.state_history_length),128, 64, 32,len(self.actions)]
-
+        self.layer_info = [self.calculate_input_size(),128, 64, 32,len(self.actions)]
+        print(self.layer_info)
         self.current_state_history = []
         # Format of {phi(s_t),a_t,r_t,phi(s_t+1)}
         self.experience = []
@@ -372,6 +372,7 @@ class AdaCNNAdaptingQLearner(object):
         self.momentum = 0.9
         self.learning_rate = 0.001
 
+        self.tf_init_mlp()
         self.tf_state_input = tf.placeholder(tf.float32, shape=(None, self.input_size),name='InputDataset')
         self.tf_q_targets = tf.placeholder(tf.float32, shape=(None,len(self.actions)),name='TargetDataset')
 
@@ -382,18 +383,21 @@ class AdaCNNAdaptingQLearner(object):
 
         self.tf_target_update_ops = self.tf_target_weight_copy_op()
 
-        init_op = tf.variables_initializer(self.tf_weights,self.tf_bias,self.tf_target_weights,self.tf_target_biase)
+        all_variables = []
+        for w,b,wt,bt in zip(self.tf_weights,self.tf_bias,self.tf_target_weights,self.tf_target_biase):
+            all_variables.extend([w,b,wt,bt])
+        init_op = tf.variables_initializer(all_variables)
         _ = self.session.run(init_op)
 
-    def calculate_input_size(self,history_length):
+    def calculate_input_size(self):
         dummy_state = (0,0,0)
         dummy_action = ('add',0)
         dummy_history = []
-        for _ in range(history_length-1):
+        for _ in range(self.state_history_length-1):
             dummy_history.append([dummy_state,dummy_action])
         dummy_history.append([dummy_state])
 
-        return len(self.get_ohe_state_history(dummy_history))
+        return 48
 
 
     def tf_init_mlp(self):
@@ -404,20 +408,20 @@ class AdaCNNAdaptingQLearner(object):
              self.tf_target_weights.append(tf.Variable(tf.truncated_normal([self.layer_info[li], self.layer_info[li + 1]],
                                                                     stddev=2. / self.layer_info[li]),
                                                 name='target_weights_' + str(li) + '_' + str(li + 1)))
-            self.tf_bias.append(tf.Variable(tf.zeros([self.layer_info[li+1]]),name = 'bias_'+str(li)+'_'+str(li+1)))
-         self.tf_target_biase.append(
-             tf.Variable(tf.zeros([self.layer_info[li + 1]]), name='target_bias_' + str(li) + '_' + str(li + 1)))
+             self.tf_bias.append(tf.Variable(tf.zeros([self.layer_info[li+1]]),name = 'bias_'+str(li)+'_'+str(li+1)))
+             self.tf_target_biase.append(
+                 tf.Variable(tf.zeros([self.layer_info[li + 1]]), name='target_bias_' + str(li) + '_' + str(li + 1)))
 
     def tf_calc_output(self,tf_state_input):
         x = tf_state_input
-        for li,w,b in enumerate(zip(self.tf_weights[:-1],self.tf_bias[:-1])):
+        for li,(w,b) in enumerate(zip(self.tf_weights[:-1],self.tf_bias[:-1])):
             x = tf.nn.relu(tf.matmul(x,w) + b)
 
         return tf.matmul(x,self.tf_weights[-1])+self.tf_bias[-1]
 
     def tf_calc_output_target(self,tf_state_input):
         x = tf_state_input
-        for li,w,b in enumerate(zip(self.tf_target_weights[:-1],self.tf_target_biase[:-1])):
+        for li,(w,b) in enumerate(zip(self.tf_target_weights[:-1],self.tf_target_biase[:-1])):
             x = tf.nn.relu(tf.matmul(x,w) + b)
 
         return tf.matmul(x,self.tf_weights[-1])+self.tf_bias[-1]
@@ -432,8 +436,9 @@ class AdaCNNAdaptingQLearner(object):
 
     def tf_target_weight_copy_op(self):
         update_ops = []
-        update_ops.append(tf.assign(self.tf_target_weights,self.tf_weights))
-        update_ops.apped(tf.assign(self.tf_target_biase, self.tf_bias))
+        for li,(w,b) in enumerate(zip(self.tf_weights,self.tf_bias)):
+            update_ops.append(tf.assign(self.tf_target_weights[li],w))
+            update_ops.append(tf.assign(self.tf_target_biase[li], b))
 
         return update_ops
 
@@ -697,6 +702,9 @@ class AdaCNNAdaptingQLearner(object):
             else:
                 x,y,r,next_state = self.get_xy_with_experince(self.experience)
 
+            if self.global_time_stamp<5:
+                assert np.max(x)<=1.0 and np.max(x)>=-1.0 and np.max(y)<=1.0 and np.max(y)>=-1.0
+
             self.rl_logger.debug('Summary of Structured Experience data')
             self.rl_logger.debug('\tX:%s',x.shape)
             self.rl_logger.debug('\tY:%s', y.shape)
@@ -720,7 +728,7 @@ class AdaCNNAdaptingQLearner(object):
             self.rl_logger.debug('X: \n%s, Y: \n%s',str(x[:3,:]),str(y[:3]))
 
             # self.regressor.partial_fit(x, y)
-            _ = self.session.run([self.tf_loss_op, self.tf_momentum_optimize], feed_dict={
+            _ = self.session.run([self.tf_loss_op, self.tf_optimize_op], feed_dict={
                 self.tf_state_input: x, self.tf_q_targets: y
             })
 
@@ -746,15 +754,15 @@ class AdaCNNAdaptingQLearner(object):
         new_filter_size = sj[2]
         if ai[0]=='add':
             assert sj[2] == si[2]+ai[1]
-            reward = mean_accuracy + (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy
         elif ai[0]=='remove':
             assert sj[2] == si[2]-ai[1]
-            reward = mean_accuracy + (0.01*new_filter_size / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.01*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='replace':
-            reward = mean_accuracy + (0.01*new_filter_size / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.01*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='finetune' or ai[0]=='do_nothing':
             new_filter_size = si[2]
-            reward = mean_accuracy + (0.01 * new_filter_size / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.01 * (self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
             if ai[0]=='do_nothing' and np.random.random()<0.5:
                 reward = -1.0
         else:
