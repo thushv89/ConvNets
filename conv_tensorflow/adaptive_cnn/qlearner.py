@@ -308,6 +308,12 @@ class AdaCNNAdaptingQLearner(object):
         q_distHandler.setFormatter(logging.Formatter('%(message)s'))
         self.q_logger.addHandler(q_distHandler)
 
+        self.reward_logger = logging.getLogger('reward_logger')
+        self.reward_logger.setLevel(logging.INFO)
+        rewarddistHandler = logging.FileHandler(self.persit_dir + os.sep + 'reward.log', mode='w')
+        rewarddistHandler.setFormatter(logging.Formatter('%(message)s'))
+        self.reward_logger.addHandler(rewarddistHandler)
+
         self.explore_tries = params['exploratory_tries']
         self.explore_interval = params['exploratory_interval']
 
@@ -389,6 +395,9 @@ class AdaCNNAdaptingQLearner(object):
         init_op = tf.variables_initializer(all_variables)
         _ = self.session.run(init_op)
 
+        self.state_history_collector = []
+        self.state_history_dumped = False
+
     def calculate_input_size(self):
         dummy_state = (0,0,0)
         dummy_action = ('add',0)
@@ -398,7 +407,6 @@ class AdaCNNAdaptingQLearner(object):
         dummy_history.append([dummy_state])
 
         return 48
-
 
     def tf_init_mlp(self):
          for li in range(len(self.layer_info)-1):
@@ -522,7 +530,7 @@ class AdaCNNAdaptingQLearner(object):
             q_value_strings = ''
             for q_val in q_for_actions:
                 q_value_strings += '%.5f'%q_val+','
-            self.q_logger.info(q_value_strings)
+            self.q_logger.info("%d,%s",self.local_time_stamp,q_value_strings)
             self.rl_logger.debug('\tActions: %s',self.actions)
             self.rl_logger.debug('\tPredicted Q: %s',q_for_actions)
 
@@ -739,7 +747,6 @@ class AdaCNNAdaptingQLearner(object):
                     _ = self.session.run([self.tf_target_update_ops])
 
             self.clean_experience()
-            #TODO: Check if the target network stays stationary
 
         mean_accuracy = (data['pool_accuracy']-data['prev_pool_accuracy'])/100.0
 
@@ -757,17 +764,18 @@ class AdaCNNAdaptingQLearner(object):
             reward = mean_accuracy
         elif ai[0]=='remove':
             assert sj[2] == si[2]-ai[1]
-            reward = mean_accuracy - (0.01*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='replace':
-            reward = mean_accuracy - (0.01*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='finetune' or ai[0]=='do_nothing':
             new_filter_size = si[2]
             reward = mean_accuracy - (0.01 * (self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
-            if ai[0]=='do_nothing' and np.random.random()<0.5:
-                reward = -1.0
+            if ai[0]=='do_nothing' and np.random.random()<0.1:
+                reward = -0.5
         else:
             reward = mean_accuracy
 
+        self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
         # how the update on state_history looks like
         # t=5 (s2,a2),(s3,a3),(s4,a4)
         # t=6 (s3,a3),(s4,a4),(s5,a5)
@@ -789,12 +797,23 @@ class AdaCNNAdaptingQLearner(object):
         phi_t_plus_1 = list(self.current_state_history)
         phi_t_plus_1.append([sj])
 
+        if not self.state_history_dumped and np.random.random()<0.15:
+            self.state_history_collector.append(phi_t_plus_1)
+            self.rl_logger.debug('State added: size %d\n',len(self.state_history_collector))
+
+        if len(self.state_history_collector)==128:
+            self.rl_logger.debug('Persisting Random State Collection')
+            with open(self.persit_dir + os.sep + 'QMetricStates.pickle', 'wb') as f:
+                pickle.dump(self.state_history_collector, f, pickle.HIGHEST_PROTOCOL)
+                self.state_history_collector = []
+                self.state_history_dumped = True
+
         # update experience
         if len(phi_t)>=self.state_history_length+1:
             self.experience.append([phi_t,ai,reward,phi_t_plus_1])
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
-                self.experience.append([phi_t,invalid_a,-1.0,phi_t_plus_1])
+                self.experience.append([phi_t,invalid_a,-0.5,phi_t_plus_1])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
@@ -813,9 +832,4 @@ class AdaCNNAdaptingQLearner(object):
 
 
     def get_Q(self):
-        q_pred_dict = {}
-        #for ai in self.q.keys():
-        #    for si in self.q[ai].keys():
-        #        if int(si[2]) not in q_pred_dict[ai]:
-        #    q_pred_dict[ai]=np
-        return dict()
+        raise NotImplementedError

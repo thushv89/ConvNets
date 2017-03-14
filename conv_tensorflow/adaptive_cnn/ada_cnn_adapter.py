@@ -1088,19 +1088,13 @@ if __name__=='__main__':
                 convolution_op_ids.append(op_i)
 
         # Adapting Policy Learner
-        adapter = qlearner.AdaCNNAdaptingQLearner(discount_rate=0.9,
-                                                  fit_interval = 2,
-                                                  exploratory_tries = 1,
-                                                  exploratory_interval = 100,
-                                                  filter_upper_bound=1024,
-                                                  filter_min_bound=256,
-                                                  conv_ids=convolution_op_ids,
-                                                  net_depth=layer_count,
+        adapter = qlearner.AdaCNNAdaptingQLearner(discount_rate=0.9, fit_interval = 1,
+                                                  exploratory_tries = 250, exploratory_interval = 100,
+                                                  filter_upper_bound=1024, filter_min_bound=256,
+                                                  conv_ids=convolution_op_ids, net_depth=layer_count,
                                                   n_conv = len([op for op in cnn_ops if 'conv' in op]),
-                                                  epsilon=1.0,
-                                                  target_update_rate=10,
-                                                  batch_size=32,
-                                                  persist_dir = output_dir,
+                                                  epsilon=1.0, target_update_rate=10,
+                                                  batch_size=32, persist_dir = output_dir,
                                                   session = session
                                                   )
 
@@ -1814,7 +1808,7 @@ if __name__=='__main__':
                                                    'next_accuracy': None,
                                                    'prev_accuracy': None,
                                                    'pool_accuracy': np.mean(pool_accuracy),
-                                                   'prev_pool_accuracy': np.mean(prev_pool_accuracy),
+                                                   'prev_pool_accuracy': prev_pool_accuracy,
                                                    'invalid_actions':prev_invalid_actions})
 
                             prev_pool_accuracy = np.mean(pool_accuracy)
@@ -1846,8 +1840,8 @@ if __name__=='__main__':
                             pickle.dump(state_action_history, f, pickle.HIGHEST_PROTOCOL)
                             state_action_history = {}
 
-                        with open(output_dir + os.sep + 'Q_' + str(epoch) + "_" + str(batch_id)+'.pickle', 'wb') as f:
-                            pickle.dump(adapter.get_Q(), f, pickle.HIGHEST_PROTOCOL)
+                        #with open(output_dir + os.sep + 'Q_' + str(epoch) + "_" + str(batch_id)+'.pickle', 'wb') as f:
+                        #    pickle.dump(adapter.get_Q(), f, pickle.HIGHEST_PROTOCOL)
 
                         pool_dist_string = ''
                         for val in hard_pool.get_class_distribution():
