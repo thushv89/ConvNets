@@ -42,7 +42,7 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 3
+epochs = 5
 
 
 def get_final_x(cnn_ops,cnn_hyps):
@@ -1000,6 +1000,14 @@ if __name__=='__main__':
         cnn_structure_logger.addHandler(structHandler)
         cnn_structure_logger.info('#batch_id:state:action:reward:#layer_1_hyperparameters#layer_2_hyperparameters#...')
 
+        q_logger = logging.getLogger('q_logger')
+        q_logger.setLevel(logging.INFO)
+        qHandler = logging.FileHandler(output_dir + os.sep + 'QMetric.log', mode='w')
+        qHandler.setFormatter(logging.Formatter('%(message)s'))
+        q_logger.addHandler(qHandler)
+        q_logger.info('#batch_id,pred_q')
+
+
     if research_parameters['log_class_distribution']:
         class_dist_logger = logging.getLogger('class_dist_logger')
         class_dist_logger.setLevel(logging.INFO)
@@ -1088,15 +1096,16 @@ if __name__=='__main__':
                 convolution_op_ids.append(op_i)
 
         # Adapting Policy Learner
-        adapter = qlearner.AdaCNNAdaptingQLearner(discount_rate=0.9, fit_interval = 1,
-                                                  exploratory_tries = 250, exploratory_interval = 100,
-                                                  filter_upper_bound=1024, filter_min_bound=256,
-                                                  conv_ids=convolution_op_ids, net_depth=layer_count,
-                                                  n_conv = len([op for op in cnn_ops if 'conv' in op]),
-                                                  epsilon=1.0, target_update_rate=10,
-                                                  batch_size=32, persist_dir = output_dir,
-                                                  session = session
-                                                  )
+        adapter = qlearner.AdaCNNAdaptingQLearner(
+            discount_rate=0.9, fit_interval = 1,
+            exploratory_tries = 2, exploratory_interval = 100,
+            filter_upper_bound=1024, filter_min_bound=256,
+            conv_ids=convolution_op_ids, net_depth=layer_count,
+            n_conv = len([op for op in cnn_ops if 'conv' in op]),
+            epsilon=1.0, target_update_rate=10,
+            batch_size=32, persist_dir = output_dir,
+            session = session, random_mode = False
+        )
 
         global_step = tf.Variable(0, dtype=tf.int32,trainable=False,name='global_step')
 
@@ -1817,6 +1826,8 @@ if __name__=='__main__':
                                 '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
                                 get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
                             )
+                            q_logger.info('%d,%.5f',epoch*batch_id_multiplier + batch_id,adapter.get_average_Q())
+
                         #reset rolling activation means because network changed
                         #rolling_ativation_means = {}
                         #for op in cnn_ops:

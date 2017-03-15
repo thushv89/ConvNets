@@ -325,10 +325,10 @@ class AdaCNNAdaptingQLearner(object):
                                       random_state=1, shuffle=True,
                                       solver='sgd', momentum=0.95)
 
-        self.target_network = None
         self.net_depth = params['net_depth']
         self.n_conv = params['n_conv'] # number of convolutional layers
         self.conv_ids = params['conv_ids']
+        self.random_mode = params['random_mode']
 
         self.filter_bound_vec = self.make_filter_bound_vector(self.filter_upper_bound, self.net_depth,self.conv_ids)
 
@@ -502,7 +502,7 @@ class AdaCNNAdaptingQLearner(object):
             return state, self.actions[0]
 
         # we try actions evenly otherwise cannot have the approximator
-        if (self.global_time_stamp%self.explore_interval)<self.explore_tries:
+        if self.random_mode or (self.global_time_stamp%self.explore_interval)<self.explore_tries:
             self.rl_logger.debug('(Exploratory Mode) Choosing action exploratory...')
             action = self.actions[np.random.randint(0,len(self.actions))]
 
@@ -698,55 +698,53 @@ class AdaCNNAdaptingQLearner(object):
         # data['actions'] => list of actions
         # data['next_accuracy'] => validation accuracy (unseen)
         # data['prev_accuracy'] => validation accuracy (seen)
+        if not self.random_mode:
+            if self.global_time_stamp>0 and len(self.experience)>0 and self.global_time_stamp%self.fit_interval==0:
+                self.rl_logger.info('Training the Q Approximator with Experience...')
+                self.rl_logger.debug('(Q) Total experience data: %d', len(self.experience))
 
-        if self.global_time_stamp>0 and len(self.experience)>0 and self.global_time_stamp%self.fit_interval==0:
-            self.rl_logger.info('Training the Q Approximator with Experience...')
-            self.rl_logger.debug('(Q) Total experience data: %d', len(self.experience))
+                if len(self.experience)>self.batch_size:
+                    exp_indices = np.random.randint(0,len(self.experience),(self.batch_size,))
+                    self.rl_logger.debug('Experience indices: %s',exp_indices)
+                    x,y,r,next_state = self.get_xy_with_experince([self.experience[ei] for ei in exp_indices])
+                else:
+                    x,y,r,next_state = self.get_xy_with_experince(self.experience)
 
-            if len(self.experience)>self.batch_size:
-                exp_indices = np.random.randint(0,len(self.experience),(self.batch_size,))
-                self.rl_logger.debug('Experience indices: %s',exp_indices)
-                x,y,r,next_state = self.get_xy_with_experince([self.experience[ei] for ei in exp_indices])
-            else:
-                x,y,r,next_state = self.get_xy_with_experince(self.experience)
+                if self.global_time_stamp<5:
+                    assert np.max(x)<=1.0 and np.max(x)>=-1.0 and np.max(y)<=1.0 and np.max(y)>=-1.0
 
-            if self.global_time_stamp<5:
-                assert np.max(x)<=1.0 and np.max(x)>=-1.0 and np.max(y)<=1.0 and np.max(y)>=-1.0
+                self.rl_logger.debug('Summary of Structured Experience data')
+                self.rl_logger.debug('\tX:%s',x.shape)
+                self.rl_logger.debug('\tY:%s', y.shape)
+                self.rl_logger.debug('\tR:%s', r.shape)
+                self.rl_logger.debug('\tNextState:%s', next_state.shape)
 
-            self.rl_logger.debug('Summary of Structured Experience data')
-            self.rl_logger.debug('\tX:%s',x.shape)
-            self.rl_logger.debug('\tY:%s', y.shape)
-            self.rl_logger.debug('\tR:%s', r.shape)
-            self.rl_logger.debug('\tNextState:%s', next_state.shape)
-            if self.target_network is not None:
                 pred_q = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:x})
                 self.rl_logger.debug('\tPredicted %s:',pred_q.shape)
                 target_q = r.flatten() + self.discount_rate * np.max(pred_q,axis=1).flatten()
-            else:
-                target_q = r
 
-            self.rl_logger.debug('\tTarget Q %s:', target_q.shape)
-            self.rl_logger.debug('\tTarget Q Values %s:', target_q[:5])
-            assert target_q.size <= self.batch_size
 
-            y = np.multiply(y,target_q.reshape(-1,1))
+                self.rl_logger.debug('\tTarget Q %s:', target_q.shape)
+                self.rl_logger.debug('\tTarget Q Values %s:', target_q[:5])
+                assert target_q.size <= self.batch_size
 
-            # since the state contain layer id, let us make the layer id one-hot encoded
-            self.rl_logger.debug('X (shape): %s, Y (shape): %s', x.shape, y.shape)
-            self.rl_logger.debug('X: \n%s, Y: \n%s',str(x[:3,:]),str(y[:3]))
+                y = np.multiply(y,target_q.reshape(-1,1))
 
-            # self.regressor.partial_fit(x, y)
-            _ = self.session.run([self.tf_loss_op, self.tf_optimize_op], feed_dict={
-                self.tf_state_input: x, self.tf_q_targets: y
-            })
+                # since the state contain layer id, let us make the layer id one-hot encoded
+                self.rl_logger.debug('X (shape): %s, Y (shape): %s', x.shape, y.shape)
+                self.rl_logger.debug('X: \n%s, Y: \n%s',str(x[:3,:]),str(y[:3]))
 
-            if self.target_network is None or self.global_time_stamp%self.target_update_rate==0:
-                self.rl_logger.info('Coppying the Q approximator as the Target Network')
-                #self.target_network = self.regressor.partial_fit(x, y)
-                if self.local_time_stamp%self.n_conv==0:
+                # self.regressor.partial_fit(x, y)
+                _ = self.session.run([self.tf_loss_op, self.tf_optimize_op], feed_dict={
+                    self.tf_state_input: x, self.tf_q_targets: y
+                })
+
+                if self.global_time_stamp%self.target_update_rate==0 and self.local_time_stamp%self.n_conv==0:
+                    self.rl_logger.info('Coppying the Q approximator as the Target Network')
+                    #self.target_network = self.regressor.partial_fit(x, y)
                     _ = self.session.run([self.tf_target_update_ops])
 
-            self.clean_experience()
+                self.clean_experience()
 
         mean_accuracy = (data['pool_accuracy']-data['prev_pool_accuracy'])/100.0
 
@@ -797,16 +795,16 @@ class AdaCNNAdaptingQLearner(object):
         phi_t_plus_1 = list(self.current_state_history)
         phi_t_plus_1.append([sj])
 
-        if not self.state_history_dumped and np.random.random()<0.15:
+        '''if not self.state_history_dumped and np.random.random()<0.25:
             self.state_history_collector.append(phi_t_plus_1)
             self.rl_logger.debug('State added: size %d\n',len(self.state_history_collector))
 
-        if len(self.state_history_collector)==128:
+        if len(self.state_history_collector)==64:
             self.rl_logger.debug('Persisting Random State Collection')
             with open(self.persit_dir + os.sep + 'QMetricStates.pickle', 'wb') as f:
                 pickle.dump(self.state_history_collector, f, pickle.HIGHEST_PROTOCOL)
                 self.state_history_collector = []
-                self.state_history_dumped = True
+                self.state_history_dumped = True'''
 
         # update experience
         if len(phi_t)>=self.state_history_length+1:
@@ -830,6 +828,18 @@ class AdaCNNAdaptingQLearner(object):
 
         self.rl_logger.debug('Global/Local time step: %d/%d\n',self.global_time_stamp,self.local_time_stamp)
 
+    def get_average_Q(self):
+        state_collection = None
+        with open('QMetricStates.pickle', 'rb') as f:
+            state_collection = pickle.load(f)
 
-    def get_Q(self):
-        raise NotImplementedError
+        x = None
+        for phi_t in state_collection:
+            if x is None:
+                x = np.asarray(self.get_ohe_state_history(phi_t)).reshape((1, -1))
+            else:
+                x = np.append(x, np.asarray(self.get_ohe_state_history(phi_t)).reshape((1, -1)), axis=0)
+
+        q_pred = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:x})
+        self.rl_logger.debug('Shape of q_pred: %s',q_pred.shape)
+        return np.mean(np.max(q_pred,axis=0))
