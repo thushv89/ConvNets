@@ -878,7 +878,7 @@ tf_layer_activations = {}
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : True,
+    'adapt_structure' : False,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
@@ -1036,7 +1036,7 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,128#P,3,2,0#C,5,1,256#C,3,1,512#P,3,2,0#C,3,1,1024#Terminate,0,0,0"
+        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,512#P,3,2,0#C,3,1,1024#Terminate,0,0,0"
     else:
         cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
