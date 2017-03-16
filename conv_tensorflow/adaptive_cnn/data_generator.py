@@ -165,7 +165,7 @@ def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_label
     # the upper bound of x defines the number of peaks
     # smaller bound => less peaks
     # larger bound => more peaks
-    x = np.linspace(0, 15, chunk_count).reshape(-1, 1)
+    x = np.linspace(0, 50, chunk_count).reshape(-1, 1)
     # 1e-6 * is for numerical stibility
     L = np.linalg.cholesky(kernel(x, x) + 1e-6 * np.eye(chunk_count))
 
@@ -521,7 +521,7 @@ if __name__ == '__main__':
 
     dataset_type = 'svhn-10' #'cifar-10 imagenet-100
 
-    data_save_directory = 'data_non_station'
+    '''data_save_directory = 'data_non_station'
     if not os.path.exists(data_save_directory):
         os.makedirs(data_save_directory)
 
@@ -622,14 +622,14 @@ if __name__ == '__main__':
 
         print(new_dataset_filename)
         #generate_cifar_test_data(data_filename,data_save_directory)
-        sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
+        sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)'''
 
-    test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
+    #test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
 
     # =============== Quick Test =====================
-    '''sample_size = 1000
+    sample_size = 1000
     num_labels = 10
-    x = np.linspace(0, 10, sample_size).reshape(-1, 1)
+    x = np.linspace(0, 50, sample_size).reshape(-1, 1)
     #x = np.random.random(size=[1,sample_size])
 
     # 1e-6 * is for numerical stibility
@@ -652,5 +652,5 @@ if __name__ == '__main__':
 
     #print(np.sum(f_prior,axis=1).shape)
     #plt.plot(x_axis,np.sum(f_prior,axis=1))
-    plt.show()'''
+    plt.show()
 
