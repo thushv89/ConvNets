@@ -255,8 +255,8 @@ def optimize_with_momenutm_func(loss, global_step, learning_rate):
             [(grads_w,w),(grads_b,b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
 
             # update velocity vector
-            vel_update_ops.append(tf.assign(tf_weight_vels[op], research_parameters['momentum']*tf_weight_vels[op] + grads_w))
-            vel_update_ops.append(tf.assign(tf_bias_vels[op], research_parameters['momentum']*tf_bias_vels[op] + grads_b))
+            #vel_update_ops.append(tf.assign(tf_weight_vels[op], research_parameters['momentum']*tf_weight_vels[op] + grads_w))
+            #vel_update_ops.append(tf.assign(tf_bias_vels[op], research_parameters['momentum']*tf_bias_vels[op] + grads_b))
 
             optimize_ops.append(optimizer.apply_gradients(
                         [(tf_weight_vels[op]*learning_rate,weights[op]),(tf_bias_vels[op]*learning_rate,biases[op])]
@@ -267,6 +267,41 @@ def optimize_with_momenutm_func(loss, global_step, learning_rate):
                                        momentum=research_parameters['momentum']).minimize(loss))
 
     return optimize_ops,vel_update_ops,learning_rate
+
+
+def optimize_with_momentum_update_func(loss,global_step,learning_rate):
+    global tf_weight_vels, tf_bias_vels
+    vel_update_ops, optimize_ops = [], []
+
+    if research_parameters['adapt_structure'] or research_parameters['use_custom_momentum_opt']:
+        # custom momentum optimizing
+        # apply_gradient([g,v]) does the following v -= eta*g
+        # eta is learning_rate
+        # Since what we need is
+        # v(t+1) = mu*v(t) - eta*g
+        # theta(t+1) = theta(t) + v(t+1) --- (2)
+        # we form (2) in the form v(t+1) = mu*v(t) + eta*g
+        # theta(t+1) = theta(t) - v(t+1)
+        optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
+
+        for op in tf_weight_vels.keys():
+            [(grads_w, w), (grads_b, b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
+
+            # update velocity vector
+            vel_update_ops.append(
+                tf.assign(tf_weight_vels[op], research_parameters['momentum'] * tf_weight_vels[op] + grads_w))
+            vel_update_ops.append(
+                tf.assign(tf_bias_vels[op], research_parameters['momentum'] * tf_bias_vels[op] + grads_b))
+
+            optimize_ops.append(optimizer.apply_gradients(
+                [(tf_weight_vels[op] * learning_rate, weights[op]), (tf_bias_vels[op] * learning_rate, biases[op])]
+            ))
+    else:
+        optimize_ops.append(
+            tf.train.MomentumOptimizer(learning_rate=learning_rate,
+                                       momentum=research_parameters['momentum']).minimize(loss))
+
+    return optimize_ops, vel_update_ops, learning_rate
 
 
 def optimize_with_variable_func(loss,global_step,var_ops):
@@ -1227,7 +1262,8 @@ if __name__=='__main__':
             if research_parameters['optimize_end_to_end']:
                 # Lower learning rates for pool op doesnt help
                 # Momentum or SGD for pooling? Go with SGD
-                optimize_with_pool, _ = optimize_func(pool_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
+                optimize_with_pool, _ = optimize_with_momentum_update_func(pool_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
+
             else:
                 raise NotImplementedError
 
