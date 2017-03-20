@@ -762,7 +762,7 @@ class AdaCNNAdaptingQLearner(object):
             reward = mean_accuracy
         elif ai[0]=='remove':
             assert sj[2] == si[2]-ai[1]
-            reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='replace':
             reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='finetune' or ai[0]=='do_nothing':
@@ -811,7 +811,7 @@ class AdaCNNAdaptingQLearner(object):
             self.experience.append([phi_t,ai,reward,phi_t_plus_1])
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
-                self.experience.append([phi_t,invalid_a,-0.5,phi_t_plus_1])
+                self.experience.append([phi_t,invalid_a,-0.1,phi_t_plus_1])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')

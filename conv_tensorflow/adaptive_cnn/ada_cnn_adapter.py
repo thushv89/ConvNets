@@ -236,8 +236,9 @@ def optimize_func(loss,global_step,learning_rate):
     return optimize_ops,learning_rate
 
 
-def optimize_with_momenutm_func(loss, global_step, learning_rate):
+def optimize_with_momenutm_func(loss, global_step, learning_rate, tf_keep_ids_dict):
     global tf_weight_vels,tf_bias_vels
+    global tf_cnn_hyperparameters
     vel_update_ops, optimize_ops = [],[]
 
     if research_parameters['adapt_structure'] or research_parameters['use_custom_momentum_opt']:
@@ -258,8 +259,20 @@ def optimize_with_momenutm_func(loss, global_step, learning_rate):
             vel_update_ops.append(tf.assign(tf_weight_vels[op], research_parameters['momentum']*tf_weight_vels[op] + grads_w))
             vel_update_ops.append(tf.assign(tf_bias_vels[op], research_parameters['momentum']*tf_bias_vels[op] + grads_b))
 
+            mom_grad_w,mom_grad_b = tf_weight_vels[op]*learning_rate, tf_bias_vels[op]*learning_rate
+            mom_grad_w = tf.transpose(mom_grad_w,[3,0,1,2])
+            grad_shape = tf_cnn_hyperparameters[op]['weights']
+            mask_grads_w = tf.scatter_nd(
+                tf_keep_ids_dict[op].reshape(-1,1),
+                tf.ones(shape=[tf.shape(tf_keep_ids_dict[op])[0],grad_shape[0],grad_shape[1],grad_shape[2]], dtype=tf.float32),
+                shape=[grad_shape[3],grad_shape[0],grad_shape[1],grad_shape[2]]
+            )
+            dropped_grad_w = tf.boolean_mask(mom_grad_w,mask_grads_w)
+
+            mask_grad_b = tf.scatter_nd(tf_keep_ids_dict[op],tf.ones_like(tf_keep_ids_dict[op]),shape=[tf_cnn_hyperparameters[op]['weights'][3]])
+            dropped_grad_b = tf.boolean_mask(mom_grad_b,mask_grad_b)
             optimize_ops.append(optimizer.apply_gradients(
-                        [(tf_weight_vels[op]*learning_rate,weights[op]),(tf_bias_vels[op]*learning_rate,biases[op])]
+                        [(dropped_grad_w,weights[op]),(dropped_grad_b,biases[op])]
             ))
     else:
         optimize_ops.append(
@@ -307,115 +320,7 @@ def optimize_with_variable_func(loss,global_step,var_ops):
     return optimize_ops,learning_rate
 
 
-def optimize_with_tensor_slice_func(loss, filter_indices_to_replace, op, w, b):
-    global weights,biases
-    global cnn_hyperparameters,tf_cnn_hyperparameters
-
-    learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
-    grads_wb = optimizer.compute_gradients(loss,[w,b])
-
-    (grads_w,w),(grads_b,b) = grads_wb[0],grads_wb[1]
-
-    curr_weight_shape = tf_cnn_hyperparameters[op]['weights'].eval()
-    transposed_shape = [curr_weight_shape[3],curr_weight_shape[0],curr_weight_shape[1], curr_weight_shape[2]]
-
-    replace_amnt = filter_indices_to_replace.size
-
-    logger.debug('Applying gradients for %s',op)
-    logger.debug('\tAnd filter IDs: %s',filter_indices_to_replace)
-
-    mask_grads_w = tf.scatter_nd(
-            filter_indices_to_replace.reshape(-1,1),
-            tf.ones(shape=[replace_amnt,transposed_shape[1],transposed_shape[2],transposed_shape[3]], dtype=tf.float32),
-            shape=transposed_shape
-    )
-
-    mask_grads_w = tf.transpose(mask_grads_w,[1,2,3,0])
-
-    mask_grads_b = tf.scatter_nd(
-            filter_indices_to_replace.reshape(-1,1),
-            tf.ones_like(filter_indices_to_replace, dtype=tf.float32),
-            shape=[curr_weight_shape[3]]
-    )
-
-    new_grads_w = grads_w * mask_grads_w
-    new_grads_b = grads_b * mask_grads_b
-
-    grad_apply_op = optimizer.apply_gradients([(new_grads_w,w),(new_grads_b,b)])
-
-    return grad_apply_op
-
-
-def optimize_with_min_indices_mom(loss, opt_ind_dict,indices_size, learning_rate):
-    global weights, biases
-    global tf_weight_vels, tf_bias_vels
-    global cnn_ops, cnn_hyperparameters, tf_cnn_hyperparameters
-
-    grad_ops,vel_update_ops = [],[]
-
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
-    for op in cnn_ops:
-
-        [(grads_w, w), (grads_b, b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
-
-        vel_update_ops.append(
-            tf.assign(tf_weight_vels[op], research_parameters['momentum'] * tf_weight_vels[op] + grads_w))
-        vel_update_ops.append(
-            tf.assign(tf_bias_vels[op], research_parameters['momentum'] * tf_bias_vels[op] + grads_b))
-
-        if 'conv' in op:
-
-            transposed_shape = [tf_cnn_hyperparameters[op]['weights'][3], tf_cnn_hyperparameters[op]['weights'][0],
-                                tf_cnn_hyperparameters[op]['weights'][1], tf_cnn_hyperparameters[op]['weights'][2]]
-
-            logger.debug('Applying gradients for %s', op)
-
-            mask_grads_w = tf.scatter_nd(
-                tf.reshape(opt_ind_dict[op], [-1, 1]),
-                tf.ones(shape=[indices_size, transposed_shape[1], transposed_shape[2], transposed_shape[3]],
-                        dtype=tf.float32),
-                shape=transposed_shape
-            )
-
-            mask_grads_w = tf.transpose(mask_grads_w, [1, 2, 3, 0])
-
-            mask_grads_b = tf.scatter_nd(
-                tf.reshape(opt_ind_dict[op], [-1, 1]),
-                tf.ones_like(opt_ind_dict[op], dtype=tf.float32),
-                shape=[tf_cnn_hyperparameters[op]['weights'][3]]
-            )
-
-            grads_w = tf_weight_vels[op] * learning_rate * mask_grads_w
-            grads_b = tf_bias_vels[op] * learning_rate * mask_grads_b
-            grad_ops.append(optimizer.apply_gradients([(grads_w, w), (grads_b, b)]))
-
-        elif 'fulcon' in op:
-
-            # use dropout (random) for this layer because we can't just train
-            # min activations of the last layer (classification)
-            logger.debug('Applying gradients for %s', op)
-
-            mask_grads_w = tf.scatter_nd(
-                tf.reshape(opt_ind_dict[op], [-1, 1]),
-                tf.ones(shape=[indices_size, tf_cnn_hyperparameters[op]['out']],
-                        dtype=tf.float32),
-                shape=[tf_cnn_hyperparameters[op]['in'], tf_cnn_hyperparameters[op]['out']]
-            )
-            mask_grads_b = tf.scatter_nd(
-                tf.reshape(opt_ind_dict[op], [-1,1]),
-                tf.ones_like(opt_ind_dict[op],dtype=tf.float32),
-                shape=[tf_cnn_hyperparameters[op]['out']]
-            )
-
-            grads_w = tf_weight_vels[op] * learning_rate * mask_grads_w
-            grads_b = tf_bias_vels[op] * learning_rate * mask_grads_b
-
-            grad_ops.append(
-                optimizer.apply_gradients([(grads_w, weights[op]), (grads_b, biases[op])]))
-
-
-def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b, indices_size):
+def optimize_with_indices(loss, tf_keep_ids_dict, op):
     '''
     Any adaptation of a convolutional layer would result in a change in the following layer.
     This optimization optimize the filters/weights responsible in both those layer
@@ -429,6 +334,7 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
     :return:
     '''
     global weights,biases
+    global tf_weight_vels,tf_bias_vels
     global cnn_ops,cnn_hyperparameters,tf_cnn_hyperparameters
 
     grad_ops = []
@@ -437,76 +343,44 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
     learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
     optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
 
-    replace_amnt = indices_size
+    for op in tf_keep_ids_dict.keys():
+        [(grads_w[op], w), (grads_b[op], b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
+        if 'conv' in op:
 
-    if 'conv' in op:
-        [(grads_w[op], w), (grads_b[op], b)] = optimizer.compute_gradients(loss, [w, b])
+            transposed_shape = [tf_cnn_hyperparameters[op]['weights'][3],tf_cnn_hyperparameters[op]['weights'][0],
+                                tf_cnn_hyperparameters[op]['weights'][1], tf_cnn_hyperparameters[op]['weights'][2]]
 
-        transposed_shape = [tf_cnn_hyperparameters[op]['weights'][3],tf_cnn_hyperparameters[op]['weights'][0],
-                            tf_cnn_hyperparameters[op]['weights'][1], tf_cnn_hyperparameters[op]['weights'][2]]
+            logger.debug('Applying gradients for %s',op)
+            logger.debug('\tAnd filter IDs: %s',tf_keep_ids_dict[op])
 
-        logger.debug('Applying gradients for %s',op)
-        logger.debug('\tAnd filter IDs: %s',filter_indices_to_replace)
+            mask_grads_w[op] = tf.scatter_nd(
+                    tf.reshape(tf_keep_ids_dict[op],[-1,1]),
+                    tf.ones(shape=[tf.shape(tf_keep_ids_dict[op])[0],transposed_shape[1],transposed_shape[2],transposed_shape[3]], dtype=tf.float32),
+                    shape=transposed_shape
+            )
 
-        mask_grads_w[op] = tf.scatter_nd(
-                tf.reshape(filter_indices_to_replace,[-1,1]),
-                tf.ones(shape=[replace_amnt,transposed_shape[1],transposed_shape[2],transposed_shape[3]], dtype=tf.float32),
-                shape=transposed_shape
-        )
+            mask_grads_w[op] = tf.transpose(mask_grads_w[op],[1,2,3,0])
+            grads_w[op] = grads_w[op] * mask_grads_w[op]
 
-        mask_grads_w[op] = tf.transpose(mask_grads_w[op],[1,2,3,0])
+        elif 'fulcon' in op:
+            # We should optimizer the FULL last layer without any dropping out
+            # because last layer is the classification layer so we can't rely only on a part of that
+            '''mask_grads_w[op] = tf.scatter_nd(
+                tf.reshape(tf_keep_ids_dict[op], [-1, 1]),
+                tf.ones(shape=[tf.shape(tf_keep_ids_dict[op])[0], tf_cnn_hyperparameters[op]['out']],
+                        dtype=tf.float32),
+                shape=[tf_cnn_hyperparameters[op]['in'],tf_cnn_hyperparameters[op]['out']]
+            )
+
+            grads_w[op] = tf.boolean_mask(grads_w[op], mask_grads_w[op])'''
 
         mask_grads_b[op] = tf.scatter_nd(
-                tf.reshape(filter_indices_to_replace, [-1, 1]),
-                tf.ones_like(filter_indices_to_replace, dtype=tf.float32),
-                shape=[tf_cnn_hyperparameters[op]['weights'][3]]
+            tf.reshape(tf_keep_ids_dict[op], [-1, 1]),
+            tf.ones_like(tf.shape(tf_keep_ids_dict[op])[0], dtype=tf.float32),
+            shape=[tf_cnn_hyperparameters[op]['weights'][3]]
         )
-
-        grads_w[op] = grads_w[op] * mask_grads_w[op]
         grads_b[op] = grads_b[op] * mask_grads_b[op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[op],w),(grads_b[op],b)]))
-
-    next_op = None
-    for tmp_op in cnn_ops[cnn_ops.index(op)+1:]:
-        if 'conv' in tmp_op or 'fulcon' in tmp_op:
-            next_op = tmp_op
-            break
-    logger.debug('Next conv op: %s',next_op)
-    [(grads_w[next_op], w),(grads_b[next_op],b)] = optimizer.compute_gradients(loss, [weights[next_op],biases[next_op]])
-
-    if 'conv' in next_op:
-
-        transposed_shape = [tf_cnn_hyperparameters[next_op]['weights'][2], tf_cnn_hyperparameters[next_op]['weights'][0],
-                            tf_cnn_hyperparameters[next_op]['weights'][1],tf_cnn_hyperparameters[next_op]['weights'][3]]
-
-        logger.debug('Applying gradients for %s', next_op)
-        logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
-
-        mask_grads_w[next_op] = tf.scatter_nd(
-            tf.reshape(filter_indices_to_replace, [-1, 1]),
-            tf.ones(shape=[replace_amnt, transposed_shape[1], transposed_shape[2], transposed_shape[3]],
-                    dtype=tf.float32),
-            shape=transposed_shape
-        )
-
-        mask_grads_w[next_op] = tf.transpose(mask_grads_w[next_op], [1, 2, 0, 3])
-        grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
-
-    elif 'fulcon' in next_op:
-
-        logger.debug('Applying gradients for %s', next_op)
-        logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
-
-        mask_grads_w[next_op] = tf.scatter_nd(
-            tf.reshape(filter_indices_to_replace, [-1, 1]),
-            tf.ones(shape=[replace_amnt, tf_cnn_hyperparameters[next_op]['out']],
-                    dtype=tf.float32),
-            shape=[tf_cnn_hyperparameters[next_op]['in'],tf_cnn_hyperparameters[next_op]['out']]
-        )
-
-        grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
+        grad_ops.append(optimizer.apply_gradients([(grads_w[op], w), (grads_b[op], b)]))
 
     return grad_ops
 
@@ -878,7 +752,7 @@ tf_layer_activations = {}
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : False,
+    'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
@@ -922,7 +796,7 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
-    behavior = 'non-stationary'
+    behavior = 'stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
@@ -1175,8 +1049,7 @@ if __name__=='__main__':
 
         if research_parameters['adapt_structure']:
             # Tensorflow operations that are defined one for each convolution operation
-            tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
-            tf_indices_size = tf.placeholder(tf.int32)
+
             tf_slice_optimize = {}
             tf_add_filters_ops,tf_rm_filters_ops,tf_replace_ind_ops = {},{},{}
 
@@ -1202,6 +1075,7 @@ if __name__=='__main__':
             tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
             tf_in_size = tf.placeholder(dtype=tf.int32)
             tf_update_hyp_ops={}
+            tf_keep_ids_dict = {}
 
             if research_parameters['train_min_activation']:
                 if research_parameters['optimizer']=='SGD':
@@ -1217,12 +1091,15 @@ if __name__=='__main__':
                                                                  tf_wvelocity_this,tf_bvelocity_this,tf_wvelocity_next)
                     tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
                     tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
-                    tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
-                        pool_loss, tf_indices,
-                        tmp_op, weights[tmp_op], biases[tmp_op], tf_indices_size
-                    )
+
+                    tf_keep_ids_dict[tmp_op] = tf.placeholder(dtype=tf.int32, shape=(None,), name='optimize_indices')
+                    tf_slice_optimize[tmp_op] = optimize_with_indices(pool_loss, tf_keep_ids_dict,tmp_op)
+
                 elif 'fulcon' in tmp_op:
                     tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
+
+                    tf_keep_ids_dict[tmp_op] = tf.placeholder(dtype=tf.int32, shape=(None,), name='optimize_indices')
+                    tf_slice_optimize[tmp_op] = optimize_with_indices(pool_loss, tf_keep_ids_dict, tmp_op)
 
             if research_parameters['optimize_end_to_end']:
                 # Lower learning rates for pool op doesnt help
@@ -1619,6 +1496,14 @@ if __name__=='__main__':
                             logger.info('\tSize of Rolling mean vector for %s: %s', current_op,
                                          rolling_ativation_means[current_op].shape)
 
+                            keep_id_dict = {}
+                            for tmp_op in cnn_ops:
+                                if 'conv' in tmp_op:
+                                    if tmp_op == current_op:
+                                        keep_id_dict[tf_keep_ids_dict[tmp_op]] = np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3])
+                                    else:
+                                        keep_id_dict[tf_keep_ids_dict[tmp_op]] = np.random.randint(0,cnn_hyperparameters[current_op]['weights'][3],size=(32,))
+
                             # This is a pretty important step
                             # Unless you run this onces, the sizes of weights do not change
                             _ = session.run([logits,tf_activation_ops],feed_dict=feed_dict)
@@ -1635,8 +1520,8 @@ if __name__=='__main__':
                                     current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
                                                     feed_dict={tf_pool_dataset: pbatch_data,
                                                                tf_pool_labels: pbatch_labels,
-                                                               tf_indices:np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
-                                                               tf_indices_size:ai[1]}
+                                                               tf_keep_ids_dict:,
+                                                               }
                                                     )
 
                                     # update rolling activation means
