@@ -503,7 +503,8 @@ if __name__ == '__main__':
 
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
-    distribution_type = 'non-stationary'
+    distribution_type = 'stationary'
+    distribution_type2 = 'gauss' # 'gauss' or 'step'
 
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
@@ -519,7 +520,7 @@ if __name__ == '__main__':
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = int(batch_size*10) # number of samples sampled for each instance of the gaussian curve
 
-    dataset_type = 'cifar-10' #'cifar-10 imagenet-100
+    dataset_type = 'svhn-10' #'cifar-10 imagenet-100
 
     data_save_directory = 'data_non_station'
     if not os.path.exists(data_save_directory):

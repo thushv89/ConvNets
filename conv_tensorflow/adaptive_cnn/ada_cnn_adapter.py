@@ -225,13 +225,41 @@ def calc_loss_vector(logits,labels):
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels)
 
 
-def optimize_func(loss,global_step,learning_rate):
+def optimize_func(loss,global_step,learning_rate,tf_keep_ids_dict):
     global research_parameters
     global weights,biases
+    global cnn_ops
 
     optimize_ops = []
     # Optimizer.
-    optimize_ops.append(tf.train.GradientDescentOptimizer(learning_rate=learning_rate).minimize(loss))
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+
+    for op in cnn_ops:
+        if 'conv' in op or 'fulcon' in op:
+            [(grads_w, w), (grads_b, b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
+
+            if 'conv' in op:
+                grads_w = tf.transpose(grads_w, [3, 0, 1, 2])
+                grad_shape = tf_cnn_hyperparameters[op]['weights']
+                mask_grads_w = tf.scatter_nd(
+                    tf.reshape(tf_keep_ids_dict[op], [-1, 1]),
+                    tf.ones(shape=[tf.shape(tf_keep_ids_dict[op])[0], grad_shape[0], grad_shape[1], grad_shape[2]],
+                            dtype=tf.float32),
+                    shape=[grad_shape[3], grad_shape[0], grad_shape[1], grad_shape[2]]
+                )
+                dropped_grad_w = grads_w * mask_grads_w
+                dropped_grad_w = tf.transpose(dropped_grad_w, [1, 2, 3, 0])
+                mask_grad_b = tf.scatter_nd(tf_keep_ids_dict[op], tf.ones_like(tf_keep_ids_dict[op], dtype=tf.float32),
+                                            shape=[tf_cnn_hyperparameters[op]['weights'][3]])
+                dropped_grad_b = grads_b * mask_grad_b
+
+            elif 'fulcon' in op:
+                dropped_grad_w = grads_w
+                dropped_grad_b = grads_b
+
+
+            optimize_ops.append(optimizer.apply_gradients(
+                [(dropped_grad_w,weights[op]),(dropped_grad_b,biases[op])]))
 
     return optimize_ops,learning_rate
 
@@ -252,28 +280,39 @@ def optimize_with_momenutm_func(loss, global_step, learning_rate, tf_keep_ids_di
         # theta(t+1) = theta(t) - v(t+1)
         optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
 
-        for op in tf_weight_vels.keys():
-            [(grads_w,w),(grads_b,b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
+        for op in cnn_ops:
 
-            # update velocity vector
-            vel_update_ops.append(tf.assign(tf_weight_vels[op], research_parameters['momentum']*tf_weight_vels[op] + grads_w))
-            vel_update_ops.append(tf.assign(tf_bias_vels[op], research_parameters['momentum']*tf_bias_vels[op] + grads_b))
+            if 'conv' in op or 'fulcon' in op:
+                [(grads_w,w),(grads_b,b)] = optimizer.compute_gradients(loss, [weights[op], biases[op]])
 
-            mom_grad_w,mom_grad_b = tf_weight_vels[op]*learning_rate, tf_bias_vels[op]*learning_rate
-            mom_grad_w = tf.transpose(mom_grad_w,[3,0,1,2])
-            grad_shape = tf_cnn_hyperparameters[op]['weights']
-            mask_grads_w = tf.scatter_nd(
-                tf_keep_ids_dict[op].reshape(-1,1),
-                tf.ones(shape=[tf.shape(tf_keep_ids_dict[op])[0],grad_shape[0],grad_shape[1],grad_shape[2]], dtype=tf.float32),
-                shape=[grad_shape[3],grad_shape[0],grad_shape[1],grad_shape[2]]
-            )
-            dropped_grad_w = tf.boolean_mask(mom_grad_w,mask_grads_w)
+                # update velocity vector
+                vel_update_ops.append(tf.assign(tf_weight_vels[op], research_parameters['momentum']*tf_weight_vels[op] + grads_w))
+                vel_update_ops.append(tf.assign(tf_bias_vels[op], research_parameters['momentum']*tf_bias_vels[op] + grads_b))
 
-            mask_grad_b = tf.scatter_nd(tf_keep_ids_dict[op],tf.ones_like(tf_keep_ids_dict[op]),shape=[tf_cnn_hyperparameters[op]['weights'][3]])
-            dropped_grad_b = tf.boolean_mask(mom_grad_b,mask_grad_b)
-            optimize_ops.append(optimizer.apply_gradients(
-                        [(dropped_grad_w,weights[op]),(dropped_grad_b,biases[op])]
-            ))
+                mom_grad_w, mom_grad_b = tf_weight_vels[op] * learning_rate, tf_bias_vels[op] * learning_rate
+
+                if 'conv' in op:
+                    mom_grad_w = tf.transpose(mom_grad_w,[3,0,1,2])
+                    grad_shape = tf_cnn_hyperparameters[op]['weights']
+                    mask_grads_w = tf.scatter_nd(
+                        tf.reshape(tf_keep_ids_dict[op],[-1,1]),
+                        tf.ones(shape=[tf.shape(tf_keep_ids_dict[op])[0],grad_shape[0],grad_shape[1],grad_shape[2]], dtype=tf.float32),
+                        shape=[grad_shape[3],grad_shape[0],grad_shape[1],grad_shape[2]]
+                    )
+                    dropped_grad_w = mom_grad_w*mask_grads_w
+                    dropped_grad_w = tf.transpose(dropped_grad_w,[1,2,3,0])
+                    mask_grad_b = tf.scatter_nd(tf_keep_ids_dict[op], tf.ones_like(tf_keep_ids_dict[op], dtype=tf.float32),
+                                                shape=[tf_cnn_hyperparameters[op]['weights'][3]])
+                    dropped_grad_b = mom_grad_b * mask_grad_b
+
+
+                elif 'fulcon' in op:
+                    dropped_grad_w = mom_grad_w
+                    dropped_grad_b = mom_grad_b
+
+                optimize_ops.append(optimizer.apply_gradients(
+                            [(dropped_grad_w,weights[op]),(dropped_grad_b,biases[op])]
+                ))
     else:
         optimize_ops.append(
             tf.train.MomentumOptimizer(learning_rate=learning_rate,
@@ -362,6 +401,13 @@ def optimize_with_indices(loss, tf_keep_ids_dict, op):
             mask_grads_w[op] = tf.transpose(mask_grads_w[op],[1,2,3,0])
             grads_w[op] = grads_w[op] * mask_grads_w[op]
 
+            mask_grads_b[op] = tf.scatter_nd(
+                tf_keep_ids_dict[op],
+                tf.ones_like(tf_keep_ids_dict[op], dtype=tf.float32),
+                shape=[tf_cnn_hyperparameters[op]['weights'][3]]
+            )
+            grads_b[op] = grads_b[op] * mask_grads_b[op]
+
         elif 'fulcon' in op:
             # We should optimizer the FULL last layer without any dropping out
             # because last layer is the classification layer so we can't rely only on a part of that
@@ -374,12 +420,6 @@ def optimize_with_indices(loss, tf_keep_ids_dict, op):
 
             grads_w[op] = tf.boolean_mask(grads_w[op], mask_grads_w[op])'''
 
-        mask_grads_b[op] = tf.scatter_nd(
-            tf.reshape(tf_keep_ids_dict[op], [-1, 1]),
-            tf.ones_like(tf.shape(tf_keep_ids_dict[op])[0], dtype=tf.float32),
-            shape=[tf_cnn_hyperparameters[op]['weights'][3]]
-        )
-        grads_b[op] = grads_b[op] * mask_grads_b[op]
         grad_ops.append(optimizer.apply_gradients([(grads_w[op], w), (grads_b[op], b)]))
 
     return grad_ops
@@ -762,7 +802,8 @@ research_parameters = {
     'loss_diff_threshold':0.02,
     'debugging':True if logging_level==logging.DEBUG else False,
     'stop_training_at':11000,
-    'train_min_activation':False
+    'train_min_activation':False,
+    'train_filter_count':128
 }
 
 interval_parameters = {
@@ -795,7 +836,7 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-10'
+    datatype = 'svhn-10'
     behavior = 'stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
@@ -837,6 +878,26 @@ if __name__=='__main__':
         test_size=5000
         test_dataset_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-dataset.pkl'
         test_label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-label.pkl'
+
+    elif datatype=='svhn-10':
+        image_size = 32
+        num_labels = 10
+        num_channels = 3
+        dataset_size = 128000
+        if behavior == 'non-stationary':
+            dataset_filename='data_non_station'+os.sep+'svhn-10-nonstation-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'svhn-10-nonstation-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+        elif behavior == 'stationary':
+            dataset_filename='data_non_station'+os.sep+'svhn-10-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'svhn-10-station-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+
+        test_size = 5000
+        test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-non-station-test-dataset.pkl'
+        test_label_filename = 'data_non_station' + os.sep + 'svhn-10-non-station-test-label.pkl'
 
     dataset_info['image_size']=image_size
     dataset_info['num_labels']=num_labels
@@ -1023,11 +1084,18 @@ if __name__=='__main__':
         loss_vec = calc_loss_vector(logits,tf_labels)
         pred = predict_with_logits(logits)
 
+        tf_keep_ids_dict = {}
+        for tmp_op in cnn_ops:
+            if 'conv' in tmp_op:
+                tf_keep_ids_dict[tmp_op] = tf.placeholder(dtype=tf.int32, shape=(None,), name='optimize_indices')
+            if 'fulcon' in tmp_op:
+                tf_keep_ids_dict[tmp_op] = tf.placeholder(dtype=tf.int32, shape=(None,), name='optimize_indices')
+
         if not research_parameters['train_min_activation']:
             if research_parameters['optimizer']=='SGD':
                 optimize,upd_lr = optimize_func(loss,global_step,tf.constant(start_lr,dtype=tf.float32))
             elif research_parameters['optimizer']=='Momentum':
-                optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, tf.constant(start_lr,dtype=tf.float32))
+                optimize, velocity_update, upd_lr = optimize_with_momenutm_func(loss, global_step, tf.constant(start_lr,dtype=tf.float32),tf_keep_ids_dict)
 
         inc_gstep = inc_global_step(global_step)
 
@@ -1075,7 +1143,7 @@ if __name__=='__main__':
             tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
             tf_in_size = tf.placeholder(dtype=tf.int32)
             tf_update_hyp_ops={}
-            tf_keep_ids_dict = {}
+
 
             if research_parameters['train_min_activation']:
                 if research_parameters['optimizer']=='SGD':
@@ -1092,21 +1160,18 @@ if __name__=='__main__':
                     tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
                     tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
 
-                    tf_keep_ids_dict[tmp_op] = tf.placeholder(dtype=tf.int32, shape=(None,), name='optimize_indices')
+
                     tf_slice_optimize[tmp_op] = optimize_with_indices(pool_loss, tf_keep_ids_dict,tmp_op)
 
                 elif 'fulcon' in tmp_op:
                     tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
-
-                    tf_keep_ids_dict[tmp_op] = tf.placeholder(dtype=tf.int32, shape=(None,), name='optimize_indices')
                     tf_slice_optimize[tmp_op] = optimize_with_indices(pool_loss, tf_keep_ids_dict, tmp_op)
 
-            if research_parameters['optimize_end_to_end']:
-                # Lower learning rates for pool op doesnt help
-                # Momentum or SGD for pooling? Go with SGD
-                optimize_with_pool, _ = optimize_func(pool_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
-            else:
-                raise NotImplementedError
+
+            # Lower learning rates for pool op doesnt help
+            # Momentum or SGD for pooling? Go with SGD
+            optimize_with_pool, _ = optimize_func(pool_loss, global_step, tf.constant(start_lr,dtype=tf.float32),tf_keep_ids_dict)
+
 
         logger.info('Tensorflow functions defined')
         logger.info('Variables initialized...')
@@ -1191,28 +1256,25 @@ if __name__=='__main__':
                 else:
                     raise NotImplementedError
 
-                feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels, tf_data_weights:batch_weights}
+                feed_dict = {tf_dataset : batch_data, tf_labels : batch_labels,
+                             tf_data_weights:batch_weights}
+                for tmp_op in cnn_ops:
+                    if 'conv' in tmp_op :
+                        feed_dict[tf_keep_ids_dict[tmp_op]] = np.random.randint(0, cnn_hyperparameters[tmp_op]['weights'][3],
+                                                                     size=(min(cnn_hyperparameters[tmp_op]['weights'][3],
+                                                                               research_parameters['train_filter_count']),))
 
                 t0_train = time.clock()
                 for _ in range(iterations_per_batch):
-                    if research_parameters['adapt_structure'] and research_parameters['train_min_activation']:
-                        if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
-                            _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
-                                [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
-                            )
-                        else:
-                            _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
-                                    [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
-                            )
+
+                    if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
+                        _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
+                            [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
+                        )
                     else:
-                        if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
-                            _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
-                                [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
-                            )
-                        else:
-                            _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
-                                    [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
-                            )
+                        _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
+                                [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
+                        )
 
                 t1_train = time.clock()
 
@@ -1390,7 +1452,6 @@ if __name__=='__main__':
 
                             amount_to_add = ai[1]
 
-
                             if current_op != last_conv_id:
                                 next_conv_op = [tmp_op for tmp_op in cnn_ops[cnn_ops.index(current_op) + 1:] if 'conv' in tmp_op][0]
 
@@ -1496,21 +1557,30 @@ if __name__=='__main__':
                             logger.info('\tSize of Rolling mean vector for %s: %s', current_op,
                                          rolling_ativation_means[current_op].shape)
 
-                            keep_id_dict = {}
-                            for tmp_op in cnn_ops:
-                                if 'conv' in tmp_op:
-                                    if tmp_op == current_op:
-                                        keep_id_dict[tf_keep_ids_dict[tmp_op]] = np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3])
-                                    else:
-                                        keep_id_dict[tf_keep_ids_dict[tmp_op]] = np.random.randint(0,cnn_hyperparameters[current_op]['weights'][3],size=(32,))
-
                             # This is a pretty important step
                             # Unless you run this onces, the sizes of weights do not change
                             _ = session.run([logits,tf_activation_ops],feed_dict=feed_dict)
+                            pool_feed_dict = {}
+                            for tmp_op in cnn_ops:
+                                if tmp_op == current_op:
+                                    pool_feed_dict[tf_keep_ids_dict[tmp_op]] = np.arange(
+                                        cnn_hyperparameters[tmp_op]['weights'][3] - ai[1],
+                                        cnn_hyperparameters[tmp_op]['weights'][3])
+                                else:
+                                    if 'conv' in tmp_op:
+                                        pool_feed_dict[tf_keep_ids_dict[tmp_op]] = \
+                                            np.random.randint(0,cnn_hyperparameters[tmp_op]['weights'][3],
+                                                              size=(min(research_parameters['train_filter_count'],
+                                                                        cnn_hyperparameters[tmp_op]['weights'][3]),)
+                                                              )
+
                             for pool_id in range((hard_pool.get_size() // batch_size) - 1):
                                 if np.random.random() < research_parameters['replace_op_train_rate']:
                                     pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
                                     pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
+
+                                    pool_feed_dict[tf_pool_dataset] = pbatch_data
+                                    pool_feed_dict[tf_pool_labels] = pbatch_labels
 
                                     if pool_id == 0:
                                         _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
@@ -1518,11 +1588,8 @@ if __name__=='__main__':
                                                     )
 
                                     current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
-                                                    feed_dict={tf_pool_dataset: pbatch_data,
-                                                               tf_pool_labels: pbatch_labels,
-                                                               tf_keep_ids_dict:,
-                                                               }
-                                                    )
+                                                                        feed_dict=pool_feed_dict
+                                                                        )
 
                                     # update rolling activation means
                                     for op, op_activations in current_activations.items():
@@ -1625,8 +1692,7 @@ if __name__=='__main__':
                                     current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
                                                     feed_dict={tf_pool_dataset: pbatch_data,
                                                                tf_pool_labels: pbatch_labels,
-                                                               tf_indices:indices_of_filters_replace,
-                                                               tf_indices_size:ai[1]}
+                                                               tf_indices:indices_of_filters_replace}
                                                     )
 
                                     # update rolling activation means
@@ -1651,7 +1717,13 @@ if __name__=='__main__':
                             assert weights[op].name in [v.name for v in tf.trainable_variables()]
                             assert biases[op].name in [v.name for v in tf.trainable_variables()]
 
-
+                            pool_feed_dict = {}
+                            for tmp_op in cnn_ops:
+                                if 'conv' in tmp_op:
+                                    pool_feed_dict[tf_keep_ids_dict[tmp_op]] = \
+                                        np.random.randint(0, cnn_hyperparameters[tmp_op]['weights'][3],
+                                                          size=(min(research_parameters['train_filter_count'],
+                                                                    cnn_hyperparameters[tmp_op]['weights'][3]),))
 
                             # without if can give problems in exploratory stage because of no data in the pool
                             if hard_pool.get_size()>batch_size:
@@ -1659,7 +1731,8 @@ if __name__=='__main__':
 
                                     pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                                     pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                                    pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+                                    pool_feed_dict[tf_pool_dataset]= pbatch_data
+                                    pool_feed_dict[tf_pool_labels]=pbatch_labels
 
                                     if pool_id == 0:
                                         _ = session.run([pool_logits, pool_loss], feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
@@ -1676,7 +1749,7 @@ if __name__=='__main__':
                                 pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
                                 pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
 
-                                _, _, _, p_predictions = session.run([pool_logits, pool_loss, optimize_with_pool, pool_pred], feed_dict=pool_feed_dict)
+                                _, _, p_predictions = session.run([pool_logits, pool_loss, pool_pred], feed_dict=pool_feed_dict)
                                 pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
                             # don't use current state as the next state, current state is for a different layer
