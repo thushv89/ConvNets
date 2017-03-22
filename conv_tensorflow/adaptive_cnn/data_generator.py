@@ -103,9 +103,12 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
         resize_to = dataset_info['resize_to']
         ops = ['original','rotate','noise','crop','flip']
         choice_probs = [0.05,0.2,0.4,0.25,0.1]
-    elif dataset_type=='cifar-10' or dataset_type=='svhn-10':
+    elif dataset_type=='cifar-10':
         ops = ['original','rotate','noise','flip']
         choice_probs = [0.2,0.2,0.4,0.2]
+    elif dataset_type=='svhn-10':
+        ops = ['original', 'rotate', 'noise', 'flip']
+        choice_probs = [0.2, 0.4, 0.4, 0.0]
 
     image_index = np.random.choice(list(np.where(dataset['labels']==label)[0].flatten()))
     # don't use single image too much. It seems lot of data is going unused
@@ -128,7 +131,11 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
     elif selected_op=='rotate':
         if dataset_type=='imagenet-100':
             im.thumbnail((resize_to,resize_to), Image.ANTIALIAS)
-        angle = np.random.choice([90,180,270])
+        if dataset_type != 'svhn-10':
+            angle = np.random.choice([90,180,270])
+        else:
+            angle = np.random.choice([15, 30, 345])
+
         im = im.rotate(angle)
         sample_img = np.array(im)
     elif selected_op=='noise':
@@ -157,6 +164,12 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
         assert sample_img.shape[0]==image_size
 
     return image_index,sample_img
+
+def generate_step_priors(batch_size,elements,chunk_size,num_labels,step_length):
+    chunk_count = int(elements / chunk_size)
+
+    raise NotImplementedError
+
 
 # generate gaussian priors
 def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_labels):
@@ -503,7 +516,8 @@ if __name__ == '__main__':
 
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
-    distribution_type = 'non-stationary'
+    distribution_type = 'stationary'
+    distribution_type2 = 'step' #gauss or step
 
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
@@ -519,7 +533,7 @@ if __name__ == '__main__':
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = int(batch_size*10) # number of samples sampled for each instance of the gaussian curve
 
-    dataset_type = 'cifar-10' #'cifar-10 imagenet-100
+    dataset_type = 'svhn-10' #'cifar-10 imagenet-100
 
     data_save_directory = 'data_non_station'
     if not os.path.exists(data_save_directory):
@@ -567,7 +581,11 @@ if __name__ == '__main__':
 
     logger.info('Generating gaussian priors')
     if distribution_type=='non-stationary':
-        priors = generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_labels)
+        if distribution_type2=='gauss':
+            priors = generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_labels)
+        elif distribution_type2=='step':
+            step_length=25
+            priors = generate_step_priors(batch_size,elements,chunk_size,num_labels,step_length)
     elif distribution_type=='stationary':
         priors = np.ones((elements//chunk_size,num_labels))*(1.0/num_labels)
     else:
