@@ -422,14 +422,15 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
     :param cnn_ops:
     :return:
     '''
-    global weights,biases
+    global weights,biases,tf_pool_w_vels,tf_pool_b_vels
     global cnn_ops,cnn_hyperparameters,tf_cnn_hyperparameters
 
+    vel_update_ops =[]
     grad_ops = []
     grads_w,grads_b= {},{}
     mask_grads_w,mask_grads_b = {},{}
     learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
-    optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate=1.0)
 
     replace_amnt = indices_size
 
@@ -458,7 +459,13 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
 
         grads_w[op] = grads_w[op] * mask_grads_w[op]
         grads_b[op] = grads_b[op] * mask_grads_b[op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[op],w),(grads_b[op],b)]))
+
+        vel_update_ops.append(
+            tf.assign(tf_pool_w_vels[op], research_parameters['momentum'] * tf_pool_w_vels[op] + grads_w[op]))
+        vel_update_ops.append(
+            tf.assign(tf_pool_b_vels[op], research_parameters['momentum'] * tf_pool_b_vels[op] + grads_b[op]))
+
+        grad_ops.append(optimizer.apply_gradients([(tf_pool_w_vels[op]*learning_rate,w),(tf_pool_b_vels[op]*learning_rate,b)]))
 
     next_op = None
     for tmp_op in cnn_ops[cnn_ops.index(op)+1:]:
@@ -466,7 +473,7 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
             next_op = tmp_op
             break
     logger.debug('Next conv op: %s',next_op)
-    [(grads_w[next_op], w),(grads_b[next_op],b)] = optimizer.compute_gradients(loss, [weights[next_op],biases[next_op]])
+    [(grads_w[next_op], w)] = optimizer.compute_gradients(loss, [weights[next_op]])
 
     if 'conv' in next_op:
 
@@ -485,7 +492,11 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
 
         mask_grads_w[next_op] = tf.transpose(mask_grads_w[next_op], [1, 2, 0, 3])
         grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
+
+        vel_update_ops.append(
+            tf.assign(tf_pool_w_vels[next_op], research_parameters['momentum'] * tf_pool_w_vels[next_op] + grads_w[next_op]))
+
+        grad_ops.append(optimizer.apply_gradients([(tf_pool_w_vels[next_op]*learning_rate, weights[next_op])]))
 
     elif 'fulcon' in next_op:
 
@@ -500,9 +511,14 @@ def optimize_all_affected_with_indices(loss, filter_indices_to_replace, op, w, b
         )
 
         grads_w[next_op] = grads_w[next_op] * mask_grads_w[next_op]
-        grad_ops.append(optimizer.apply_gradients([(grads_w[next_op], weights[next_op]),(grads_b[next_op],biases[next_op])]))
 
-    return grad_ops
+        vel_update_ops.append(
+            tf.assign(tf_pool_w_vels[next_op],
+                      research_parameters['momentum'] * tf_pool_w_vels[next_op] + grads_w[next_op]))
+
+        grad_ops.append(optimizer.apply_gradients([(tf_pool_w_vels[next_op]*learning_rate, weights[next_op])]))
+
+    return grad_ops,vel_update_ops
 
 
 def inc_global_step(global_step):
@@ -634,7 +650,7 @@ def add_with_action(
         weight_vel = tf.concat(3,[tf_weight_vels[op], tf_wvelocity_this])
         bias_vel = tf.concat(0,[tf_bias_vels[op],tf_bvelocity_this])
         pool_w_vel = tf.concat(3,[tf_pool_w_vels[op],tf_wvelocity_this])
-        pool_b_vel = tf.concat(3,[tf_pool_b_vels[op],tf_bvelocity_this])
+        pool_b_vel = tf.concat(0,[tf_pool_b_vels[op],tf_bvelocity_this])
 
         update_ops.append(tf.assign(tf_weight_vels[op],weight_vel,validate_shape=False))
         update_ops.append(tf.assign(tf_bias_vels[op],bias_vel,validate_shape=False))
@@ -819,7 +835,7 @@ def remove_with_action(op, tf_action_info, tf_activations):
             weight_vel = tf.gather_nd(weight_vel,tf_indices_to_keep)
             weight_vel = tf.transpose(weight_vel,[1,2,0,3])
 
-            pool_w_vel = tf.transpose(tf_pool_b_vels[next_conv_op], [2, 0, 1, 3])
+            pool_w_vel = tf.transpose(tf_pool_w_vels[next_conv_op], [2, 0, 1, 3])
             pool_w_vel = tf.gather_nd(pool_w_vel, tf_indices_to_keep)
             pool_w_vel = tf.transpose(pool_w_vel, [1, 2, 0, 3])
 
@@ -1235,6 +1251,7 @@ if __name__=='__main__':
             tf_indices = tf.placeholder(dtype=tf.int32,shape=(None,),name='optimize_indices')
             tf_indices_size = tf.placeholder(tf.int32)
             tf_slice_optimize = {}
+            tf_slice_vel_update = {}
             tf_add_filters_ops,tf_rm_filters_ops,tf_replace_ind_ops = {},{},{}
 
             tf_action_info = tf.placeholder(shape=[3], dtype=tf.int32,
@@ -1274,7 +1291,7 @@ if __name__=='__main__':
                                                                  tf_wvelocity_this,tf_bvelocity_this,tf_wvelocity_next)
                     tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
                     tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
-                    tf_slice_optimize[tmp_op] = optimize_all_affected_with_indices(
+                    tf_slice_optimize[tmp_op],tf_slice_vel_update[tmp_op] = optimize_all_affected_with_indices(
                         pool_loss, tf_indices,
                         tmp_op, weights[tmp_op], biases[tmp_op], tf_indices_size
                     )
@@ -1285,7 +1302,7 @@ if __name__=='__main__':
                 # Lower learning rates for pool op doesnt help
                 # Momentum or SGD for pooling? Go with SGD
                 #optimize_with_pool, _ = optimize_func(pool_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
-                optimize_with_pool, _ = optimize_with_momenutm_func_pool(pool_loss, global_step, tf.constant(start_lr, dtype=tf.float32))
+                optimize_with_pool, pool_vel_updates, _ = optimize_with_momenutm_func_pool(pool_loss, global_step, tf.constant(start_lr, dtype=tf.float32))
             else:
                 raise NotImplementedError
 
@@ -1376,24 +1393,14 @@ if __name__=='__main__':
 
                 t0_train = time.clock()
                 for _ in range(iterations_per_batch):
-                    if research_parameters['adapt_structure'] and research_parameters['train_min_activation']:
-                        if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
-                            _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
-                                [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
-                            )
-                        else:
-                            _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
-                                    [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
-                            )
+                    if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
+                        _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
+                            [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
+                        )
                     else:
-                        if research_parameters['optimizer']=='Momentum' and research_parameters['use_custom_momentum_opt']:
-                            _, _, l, l_vec, _, _, updated_lr, predictions, current_activations = session.run(
-                                [logits, tf_activation_ops, loss, loss_vec, optimize, velocity_update,upd_lr, pred, tf_layer_activations], feed_dict=feed_dict
-                            )
-                        else:
-                            _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
-                                    [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
-                            )
+                        _, _, l,l_vec, _,updated_lr, predictions, current_activations = session.run(
+                                [logits, tf_activation_ops,loss,loss_vec,optimize,upd_lr,pred,tf_layer_activations], feed_dict=feed_dict
+                        )
 
                 t1_train = time.clock()
 
@@ -1690,7 +1697,7 @@ if __name__=='__main__':
                                                                                 tf_pool_labels: pbatch_labels}
                                                     )
 
-                                    current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
+                                    current_activations,_,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op],tf_slice_vel_update[current_op]],
                                                     feed_dict={tf_pool_dataset: pbatch_data,
                                                                tf_pool_labels: pbatch_labels,
                                                                tf_indices:np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3]),
@@ -1795,7 +1802,7 @@ if __name__=='__main__':
                                         _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
                                                                                 tf_pool_labels: pbatch_labels}
                                                         )
-                                    current_activations,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op]],
+                                    current_activations,_,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op],tf_slice_vel_update[current_op]],
                                                     feed_dict={tf_pool_dataset: pbatch_data,
                                                                tf_pool_labels: pbatch_labels,
                                                                tf_indices:indices_of_filters_replace,
@@ -1836,7 +1843,7 @@ if __name__=='__main__':
 
                                     if pool_id == 0:
                                         _ = session.run([pool_logits, pool_loss], feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
-                                    _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool], feed_dict=pool_feed_dict)
+                                    _, _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool, pool_vel_updates], feed_dict=pool_feed_dict)
 
                         # updating the policy
                         if prev_state is not None and prev_action is not None:

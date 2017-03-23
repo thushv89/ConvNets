@@ -762,12 +762,12 @@ class AdaCNNAdaptingQLearner(object):
             reward = mean_accuracy
         elif ai[0]=='remove':
             assert sj[2] == si[2]-ai[1]
-            reward = mean_accuracy - (0.1*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='replace':
             reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
         elif ai[0]=='finetune' or ai[0]=='do_nothing':
             new_filter_size = si[2]
-            reward = mean_accuracy - (0.01 * (self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
+            reward = mean_accuracy - (1e-3 * (self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
             if ai[0]=='do_nothing' and np.random.random()<0.1:
                 reward = -0.1
         else:
