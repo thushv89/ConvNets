@@ -9,15 +9,15 @@ from math import ceil,floor
 import load_data
 import logging
 import sys
-import time
 import qlearner
 from data_pool import Pool
 from collections import Counter
 from scipy.misc import imsave
 import getopt
-from functools import partial
 import time
-
+import utils
+import BasicCNNOpsFacade
+import OptimizerOpsFacade
 
 ##################################################################
 # AdaCNN Adapter
@@ -42,37 +42,7 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 5
-
-
-def get_final_x(cnn_ops,cnn_hyps):
-    '''
-    Takes a new operations and concat with existing set of operations
-    then output what the final output size will be
-    :param op_list: list of operations
-    :param hyp: Hyperparameters fo the operation
-    :return: a tuple (width,height) of x
-    '''
-
-    x = image_size
-    for op in cnn_ops:
-        hyp_op = cnn_hyps[op]
-        if 'conv' in op:
-            f = hyp_op['weights'][0]
-            s = hyp_op['stride'][1]
-
-            x = ceil(float(x)/float(s))
-        elif 'pool' in op:
-            if hyp_op['padding']=='SAME':
-                f = hyp_op['kernel'][1]
-                s = hyp_op['stride'][1]
-                x = ceil(float(x)/float(s))
-            elif hyp_op['padding']=='VALID':
-                f = hyp_op['kernel'][1]
-                s = hyp_op['stride'][1]
-                x = ceil(float(x - f + 1)/float(s))
-
-    return x
+epochs = 3
 
 
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
@@ -96,7 +66,7 @@ def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
             logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['weights'][3])
 
         if 'fulcon' in op:
-            weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
+            weights[op] = tf.Variable(tf.truncated_normal(
                 [cnn_hyps[op]['in'],cnn_hyps[op]['out']],
                 stddev=2./cnn_hyps[op]['in']
             ), validate_shape = False, expected_shape = [cnn_hyps[op]['in'],cnn_hyps[op]['out']], name=op+'_weights',dtype=tf.float32)
@@ -125,11 +95,11 @@ def initialize_cnn_with_ops_fixed(cnn_ops,cnn_hyps):
                 np.random.random()*0.001,shape=[cnn_hyps[op]['weights'][3]]
             ),validate_shape = True,name=op+'_bias',dtype=tf.float32)
 
-            logger.debug('Weights for %s initialized with size %s',op,str(cnn_hyps[op]['weights']))
-            logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['weights'][3])
+            logger.info('Weights for %s initialized with size %s',op,str(cnn_hyps[op]['weights']))
+            logger.info('Biases for %s initialized with size %d',op,cnn_hyps[op]['weights'][3])
 
         if 'fulcon' in op:
-            weights['fulcon_out'] = tf.Variable(tf.truncated_normal(
+            weights[op] = tf.Variable(tf.truncated_normal(
                 [cnn_hyps[op]['in'],cnn_hyps[op]['out']],
                 stddev=2./cnn_hyps[op]['in']
             ), validate_shape = True, name=op+'_weights',dtype=tf.float32)
@@ -137,16 +107,19 @@ def initialize_cnn_with_ops_fixed(cnn_ops,cnn_hyps):
                 np.random.random()*0.001,shape=[cnn_hyps[op]['out']]
             ), validate_shape = True, name=op+'_bias',dtype=tf.float32)
 
-            logger.debug('Weights for %s initialized with size %d,%d',
+            logger.info('Weights for %s initialized with size %d,%d',
                 op,cnn_hyps[op]['in'],cnn_hyps[op]['out'])
-            logger.debug('Biases for %s initialized with size %d',op,cnn_hyps[op]['out'])
+            logger.info('Biases for %s initialized with size %d',op,cnn_hyps[op]['out'])
 
     return weights,biases
 
-def get_logits_with_ops(dataset, use_dropout):
+
+def get_logits_with_ops( dataset, use_dropout):
     global cnn_ops,tf_cnn_hyperparameters
     global tf_layer_activations
     global weights,biases
+
+    first_fc = 'fulcon_out' if 'fulcon_0' not in weights else 'fulcon_0'
 
     logger.debug('Defining the logit calculation ...')
     logger.debug('\tCurrent set of operations: %s'%cnn_ops)
@@ -189,21 +162,20 @@ def get_logits_with_ops(dataset, use_dropout):
             #logger.debug('\t\tX after %s:%s'%(op,tf.shape(x).eval()))
 
         if 'fulcon' in op:
-            break
+            if first_fc==op:
+                # we need to reshape the output of last subsampling layer to
+                # convert 4D output to a 2D input to the hidden layer
+                # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
 
-    # we need to reshape the output of last subsampling layer to
-    # convert 4D output to a 2D input to the hidden layer
-    # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
+                logger.debug('Input size of fulcon_out : %d', cnn_hyperparameters[op]['in'])
+                x = tf.reshape(x, [batch_size, tf_cnn_hyperparameters[op]['in']])
+                x = tf.nn.relu(tf.matmul(x, weights[op]) + biases[op])
+            elif 'fulcon_out' == op:
+                x = tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out']
+            else:
+                x = tf.nn.relu(tf.matmul(x, weights[op]) + biases[op])
 
-    fin_x = get_final_x(cnn_ops,cnn_hyperparameters)
-
-    logger.debug('Input size of fulcon_out : %d',cnn_hyperparameters['fulcon_out']['in'])
-    x = tf.reshape(x, [batch_size,tf_cnn_hyperparameters['fulcon_out']['in']])
-
-    if use_dropout:
-        x = tf.nn.dropout(x,1-dropout_rate)
-
-    return tf.matmul(x, weights['fulcon_out']) + biases['fulcon_out'],activation_ops
+    return x,activation_ops
 
 
 def calc_loss(logits,labels,weighted=False,tf_data_weights=None):
@@ -543,81 +515,6 @@ def accuracy(predictions, labels):
             / predictions.shape[0])
 
 
-def get_ops_hyps_from_string(net_string):
-    # E.g. String
-    # Init,0,0,0#C,1,1,64#C,5,1,64#C,5,1,128#P,5,2,0#C,1,1,64#P,2,2,0#Terminate,0,0,0
-    cnn_ops = []
-    cnn_hyperparameters = {}
-    prev_conv_hyp = None
-
-    op_tokens = net_string.split('#')
-    depth_index = 0
-    last_feature_map_depth = 3 # need this to calculate the fulcon layer in size
-    for token in op_tokens:
-        # state (layer_depth,op=(type,kernel,stride,depth),out_size)
-        token_tokens = token.split(',')
-        # op => type,kernel,stride,depth
-        op = (token_tokens[0],int(token_tokens[1]),int(token_tokens[2]),int(token_tokens[3]))
-        if op[0] == 'C':
-            op_id = 'conv_'+str(depth_index)
-            if prev_conv_hyp is None:
-                hyps = {'weights':[op[1],op[1],num_channels,op[3]],'stride':[1,op[2],op[2],1],'padding':'SAME'}
-            else:
-                hyps = {'weights':[op[1],op[1],prev_conv_hyp['weights'][3],op[3]],'stride':[1,op[2],op[2],1],'padding':'SAME'}
-
-            cnn_ops.append(op_id)
-            cnn_hyperparameters[op_id]=hyps
-            prev_conv_hyp = hyps # need this to set the input depth for a conv layer
-            last_feature_map_depth = op[3]
-            depth_index += 1
-
-        elif op[0] == 'P':
-            op_id = 'pool_'+str(depth_index)
-            hyps = {'type':'max','kernel':[1,op[1],op[1],1],'stride':[1,op[2],op[2],1],'padding':'SAME'}
-            cnn_ops.append(op_id)
-            cnn_hyperparameters[op_id]=hyps
-            depth_index += 1
-
-        elif op[0] == 'Terminate':
-            if len(op_tokens)>2:
-                output_size = get_final_x(cnn_ops,cnn_hyperparameters)
-            # this could happen if we get terminal state without any other states in trajectory
-            else:
-                output_size = image_size
-
-            if output_size>1:
-                cnn_ops.append('pool_global')
-                pg_hyps =  {'type':'avg','kernel':[1,output_size,output_size,1],'stride':[1,1,1,1],'padding':'VALID'}
-                cnn_hyperparameters['pool_global']=pg_hyps
-
-            op_id = 'fulcon_out'
-            hyps = {'in':1*1*last_feature_map_depth,'out':num_labels}
-            cnn_ops.append(op_id)
-            cnn_hyperparameters[op_id]=hyps
-        elif op[0] == 'Init':
-            continue
-        else:
-            print('='*40)
-            print(op[0])
-            print('='*40)
-            raise NotImplementedError
-
-    return cnn_ops,cnn_hyperparameters
-
-
-def get_cnn_string_from_ops(cnn_ops,cnn_hyps):
-    current_cnn_string = ''
-    for op in cnn_ops:
-        if 'conv' in op:
-            current_cnn_string += '#C,'+str(cnn_hyps[op]['weights'][0])+','+str(cnn_hyps[op]['stride'][1])+','+str(cnn_hyps[op]['weights'][3])
-        if 'pool' in op:
-            current_cnn_string += '#P,'+str(cnn_hyps[op]['kernel'][0])+','+str(cnn_hyps[op]['stride'][1])+','+str(0)
-        if 'fulcon' in op:
-            current_cnn_string += '#Terminate,0,0,0'
-
-    return current_cnn_string
-
-
 def add_with_action(
         op, tf_action_info, tf_weights_this, tf_bias_this,
         tf_weights_next, tf_activations, tf_wvelocity_this,
@@ -627,6 +524,7 @@ def add_with_action(
     global logger,weights,biases,tf_weight_vels,tf_bias_vels,tf_pool_w_vels,tf_pool_b_vels
     global weight_velocity_vectors,bias_velocity_vectors
 
+    first_fc = 'fulcon_out' if 'fulcon_0' not in weights else 'fulcon_0'
     update_ops = []
 
     # find the id of the last conv operation of the net
@@ -668,17 +566,17 @@ def add_with_action(
         # change FC layer
         # the reshaping is required because our placeholder for weights_next is Rank 4
         tf_weights_next = tf.squeeze(tf_weights_next)
-        tf_new_weights = tf.concat(0,[weights['fulcon_out'],tf_weights_next])
+        tf_new_weights = tf.concat(0,[weights[first_fc],tf_weights_next])
 
         # updating velocity vectors
         if research_parameters['optimizer'] == 'Momentum':
             tf_wvelocity_next = tf.squeeze(tf_wvelocity_next)
-            weight_vel = tf.concat(0,[tf_weight_vels['fulcon_out'],tf_wvelocity_next])
-            pool_w_vel = tf.concat(0, [tf_pool_w_vels['fulcon_out'], tf_wvelocity_next])
-            update_ops.append(tf.assign(tf_weight_vels['fulcon_out'],weight_vel,validate_shape=False))
-            update_ops.append(tf.assign(tf_pool_w_vels['fulcon_out'],pool_w_vel,validate_shape=False))
+            weight_vel = tf.concat(0,[tf_weight_vels[first_fc],tf_wvelocity_next])
+            pool_w_vel = tf.concat(0, [tf_pool_w_vels[first_fc], tf_wvelocity_next])
+            update_ops.append(tf.assign(tf_weight_vels[first_fc],weight_vel,validate_shape=False))
+            update_ops.append(tf.assign(tf_pool_w_vels[first_fc],pool_w_vel,validate_shape=False))
 
-        update_ops.append(tf.assign(weights['fulcon_out'], tf_new_weights, validate_shape=False))
+        update_ops.append(tf.assign(weights[first_fc], tf_new_weights, validate_shape=False))
 
     else:
 
@@ -747,6 +645,7 @@ def remove_with_action(op, tf_action_info, tf_activations):
     global logger,weights,biases,tf_weight_vels,tf_bias_vels
     global weight_velocity_vectors,bias_velocity_vectors
 
+    first_fc = 'fulcon_out' if 'fulcon_0' not in weights else 'fulcon_0'
     update_ops = []
 
     for tmp_op in reversed(cnn_ops):
@@ -808,14 +707,14 @@ def remove_with_action(op, tf_action_info, tf_activations):
 
     if op==last_conv_id:
 
-        tf_new_weights = tf.gather_nd(weights['fulcon_out'],tf_indices_to_keep)
-        update_ops.append(tf.assign(weights['fulcon_out'],tf_new_weights,validate_shape=False))
+        tf_new_weights = tf.gather_nd(weights[first_fc],tf_indices_to_keep)
+        update_ops.append(tf.assign(weights[first_fc],tf_new_weights,validate_shape=False))
 
         if research_parameters['optimizer']=='Momentum':
-            weight_vel=tf.gather_nd(tf_weight_vels['fulcon_out'],tf_indices_to_keep)
-            pool_w_vel = tf.gather_nd(tf_pool_w_vels['fulcon_out'],tf_indices_to_keep)
-            update_ops.append(tf.assign(tf_weight_vels['fulcon_out'],weight_vel,validate_shape=False))
-            update_ops.append(tf.assign(tf_pool_w_vels['fulcon_out'],pool_w_vel,validate_shape=False))
+            weight_vel=tf.gather_nd(tf_weight_vels[first_fc],tf_indices_to_keep)
+            pool_w_vel = tf.gather_nd(tf_pool_w_vels[first_fc],tf_indices_to_keep)
+            update_ops.append(tf.assign(tf_weight_vels[first_fc],weight_vel,validate_shape=False))
+            update_ops.append(tf.assign(tf_pool_w_vels[first_fc],pool_w_vel,validate_shape=False))
 
     else:
         # change in hyperparameter of next conv op
@@ -848,7 +747,7 @@ def remove_with_action(op, tf_action_info, tf_activations):
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
     global logger
     num_labels = dataset_info['num_labels']
-    col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
+    col_count = (dataset_info['image_w'],dataset_info['image_w'],dataset_info['num_channels'])
     logger.info('Processing files %s,%s'%(dataset_filename,label_filename))
     fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
                     offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*start_idx,shape=(size,col_count[0],col_count[1],col_count[2]))
@@ -954,7 +853,7 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'svhn-10'
+    datatype = 'cifar-10'
     behavior = 'stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
@@ -1017,7 +916,7 @@ if __name__=='__main__':
         test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-dataset.pkl'
         test_label_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-labels.pkl'
 
-    dataset_info['image_size']=image_size
+    dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
     dataset_info['num_channels']=num_channels
     dataset_info['dataset_size']=dataset_size
@@ -1087,15 +986,15 @@ if __name__=='__main__':
     logger.info('\tTrain Size: %d'%dataset_size)
     logger.info('='*80)
 
-    #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#Terminate,0,0,0"
+    #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,512#P,3,2,0#C,3,1,1024#Terminate,0,0,0"
+        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,512#P,3,2,0#C,3,1,1024#FC,2048,0,0#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#P,3,2,0#C,3,1,64#FC,2048,0,0#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
-    cnn_ops,cnn_hyperparameters = get_ops_hyps_from_string(cnn_string)
+    cnn_ops,cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string)
 
     hyp_logger = logging.getLogger('hyperparameter_logger')
     hyp_logger.setLevel(logging.INFO)
@@ -1139,6 +1038,7 @@ if __name__=='__main__':
         else:
             weights, biases = initialize_cnn_with_ops_fixed(cnn_ops, cnn_hyperparameters)
 
+        first_fc = 'fulcon_out' if 'fulcon_0' not in weights else 'fulcon_0'
         # -1 is because we don't want to count pool_global
         layer_count = len([op for op in cnn_ops if 'conv' in op or 'pool' in op])-1
 
@@ -1600,7 +1500,7 @@ if __name__=='__main__':
                                                     cnn_hyperparameters[next_conv_op]['weights'][0],cnn_hyperparameters[next_conv_op]['weights'][1],
                                                     amount_to_add,cnn_hyperparameters[next_conv_op]['weights'][3])
                                                                                  ) if last_conv_id != current_op else
-                                                np.random.normal(scale=0.01,size=(amount_to_add,num_labels,1,1)),
+                                                np.random.normal(scale=0.01,size=(amount_to_add,cnn_hyperparameters[first_fc]['out'],1,1)),
                                                 tf_running_activations:rolling_ativation_means[current_op],
 
                                                 tf_wvelocity_this:np.zeros(shape=(
@@ -1610,7 +1510,7 @@ if __name__=='__main__':
                                                 tf_wvelocity_next:np.zeros(shape=(
                                                     cnn_hyperparameters[next_conv_op]['weights'][0],cnn_hyperparameters[next_conv_op]['weights'][1],
                                                     amount_to_add,cnn_hyperparameters[next_conv_op]['weights'][3]),dtype=np.float32) if last_conv_id != current_op else
-                                                np.zeros(shape=(amount_to_add,num_labels,1,1),dtype=np.float32),
+                                                np.zeros(shape=(amount_to_add,cnn_hyperparameters[first_fc]['out'],1,1),dtype=np.float32),
                                             })
 
                             # change both weights and biase in the current op
@@ -1630,15 +1530,15 @@ if __name__=='__main__':
                             })
 
                             if current_op == last_conv_id:
-                                cnn_hyperparameters['fulcon_out']['in']+=amount_to_add
+                                cnn_hyperparameters[first_fc]['in']+=amount_to_add
 
                                 if research_parameters['debugging']:
-                                    logger.debug('\tNew %s in: %d','fulcon_out',cnn_hyperparameters['fulcon_out']['in'])
-                                    logger.debug('\tSummary of changes to weights of fulcon_out')
-                                    logger.debug('\t\tNew Weights: %s', str(tf.shape(weights['fulcon_out']).eval()))
+                                    logger.debug('\tNew %s in: %d',first_fc,cnn_hyperparameters[first_fc]['in'])
+                                    logger.debug('\tSummary of changes to weights of %s',first_fc)
+                                    logger.debug('\t\tNew Weights: %s', str(tf.shape(weights[first_fc]).eval()))
 
-                                session.run(tf_update_hyp_ops['fulcon_out'],feed_dict={
-                                    tf_in_size:cnn_hyperparameters['fulcon_out']['in']
+                                session.run(tf_update_hyp_ops[first_fc],feed_dict={
+                                    tf_in_size:cnn_hyperparameters[first_fc]['in']
                                 })
                             else:
 
@@ -1747,13 +1647,13 @@ if __name__=='__main__':
                             })
 
                             if current_op == last_conv_id:
-                                cnn_hyperparameters['fulcon_out']['in'] -= amount_to_rmv
+                                cnn_hyperparameters[first_fc]['in'] -= amount_to_rmv
                                 if research_parameters['debugging']:
-                                    logger.debug('\tSize after feature map reduction: fulcon_out,%s',
-                                                 str(tf.shape(weights['fulcon_out']).eval()))
+                                    logger.debug('\tSize after feature map reduction: %s,%s',
+                                                 first_fc,str(tf.shape(weights[first_fc]).eval()))
 
-                                session.run(tf_update_hyp_ops['fulcon_out'], feed_dict={
-                                    tf_in_size: cnn_hyperparameters['fulcon_out']['in']
+                                session.run(tf_update_hyp_ops[first_fc], feed_dict={
+                                    tf_in_size: cnn_hyperparameters[first_fc]['in']
                                 })
 
                             else:
@@ -1818,8 +1718,6 @@ if __name__=='__main__':
 
                         elif 'conv' in current_op and ai[0]=='finetune':
                             # pooling takes place here
-                            #pool_logits, _ = get_logits_with_ops(tf_pool_dataset, cnn_ops, cnn_hyperparameters, weights, biases,use_dropout)
-                            #pool_loss = calc_loss(pool_logits, tf_pool_labels, False, None)
 
                             op = cnn_ops[si[0]]
                             pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
@@ -1889,7 +1787,7 @@ if __name__=='__main__':
 
                             cnn_structure_logger.info(
                                 '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
-                                get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
+                                utils.get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
                             )
                             q_logger.info('%d,%.5f',epoch*batch_id_multiplier + batch_id,adapter.get_average_Q())
 
