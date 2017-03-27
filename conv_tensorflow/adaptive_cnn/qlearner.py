@@ -354,7 +354,7 @@ class AdaCNNAdaptingQLearner(object):
         self.same_action_threshold = 10
 
         # Of format {s1,a1,s2,a2,s3,a3} NOTE that this doesnt hold the current state
-        self.state_history_length = 4
+        self.state_history_length = params['state_history_length']
 
         self.session = params['session']
 
@@ -508,36 +508,6 @@ class AdaCNNAdaptingQLearner(object):
     # get text [2:] to discard first two letters
     # prepend 0s to it so the length is equal to number of conv layers
 
-    '''def action_list_with_index(self, action_idx):
-        self.rl_logger.debug('Got: %d\n', action_idx)
-        layer_actions=[None for _ in range(self.net_depth)]
-        binary_rep = [c for c in bin(action_idx)[2:]] # something like 10=>0b1010
-
-        if action_idx < self.output_size-2:
-            # make it correct length
-            if len(binary_rep)!= self.n_conv:
-                for _ in range(self.n_conv-len(binary_rep)):
-                    binary_rep.insert(0,'0')
-
-            self.rl_logger.debug('Binary string: %s',binary_rep)
-            assert len(binary_rep)== self.n_conv
-
-            # only set actions for layers where they are conv layers
-            for bi,bin_i in enumerate(binary_rep):
-                if bin_i=='1':
-                    layer_actions[self.conv_ids[bi]]=self.actions[2]
-                elif bin_i=='0':
-                    layer_actions[self.conv_ids[bi]] = self.actions[3]
-
-        elif action_idx==self.output_size-2:
-            layer_actions = [self.actions[0] if li in self.conv_ids else None for li in range(self.net_depth)]
-        elif action_idx==self.output_size-1:
-            layer_actions = [self.actions[1] if li in self.conv_ids else None for li in range(self.net_depth)]
-
-        assert len(layer_actions)==self.net_depth
-        self.rl_logger.debug('Return: %s\n', layer_actions)
-        return layer_actions'''
-
     def action_list_with_index(self, action_idx):
         self.rl_logger.debug('Got: %d\n', action_idx)
         layer_actions=[None for _ in range(self.net_depth)]
@@ -561,32 +531,6 @@ class AdaCNNAdaptingQLearner(object):
         assert len(layer_actions)==self.net_depth
         self.rl_logger.debug('Return: %s\n', layer_actions)
         return layer_actions
-
-    '''def index_from_action_list(self,action_list):
-        self.rl_logger.debug('Got: %s\n',action_list)
-        if action_list[0]==self.actions[0]:
-            self.rl_logger.debug('Return: %d\n',self.output_size-2)
-            return self.output_size-2
-        elif action_list[0]==self.actions[1]:
-            self.rl_logger.debug('Return: %d\n', self.output_size - 1)
-            return self.output_size-1
-
-        else:
-            bin_string = ''
-            for li,la in enumerate(action_list):
-                if la is None:
-                    continue
-                elif la[0]=='add':
-                    bin_string += '1'
-                elif la[0]=='remove':
-                    bin_string += '0'
-
-            self.rl_logger.debug('Binary string: %s',bin_string)
-            self.rl_logger.debug('Bin String: %s, n_conv: %d',len(bin_string),self.n_conv)
-            assert len(bin_string)==self.n_conv
-
-            self.rl_logger.debug('Return: %d\n', int(bin_string,2))
-            return int(bin_string,2)'''
 
     def index_from_action_list(self,action_list):
         self.rl_logger.debug('Got: %s\n',action_list)
@@ -928,23 +872,21 @@ class AdaCNNAdaptingQLearner(object):
 
             if la[0]=='add':
                 assert sj[li+1] == si[li+1]+la[1]
-                aux_penalty.append(0)
+                aux_penalty.append(-0.01*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li])
             elif la[0]=='remove':
                 assert sj[li+1] == si[li+1]-la[1]
-                aux_penalty.append((0.05*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li]))
+                aux_penalty.append(0.10*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li])
             elif la[0]=='replace':
                 aux_penalty.append((0.05*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li]))
             elif la[0]=='finetune' or la[0]=='do_nothing':
-                if la[0]=='do_nothing' and np.random.random()<0.1:
+                if la[0]=='do_nothing' and np.random.random()<0.2:
                     aux_penalty.append(0.1)
-                    break
                 else:
                     aux_penalty.append(
-                        1e-2 * (self.filter_bound_vec[li] - sj[li + 1]) / self.filter_bound_vec[li]
+                        0.05 * (self.filter_bound_vec[li] - sj[li + 1]) / self.filter_bound_vec[li]
                     )
-                    break
             else:
-                aux_penalty.append(0)
+                raise NotImplementedError
 
         reward = mean_accuracy - np.mean(aux_penalty)
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)

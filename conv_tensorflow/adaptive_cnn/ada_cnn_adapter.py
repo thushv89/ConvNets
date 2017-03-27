@@ -16,8 +16,7 @@ from scipy.misc import imsave
 import getopt
 import time
 import utils
-import BasicCNNOpsFacade
-import OptimizerOpsFacade
+import queue
 
 ##################################################################
 # AdaCNN Adapter
@@ -42,7 +41,7 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 3
+epochs = 5
 
 
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
@@ -959,7 +958,6 @@ if __name__=='__main__':
         q_logger.addHandler(qHandler)
         q_logger.info('#batch_id,pred_q')
 
-
     if research_parameters['log_class_distribution']:
         class_dist_logger = logging.getLogger('class_dist_logger')
         class_dist_logger.setLevel(logging.INFO)
@@ -1049,6 +1047,7 @@ if __name__=='__main__':
                 convolution_op_ids.append(op_i)
 
         # Adapting Policy Learner
+        state_history_length = 4
         adapter = qlearner.AdaCNNAdaptingQLearner(
             discount_rate=0.5, fit_interval = 1,
             exploratory_tries = 10, exploratory_interval = 100,
@@ -1057,8 +1056,10 @@ if __name__=='__main__':
             n_conv = len([op for op in cnn_ops if 'conv' in op]),
             epsilon=1.0, target_update_rate=25,
             batch_size=32, persist_dir = output_dir,
-            session = session, random_mode = False
+            session = session, random_mode = False,
+            state_history_length = state_history_length
         )
+        reward_queue = queue.Queue(maxsize=state_history_length-1)
 
         global_step = tf.Variable(0, dtype=tf.int32,trainable=False,name='global_step')
 
@@ -1728,8 +1729,6 @@ if __name__=='__main__':
                                 assert weights[op].name in [v.name for v in tf.trainable_variables()]
                                 assert biases[op].name in [v.name for v in tf.trainable_variables()]
 
-
-
                                 # without if can give problems in exploratory stage because of no data in the pool
                                 if hard_pool.get_size()>batch_size:
                                     for pool_id in range((hard_pool.get_size()//batch_size)-1):
@@ -1778,10 +1777,6 @@ if __name__=='__main__':
                             logger.info('\tAction (prev): %s', str(prev_action))
                             logger.info('\tState (next): %s\n', str(next_state))
 
-                            #logger.info('\tValid accuracy Gain: %.2f (Unseen) %.2f (seen)',
-                            #            (next_valid_accuracy_after - next_valid_accuracy),
-                            #            (prev_valid_accuracy_after-prev_valid_accuracy)
-                            #            )
                             adapter.update_policy({'prev_state': prev_state, 'prev_action': prev_action,
                                                    'curr_state': next_state,
                                                    'next_accuracy': None,
@@ -1790,20 +1785,18 @@ if __name__=='__main__':
                                                    'prev_pool_accuracy': prev_pool_accuracy,
                                                    'invalid_actions':prev_invalid_actions})
 
-                            prev_pool_accuracy = np.mean(pool_accuracy)
+                            if not reward_queue.full():
+                                reward_queue.put(np.mean(pool_accuracy))
+                                prev_pool_accuracy = 0
+                            else:
+                                prev_pool_accuracy = reward_queue.get()
+                                reward_queue.put(np.mean(pool_accuracy))
 
                             cnn_structure_logger.info(
                                 '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
                                 utils.get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
                             )
                             #q_logger.info('%d,%.5f',epoch*batch_id_multiplier + batch_id,adapter.get_average_Q())
-
-                        #reset rolling activation means because network changed
-                        #rolling_ativation_means = {}
-                        #for op in cnn_ops:
-                        #    if 'conv' in op:
-                        #        logger.debug("Resetting activation means to zero for %s with %d",op,cnn_hyperparameters[op]['weights'][3])
-                        #        rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
 
                         logger.debug('Resetting both data distribution means')
 
