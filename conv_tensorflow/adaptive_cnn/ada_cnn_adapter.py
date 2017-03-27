@@ -825,7 +825,7 @@ research_parameters = {
 
 interval_parameters = {
     'history_dump_interval':500,
-    'policy_interval' : 50, #number of batches to process for each policy iteration
+    'policy_interval' : 25, #number of batches to process for each policy iteration
     'test_interval' : 100
 }
 
@@ -1465,7 +1465,7 @@ if __name__=='__main__':
 
                         for li,la in enumerate(current_action):
                             # pooling and fulcon layers
-                            if la is None:
+                            if la is None or la[0]=='do_nothing':
                                 continue
 
                             logger.info('Got state: %s, action: %s',str(current_state),str(la))

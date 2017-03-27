@@ -394,9 +394,9 @@ class AdaCNNAdaptingQLearner(object):
         self.state_history_dumped = False
 
     def calculate_output_size(self):
-        total = 1
-        for _ in range(self.n_conv):
-            total *= len(self.actions)-2
+        total = 0
+        for _ in range(2): # add and remove actions
+            total += self.n_conv
 
         total += 2 # finetune and donothing
         return total
@@ -508,7 +508,7 @@ class AdaCNNAdaptingQLearner(object):
     # get text [2:] to discard first two letters
     # prepend 0s to it so the length is equal to number of conv layers
 
-    def action_list_with_index(self, action_idx):
+    '''def action_list_with_index(self, action_idx):
         self.rl_logger.debug('Got: %d\n', action_idx)
         layer_actions=[None for _ in range(self.net_depth)]
         binary_rep = [c for c in bin(action_idx)[2:]] # something like 10=>0b1010
@@ -536,9 +536,33 @@ class AdaCNNAdaptingQLearner(object):
 
         assert len(layer_actions)==self.net_depth
         self.rl_logger.debug('Return: %s\n', layer_actions)
+        return layer_actions'''
+
+    def action_list_with_index(self, action_idx):
+        self.rl_logger.debug('Got: %d\n', action_idx)
+        layer_actions=[None for _ in range(self.net_depth)]
+
+        if action_idx < self.output_size-2:
+            primary_action = action_idx//self.n_conv
+            secondary_action = action_idx%self.n_conv
+            tmp_a = self.actions[2] if primary_action==1 else self.actions[3]
+
+            for ci, c_id in enumerate(self.conv_ids):
+                if ci == secondary_action:
+                    layer_actions[c_id] = tmp_a
+                else:
+                    layer_actions[c_id] = self.actions[0]
+
+        elif action_idx==self.output_size-2:
+            layer_actions = [self.actions[0] if li in self.conv_ids else None for li in range(self.net_depth)]
+        elif action_idx==self.output_size-1:
+            layer_actions = [self.actions[1] if li in self.conv_ids else None for li in range(self.net_depth)]
+
+        assert len(layer_actions)==self.net_depth
+        self.rl_logger.debug('Return: %s\n', layer_actions)
         return layer_actions
 
-    def index_from_action_list(self,action_list):
+    '''def index_from_action_list(self,action_list):
         self.rl_logger.debug('Got: %s\n',action_list)
         if action_list[0]==self.actions[0]:
             self.rl_logger.debug('Return: %d\n',self.output_size-2)
@@ -562,7 +586,37 @@ class AdaCNNAdaptingQLearner(object):
             assert len(bin_string)==self.n_conv
 
             self.rl_logger.debug('Return: %d\n', int(bin_string,2))
-            return int(bin_string,2)
+            return int(bin_string,2)'''
+
+    def index_from_action_list(self,action_list):
+        self.rl_logger.debug('Got: %s\n',action_list)
+        if self.get_action_string(action_list)==\
+                self.get_action_string([self.actions[0] if li in self.conv_ids else None for li in range(self.net_depth)]):
+            self.rl_logger.debug('Return: %d\n',self.output_size-2)
+            return self.output_size-2
+        elif self.get_action_string(action_list)==\
+                self.get_action_string([self.actions[1] if li in self.conv_ids else None for li in range(self.net_depth)]):
+            self.rl_logger.debug('Return: %d\n', self.output_size - 1)
+            return self.output_size-1
+
+        else:
+            conv_id = 0
+            for li,la in enumerate(action_list):
+                if la is None:
+                    continue
+
+                if la==self.actions[2]:
+                    secondary_idx = conv_id
+                    primary_idx = 1
+                elif la==self.actions[3]:
+                    secondary_idx = conv_id
+                    primary_idx = 0
+                conv_id += 1
+
+            action_idx = primary_idx*self.n_conv + secondary_idx
+            self.rl_logger.debug('Primary %d Secondary %d',primary_idx,secondary_idx)
+            self.rl_logger.debug('Return: %d\n', action_idx)
+            return action_idx
 
     def output_action(self,data):
         invalid_actions = []
@@ -731,8 +785,8 @@ class AdaCNNAdaptingQLearner(object):
 
             # TODO: same action taking repeatedly
             # this is to reduce taking the same action over and over again
-            #if self.same_action_count[ni] >= self.same_action_threshold:
-            #    self.epsilon = min(self.epsilon*2,1.0)
+            if self.same_action_count >= self.same_action_threshold:
+                self.epsilon = min(self.epsilon*2,1.0)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
@@ -741,15 +795,26 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug(layer_actions_list)
         self.rl_logger.debug('='*60)
 
-        #if action == self.prev_action:
-        #    self.same_action_count[ni] += 1
-        #else:
-        #   self.same_action_count[ni] = 0
+        if self.prev_action is not None and \
+                        self.get_action_string(layer_actions_list) == self.get_action_string(self.prev_action):
+            self.same_action_count += 1
+        else:
+            self.same_action_count = 0
 
         self.prev_action = layer_actions_list
         self.prev_state = state
 
         return state,layer_actions_list,invalid_actions
+
+    def get_action_string(self,layer_action_list):
+        act_string = ''
+        for li,la in enumerate(layer_action_list):
+            if la is None:
+                continue
+            else:
+                act_string += la[0] + str(la[1])
+
+        return act_string
 
     def normalize_state(self,s):
         # state looks like [distMSE, filter_count_1, filter_count_2, ...]
@@ -872,9 +937,12 @@ class AdaCNNAdaptingQLearner(object):
             elif la[0]=='finetune' or la[0]=='do_nothing':
                 if la[0]=='do_nothing' and np.random.random()<0.1:
                     aux_penalty.append(0.1)
+                    break
                 else:
                     aux_penalty.append(
-                        (1e-2 * (self.filter_bound_vec[li] - sj[li + 1]) / self.filter_bound_vec[li]))
+                        1e-2 * (self.filter_bound_vec[li] - sj[li + 1]) / self.filter_bound_vec[li]
+                    )
+                    break
             else:
                 aux_penalty.append(0)
 
