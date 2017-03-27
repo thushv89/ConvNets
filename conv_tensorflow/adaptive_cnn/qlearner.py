@@ -358,8 +358,8 @@ class AdaCNNAdaptingQLearner(object):
 
         self.session = params['session']
 
-        self.input_size = self.calculate_input_size()
         self.output_size = self.calculate_output_size()
+        self.input_size = self.calculate_input_size()
 
         self.layer_info = [self.input_size,128, 64, 32,self.output_size]
         print(self.layer_info)
@@ -394,20 +394,24 @@ class AdaCNNAdaptingQLearner(object):
         self.state_history_dumped = False
 
     def calculate_output_size(self):
-        total = 2 # finetune and donothing
-        for _ in self.n_conv:
-            total += len(self.actions)-2
+        total = 1
+        for _ in range(self.n_conv):
+            total *= len(self.actions)-2
 
+        total += 2 # finetune and donothing
         return total
 
     def calculate_input_size(self):
-        dummy_state = (0,0 for _ in self.n_conv)
-        dummy_action = (0 for _ in self.output_size)
+        dummy_state = [0 for _ in range(self.n_conv)]
+        dummy_state.append(0)
+        dummy_state = tuple(dummy_state)
+
+        dummy_action = tuple([0 for _ in range(self.output_size)])
         dummy_history = []
         for _ in range(self.state_history_length-1):
             dummy_history.append([dummy_state,dummy_action])
         dummy_history.append([dummy_state])
-
+        self.rl_logger.debug('Input Size: %d',len(self.phi(dummy_history)))
         return len(self.phi(dummy_history))
 
     def phi(self,state_history):
@@ -417,10 +421,12 @@ class AdaCNNAdaptingQLearner(object):
         :param state_history:
         :return:
         '''
+        self.rl_logger.debug('Got: %s',state_history)
         preproc_input = []
         for item in state_history:
             preproc_input.extend(list(self.normalize_state(item[0])))
-
+        self.rl_logger.debug('Returning: %s\n', preproc_input)
+        assert len(state_history) == self.state_history_length
         return preproc_input
 
     def tf_init_mlp(self):
@@ -497,40 +503,76 @@ class AdaCNNAdaptingQLearner(object):
                 self.q.popitem(last=True)
             self.rl_logger.debug('\tSize of Q after: %d', len(self.q))
 
-    def layer_changes_with_action(self,action):
+    # how action_idx turned into action list
+    # convert the idx to binary representation (example 10=> 0b1010)
+    # get text [2:] to discard first two letters
+    # prepend 0s to it so the length is equal to number of conv layers
+
+    def action_list_with_index(self, action_idx):
+        self.rl_logger.debug('Got: %d\n', action_idx)
         layer_actions=[None for _ in range(self.net_depth)]
-        binary_rep = list(bin(action)[2:]) # something like 10=>0b1010
+        binary_rep = [c for c in bin(action_idx)[2:]] # something like 10=>0b1010
 
-        if action < self.output_size-2:
+        if action_idx < self.output_size-2:
             # make it correct length
-            if len(binary_rep)!= 2**self.n_conv:
-                for _ in range(2**self.n_conv-len(binary_rep))
-                    binary_rep.insert(2,0)
+            if len(binary_rep)!= self.n_conv:
+                for _ in range(self.n_conv-len(binary_rep)):
+                    binary_rep.insert(0,'0')
 
-            assert len(binary_rep)== 2**self.n_conv
+            self.rl_logger.debug('Binary string: %s',binary_rep)
+            assert len(binary_rep)== self.n_conv
 
-            for bi,bin_i in enumerate(reversed(binary_rep)):
-
+            # only set actions for layers where they are conv layers
+            for bi,bin_i in enumerate(binary_rep):
                 if bin_i=='1':
                     layer_actions[self.conv_ids[bi]]=self.actions[2]
                 elif bin_i=='0':
                     layer_actions[self.conv_ids[bi]] = self.actions[3]
-        elif action==self.output_size-2:
+
+        elif action_idx==self.output_size-2:
             layer_actions = [self.actions[0] if li in self.conv_ids else None for li in range(self.net_depth)]
-        elif action==self.output_size-1:
+        elif action_idx==self.output_size-1:
             layer_actions = [self.actions[1] if li in self.conv_ids else None for li in range(self.net_depth)]
 
         assert len(layer_actions)==self.net_depth
+        self.rl_logger.debug('Return: %s\n', layer_actions)
         return layer_actions
 
+    def index_from_action_list(self,action_list):
+        self.rl_logger.debug('Got: %s\n',action_list)
+        if action_list[0]==self.actions[0]:
+            self.rl_logger.debug('Return: %d\n',self.output_size-2)
+            return self.output_size-2
+        elif action_list[0]==self.actions[1]:
+            self.rl_logger.debug('Return: %d\n', self.output_size - 1)
+            return self.output_size-1
+
+        else:
+            bin_string = ''
+            for li,la in enumerate(action_list):
+                if la is None:
+                    continue
+                elif la[0]=='add':
+                    bin_string += '1'
+                elif la[0]=='remove':
+                    bin_string += '0'
+
+            self.rl_logger.debug('Binary string: %s',bin_string)
+            self.rl_logger.debug('Bin String: %s, n_conv: %d',len(bin_string),self.n_conv)
+            assert len(bin_string)==self.n_conv
+
+            self.rl_logger.debug('Return: %d\n', int(bin_string,2))
+            return int(bin_string,2)
+
     def output_action(self,data):
-        layer_actions_list = None
         invalid_actions = []
         # data => ['distMSE']['filter_counts']
         # ['filter_counts'] => depth_index : filter_count
         # State => Layer_Depth (w.r.t net), dist_MSE, number of filters in layer
 
-        state = (data['distMSE'],d for d in data['filter_counts'])
+        state = [data['distMSE']]
+        state.extend(data['filter_counts_list'])
+
         self.rl_logger.info('Data for (Depth Index,DistMSE,Filter Count) %s\n'%str(state))
         history_t_plus_1 = list(self.current_state_history)
         history_t_plus_1.append([state])
@@ -542,27 +584,24 @@ class AdaCNNAdaptingQLearner(object):
         # we try actions evenly otherwise cannot have the approximator
         if self.random_mode or (self.global_time_stamp%self.explore_interval)<self.explore_tries:
             self.rl_logger.debug('(Exploratory Mode) Choosing action exploratory...')
-            action_idx = self.actions[np.random.randint(0,self.output_size)]
+            action_idx = np.random.randint(0,self.output_size)
 
-            next_filter_counts = {}
-
-            layer_actions_list = self.layer_changes_with_action(action_idx)
+            layer_actions_list = self.action_list_with_index(action_idx)
 
             for li,la in enumerate(layer_actions_list):
                 if la is None:
-                    next_filter_counts[li] = 0
                     continue
                 elif la[0]=='add':
-                    next_filter_counts[li] = data['filter_counts'][li]+la[1]
+                    next_filter_count = data['filter_counts_list'][li]+la[1]
                 elif la[0]=='remove':
-                    next_filter_counts[li] = data['filter_counts'][li]-la[1]
+                    next_filter_count = data['filter_counts_list'][li]-la[1]
                 else:
-                    next_filter_counts[li] = data['filter_counts'][li]
+                    next_filter_count = data['filter_counts_list'][li]
 
-                if next_filter_counts[li]<=0 or next_filter_counts>self.filter_bound_vec[li]:
-                    layer_actions_list = [self.actions[0] for _ in range(self.net_depth)]
+                if next_filter_count<=0 or next_filter_count>self.filter_bound_vec[li]:
+                    self.rl_logger.debug('Chosen Action invalid: li(%d), next filter: %d',li,next_filter_count)
+                    layer_actions_list = [self.actions[0] if ni in self.conv_ids else None for ni in range(self.net_depth)]
                     break
-
 
         # deterministic selection (if epsilon is not 1 or q is not empty)
         elif np.random.random()>self.epsilon:
@@ -583,7 +622,7 @@ class AdaCNNAdaptingQLearner(object):
 
             action_idx = np.asscalar(np.argmax(q_for_actions))
 
-            layer_actions_list = self.layer_changes_with_action(action_idx)
+            layer_actions_list = self.action_list_with_index(action_idx)
             self.rl_logger.debug('\tChose: %s'%str(layer_actions_list))
 
             # ================= Look ahead 1 step (Validate Predicted Action) =========================
@@ -596,58 +635,51 @@ class AdaCNNAdaptingQLearner(object):
 
             # while loop for checkin the validity of the action and choosing another if not
             while len(q_for_actions)>0 and not found_valid_action and action_idx<self.output_size-2:
+
+                # if chosen action is do_nothing or finetune
+                if action_idx >= self.output_size - 2:
+                    found_valid_action = True
+                    break
+
                 # check for all layers if the chosen action is valid
                 for li,la in enumerate(layer_actions_list):
                     if la is None:
                         continue
 
                     if la[0]=='add':
-                        next_filter_count =data['filter_counts'][li]+la[1]
+                        next_filter_count =data['filter_counts_list'][li]+la[1]
                     elif la[0]=='remove':
-                        next_filter_count =data['filter_counts'][li]-la[1]
+                        next_filter_count =data['filter_counts_list'][li]-la[1]
                     else:
-                        next_filter_count = data['filter_counts'][li]
+                        next_filter_count = data['filter_counts_list'][li]
 
                     # if action is invalid, remove that from the allowed actions
                     if next_filter_count<=0 or next_filter_count>self.filter_bound_vec[li]:
-                        self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(la),next_filter_count))
+                        self.rl_logger.debug('\tAction %s is not valid li(%d), (Next Filter Count: %d). '%(str(la),li,next_filter_count))
 
                         del q_for_actions[action_idx]
                         allowed_actions.remove(action_idx)
                         invalid_actions.append(action_idx)
                         found_valid_action = False
+
+                        # udpate current action to another action
+                        max_idx = np.asscalar(np.argmax(q_for_actions))
+                        action_idx = allowed_actions[max_idx]
+                        layer_actions_list = self.action_list_with_index(action_idx)
+                        self.rl_logger.debug('\tSelected new action: %s', layer_actions_list)
                         break
                     else:
                         found_valid_action = True
 
-                max_idx = np.asscalar(np.argmax(q_for_actions))
-                action_idx = allowed_actions[max_idx]
-                layer_actions_list = self.layer_changes_with_action(action_idx)
-
-            if action_idx>=self.output_size-2:
-                found_valid_action = True
-
-
-
-            # if we do not have any more possible actions
-            if not found_valid_action:
-                layer_actions_list = [self.actions[0] for _ in range(self.net_depth)]
-
-            next_filter_counts = {}
-            # update FILTER count
-            for li,la in enumerate(layer_actions_list):
-                if la[0]=='add':
-                    next_filter_counts[li] = data['filter_counts'][li]+la[1]
-                elif la[0]=='remove':
-                    next_filter_counts[li] = data['filter_counts'][li]-la[1]
-                else:
-                    next_filter_counts[li] = data['filter_counts'][li]
+            if action_idx >= self.output_size - 2:
+                found_valid_action=True
+            assert found_valid_action
 
         # random selection
         else:
             self.rl_logger.debug('Choosing action stochastic...')
-            action_idx = np.random.randint(0,len(self.output_size))
-            layer_actions_list = self.layer_changes_with_action(action_idx)
+            action_idx = np.random.randint(0,self.output_size)
+            layer_actions_list = self.action_list_with_index(action_idx)
             self.rl_logger.debug('\tChose: %s'%str(layer_actions_list))
 
             # ================= Look ahead 1 step (Validate Predicted Action) =========================
@@ -656,97 +688,80 @@ class AdaCNNAdaptingQLearner(object):
             # To avoid such scenarios we create a
             #  action space if this happens
 
-            # update next filter counts for all the layers
-            next_filter_counts = {}
-            for li,la in enumerate(layer_actions_list):
-                if la is None:
-                    continue
-
-                if la[0]=='add':
-                    next_filter_counts[li] =data['filter_counts'][li]+la[1]
-                elif la[0]=='remove':
-                    next_filter_counts[li] =data['filter_counts'][li]-la[1]
-                else:
-                    next_filter_counts[li] = data['filter_counts'][li]
-
             # Check if the next filter count is invalid for any layer
             found_valid_action = False
             allowed_actions = [tmp for tmp in range(self.output_size)]
 
             while not found_valid_action and action_idx<self.output_size-2:
+                self.rl_logger.debug('Checking action validity')
+                if action_idx>=self.output_size-2:
+                    found_valid_action = True
+                    break
+
                 for li,la in enumerate(layer_actions_list):
                     if la is None:
                         continue
                     elif la[0]=='add':
-                        next_filter_counts[li]=data['filter_counts'][li] + la[1]
+                        next_filter_count=data['filter_counts_list'][li] + la[1]
                     elif la[0]=='remove':
-                        next_filter_counts[li]=data['filter_counts'][li] - la[1]
+                        next_filter_count=data['filter_counts_list'][li] - la[1]
                     else:
-                        next_filter_counts[li]=data['filter_counts'][li]
+                        next_filter_count=data['filter_counts_list'][li]
 
-                    if next_filter_counts[li]<=0 or next_filter_counts[li]>self.filter_bound_vec[li]:
-                        self.rl_logger.debug('\tAction %s is not valid (Next Filter Count: %d). '%(str(action),next_filter_count))
+                    if next_filter_count<=0 or next_filter_count>self.filter_bound_vec[li]:
+                        self.rl_logger.debug('\tAction %s is not valid li(%d), (Next Filter Count: %d). ',str(la),li, next_filter_count)
                         allowed_actions.remove(action_idx)
                         invalid_actions.append(action_idx)
                         found_valid_action = False
+
+                        action_idx = np.random.choice(allowed_actions)
+                        layer_actions_list = self.action_list_with_index(action_idx)
+                        self.rl_logger.debug('\tSelected new action: %s',layer_actions_list)
                         break
                     else:
                         found_valid_action = True
 
-                if action_idx>=self.output_size-2:
-                    found_valid_action = True
-
-            # if we do not have any more possible actions
-            if not found_valid_action:
-                layer_actions_list = [self.actions[0] for _ in range(self.net_depth)]
-
-                # if we do not have any more possible actions
-                if len(restricted_action_space)==0:
-                    action = self.actions[0]
-                    break
-
-                action = restricted_action_space[np.random.randint(0,len(restricted_action_space))]
-
-                # update FILTER count
-                if action[0]=='add':
-                    next_filter_count =data['filter_counts'][ni]+action[1]
-                elif action[0]=='remove':
-                    next_filter_count =data['filter_counts'][ni]-action[1]
-                else:
-                    next_filter_count = data['filter_counts'][ni]
-
-        self.rl_logger.debug('Finally Selected action: %s'%str(action))
+            if action_idx >= self.output_size - 2:
+                found_valid_action=True
+            assert found_valid_action
 
         # decay epsilon
         if self.global_time_stamp>self.explore_tries:
             self.epsilon = max(self.epsilon * 0.9, 0.1)
 
+            # TODO: same action taking repeatedly
             # this is to reduce taking the same action over and over again
-            if self.same_action_count[ni] >= self.same_action_threshold:
-                self.epsilon = min(self.epsilon*2,1.0)
+            #if self.same_action_count[ni] >= self.same_action_threshold:
+            #    self.epsilon = min(self.epsilon*2,1.0)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
         self.rl_logger.debug(state)
+        self.rl_logger.debug('Action')
+        self.rl_logger.debug(layer_actions_list)
         self.rl_logger.debug('='*60)
 
-        if action == self.prev_action:
-            self.same_action_count[ni] += 1
-        else:
-            self.same_action_count[ni] = 0
+        #if action == self.prev_action:
+        #    self.same_action_count[ni] += 1
+        #else:
+        #   self.same_action_count[ni] = 0
 
-        self.prev_action = action
+        self.prev_action = layer_actions_list
         self.prev_state = state
 
-        return state,action,invalid_actions
+        return state,layer_actions_list,invalid_actions
 
     def normalize_state(self,s):
         # state looks like [distMSE, filter_count_1, filter_count_2, ...]
         ohe_state = np.zeros((1, self.net_depth + 1))
         ohe_state[0, 0] = s[0]
+        self.rl_logger.debug('Filter bounds: %s',self.filter_bound_vec)
         for ii,item in enumerate(s[1:]):
-            ohe_state[0,ii+1] = item * 1.0 / self.filter_bound_vec[ii]
-
+            if self.filter_bound_vec[ii]>0:
+                ohe_state[0,ii+1] = item * 1.0 / self.filter_bound_vec[ii]
+            else:
+                ohe_state[0,ii+1] = 0
+        self.rl_logger.debug('\tNormalized state: %s\n', ohe_state)
         return tuple(ohe_state.flatten())
 
     def get_ohe_state_ndarray(self,s):
@@ -756,14 +771,14 @@ class AdaCNNAdaptingQLearner(object):
 
         x,y,rewards,sj = None,None,None,None
 
-        for [phi_t,ai,reward,phi_t_plus_1] in experience_slice:
-            # phi_t, ai, reward, phi_t_plus_1
+        for [hist_t,ai,reward,hist_t_plus_1] in experience_slice:
+            # phi_t, a_idx, reward, phi_t_plus_1
             if x is None:
-                x = np.asarray(get_ohe_state_history(phi_t)).reshape((1,-1))
+                x = np.asarray(self.phi(hist_t)).reshape((1,-1))
             else:
-                x = np.append(x,np.asarray(get_ohe_state_history(phi_t)).reshape((1,-1)),axis=0)
+                x = np.append(x,np.asarray(self.phi(hist_t)).reshape((1,-1)),axis=0)
 
-            ohe_a = [1 if self.actions.index(ai)==act else 0 for act in range(len(self.actions))]
+            ohe_a = [1 if ai==act else 0 for act in range(self.output_size)]
             if y is None:
                 y = np.asarray(ohe_a).reshape(1,-1)
             else:
@@ -775,18 +790,20 @@ class AdaCNNAdaptingQLearner(object):
                 rewards = np.append(rewards,np.asarray(reward).reshape(1,-1),axis=0)
 
             if sj is None:
-                sj = np.asarray(get_ohe_state_history(phi_t_plus_1)).reshape(1,-1)
+                sj = np.asarray(self.phi(hist_t_plus_1)).reshape(1,-1)
             else:
-                sj = np.append(sj,np.asarray(get_ohe_state_history(phi_t_plus_1)).reshape(1,-1),axis=0)
+                sj = np.append(sj,np.asarray(self.phi(hist_t_plus_1)).reshape(1,-1),axis=0)
 
         return x,y,rewards,sj
 
     def update_policy(self, data):
-        # data['states'] => list of states
-        # data['actions'] => list of actions
-        # data['next_accuracy'] => validation accuracy (unseen)
-        # data['prev_accuracy'] => validation accuracy (seen)
+        # data['prev_state']
+        # data['prev_action']
+        # data['curr_state']
+        # data['next_accuracy']
+        # data['prev_accuracy']
         if not self.random_mode:
+
             if self.global_time_stamp>0 and len(self.experience)>0 and self.global_time_stamp%self.fit_interval==0:
                 self.rl_logger.info('Training the Q Approximator with Experience...')
                 self.rl_logger.debug('(Q) Total experience data: %d', len(self.experience))
@@ -836,31 +853,32 @@ class AdaCNNAdaptingQLearner(object):
 
         mean_accuracy = (data['pool_accuracy']-data['prev_pool_accuracy'])/100.0
 
-        si,ai,sj = data['prev_state'],data['prev_action'],data['curr_state']
-        self.rl_logger.debug('Si,Ai,Sj: %s,%s,%s',si,ai,sj)
-        # if si[2] (layer_depth) ==0 means a pooling operation in CNN
-        # we don't do changes to pooling ops
-        # so ignore them
-        if si is None or si[2]==0:
-            return
+        si,ai_list,sj = data['prev_state'],data['prev_action'],data['curr_state']
+        self.rl_logger.debug('Si,Ai,Sj: %s,%s,%s',si,ai_list,sj)
 
-        new_filter_size = sj[2]
-        if ai[0]=='add':
-            assert sj[2] == si[2]+ai[1]
-            reward = mean_accuracy
-        elif ai[0]=='remove':
-            assert sj[2] == si[2]-ai[1]
-            reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
-        elif ai[0]=='replace':
-            reward = mean_accuracy - (0.05*(self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
-        elif ai[0]=='finetune' or ai[0]=='do_nothing':
-            new_filter_size = si[2]
-            reward = mean_accuracy - (1e-3 * (self.filter_bound_vec[si[0]]-new_filter_size) / self.filter_bound_vec[si[0]])
-            if ai[0]=='do_nothing' and np.random.random()<0.1:
-                reward = -0.1
-        else:
-            reward = mean_accuracy
+        aux_penalty = []
+        for li,la in enumerate(ai_list):
+            if la is None:
+                continue
 
+            if la[0]=='add':
+                assert sj[li+1] == si[li+1]+la[1]
+                aux_penalty.append(0)
+            elif la[0]=='remove':
+                assert sj[li+1] == si[li+1]-la[1]
+                aux_penalty.append((0.05*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li]))
+            elif la[0]=='replace':
+                aux_penalty.append((0.05*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li]))
+            elif la[0]=='finetune' or la[0]=='do_nothing':
+                if la[0]=='do_nothing' and np.random.random()<0.1:
+                    aux_penalty.append(0.1)
+                else:
+                    aux_penalty.append(
+                        (1e-2 * (self.filter_bound_vec[li] - sj[li + 1]) / self.filter_bound_vec[li]))
+            else:
+                aux_penalty.append(0)
+
+        reward = mean_accuracy - np.mean(aux_penalty)
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
         # how the update on state_history looks like
         # t=5 (s2,a2),(s3,a3),(s4,a4)
@@ -869,37 +887,36 @@ class AdaCNNAdaptingQLearner(object):
         # as a one-hot vector
 
         #phi_t (s_t-3,a_t-3),(s_t-2,a_t-2),(s_t-1,a_t-1),(s_t,a_t)
-        phi_t = list(self.current_state_history)
-        phi_t.append([si])
+        history_t = list(self.current_state_history)
+        history_t.append([si])
+        self.rl_logger.debug('History(t)')
+        self.rl_logger.debug('%s\n',history_t)
 
-        #current_state_h
+        assert len(history_t)<=self.state_history_length
+
+        action_idx = self.index_from_action_list(ai_list)
+
+        # update current state history
         self.current_state_history.append([si])
-        self.current_state_history[-1].append([1 if self.actions.index(ai)==act else 0 for act in range(len(self.actions))])
+        self.current_state_history[-1].append([1 if action_idx==act else 0 for act in range(self.output_size)])
 
-        if len(self.current_state_history)>self.state_history_length:
+        if len(self.current_state_history)>self.state_history_length-1:
             del self.current_state_history[0]
-            assert len(self.current_state_history) == self.state_history_length
+            assert len(self.current_state_history) == self.state_history_length - 1
 
-        phi_t_plus_1 = list(self.current_state_history)
-        phi_t_plus_1.append([sj])
+        self.rl_logger.debug('Current History')
+        self.rl_logger.debug('%s\n', self.current_state_history)
 
-        '''if not self.state_history_dumped and np.random.random()<0.25:
-            self.state_history_collector.append(phi_t_plus_1)
-            self.rl_logger.debug('State added: size %d\n',len(self.state_history_collector))
-
-        if len(self.state_history_collector)==64:
-            self.rl_logger.debug('Persisting Random State Collection')
-            with open(self.persit_dir + os.sep + 'QMetricStates.pickle', 'wb') as f:
-                pickle.dump(self.state_history_collector, f, pickle.HIGHEST_PROTOCOL)
-                self.state_history_collector = []
-                self.state_history_dumped = True'''
+        history_t_plus_1 = list(self.current_state_history)
+        history_t_plus_1.append([sj])
+        assert len(history_t_plus_1)<=self.state_history_length
 
         # update experience
-        if len(phi_t)>=self.state_history_length+1:
-            self.experience.append([phi_t,ai,reward,phi_t_plus_1])
+        if len(history_t)>=self.state_history_length+1:
+            self.experience.append([history_t,action_idx,reward,history_t_plus_1])
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
-                self.experience.append([phi_t,invalid_a,-0.1,phi_t_plus_1])
+                self.experience.append([history_t,self.index_from_action_list(invalid_a),-0.1,history_t_plus_1])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
@@ -907,12 +924,13 @@ class AdaCNNAdaptingQLearner(object):
 
         self.rl_logger.debug('Update Summary ')
         self.rl_logger.debug('\tState: %s',si)
-        self.rl_logger.debug('\tAction: %s',ai)
+        self.rl_logger.debug('\tAction: %d,%s',action_idx,ai_list)
         self.rl_logger.debug('\tReward: %.3f',reward)
+        self.rl_logger.debug('\t\tReward (Mean Acc) (Penalty): %.4f,%.4f',mean_accuracy,np.mean(aux_penalty))
 
         self.local_time_stamp += 1
-        if self.local_time_stamp%self.n_conv == 0:
-            self.global_time_stamp += 1
+        #if self.local_time_stamp%self.n_conv == 0:
+        self.global_time_stamp += 1
 
         self.rl_logger.debug('Global/Local time step: %d/%d\n',self.global_time_stamp,self.local_time_stamp)
 
