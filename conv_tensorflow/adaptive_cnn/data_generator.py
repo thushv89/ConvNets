@@ -92,9 +92,9 @@ def sample_from_distribution(dist,size):
     assert euc_distance<euc_threshold
     return label_sequence
 
-def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter):
+def get_augmented_sample_for_label(dataset_info,dataset,label,use_counter):
     global image_abuse_threshold
-
+    global save_gen_data,gen_save_count,gen_perist_dir
     # dataset_info => ['type']['image_size']['resize_to']['num_channels']
     dataset_type,image_size = dataset_info['dataset_type'],dataset_info['image_size']
     num_channels = dataset_info['num_channels']
@@ -102,8 +102,8 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
     if dataset_type=='imagenet-100':
         resize_to = dataset_info['resize_to']
         ops = ['original','rotate','brightness','contrast','crop','flip']
-        choice_probs = [0.1,0.05,0.2,0.2,0.25,0.2]
-    elif dataset_type=='cifar-10':
+        choice_probs = [0.1,0.05,0.25,0.25,0.15,0.2]
+    elif dataset_type=='cifar-10' or dataset_type=='cifar-100':
         ops = ['original','rotate','brightness', 'contrast','flip']
         choice_probs = [0.2,0.2,0.2,0.2,0.2]
     elif dataset_type=='svhn-10':
@@ -147,23 +147,24 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
             sample_img = (1-noise_amount)*np.array(im) + noise_amount*np.random.random_sample((image_size,image_size,num_channels))*255.0
 
     elif selected_op=='brightness':
-        bright_amount = min(0.9,np.random.random()+0.5)
+        bright_amount = (0.7*np.random.random())+0.2
         if dataset_type=='imagenet-100':
-            im.thumbnail((resize_to,resize_to),Image.ANTIALIAS)
-        sample_bri = ImageEnhance.Brightness(im)
-        sample_img = np.array(sample_bri.enhance(bright_amount)).astype('float32')
+            im.thumbnail((resize_to,resize_to))
+        bri_enhancer = ImageEnhance.Brightness(im)
+        sample_img = np.array(bri_enhancer.enhance(bright_amount)).astype('float32')
 
     elif selected_op=='contrast':
-        cont_amount = min(0.9, np.random.random() + 0.5)
+        cont_amount = (0.7*np.random.random()) + 0.2
         if dataset_type=='imagenet-100':
-            im.thumbnail((resize_to,resize_to),Image.ANTIALIAS)
-            sample_cont = ImageEnhance.Contrast(im)
-        sample_img = np.array(sample_cont.enhance(cont_amount)).astype('float32')
+            im.thumbnail((resize_to,resize_to))
+        cont_enhancer = ImageEnhance.Contrast(im)
+        sample_img = np.array(cont_enhancer.enhance(cont_amount)).astype('float32')
 
     elif selected_op=='crop':
-        x,y = np.random.randint(24,image_size-resize_to),np.random.randint(24,image_size-resize_to)
+        center = image_size//2
+        x,y = np.random.randint(center-(resize_to//2)-20,center-(resize_to//2)+20),np.random.randint(center-(resize_to//2)-20,center-(resize_to//2)+20)
         im = im.crop((x,y,x+resize_to,y+resize_to))
-        sample_img = np.array(im)
+        sample_img = np.array(im).astype('float32')
     elif selected_op=='flip':
         if dataset_type=='imagenet-100':
             im.thumbnail((resize_to,resize_to), Image.ANTIALIAS)
@@ -174,8 +175,35 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
         sample_img = np.array(im).astype('float32')
     else:
         raise NotImplementedError
+
+    if save_gen_data and np.random.random() < 0.1:
+        if not os.path.exists(gen_perist_dir):
+            os.makedirs(gen_perist_dir)
+
+        lbl_dir = gen_perist_dir + os.sep + str(label)
+        if not os.path.exists(lbl_dir):
+            gen_save_count[label] = 0
+            os.makedirs(lbl_dir)
+        imsave(lbl_dir + os.sep + dataset_type + '_image_'
+               + str(gen_save_count[label]) + '_' + selected_op + '.png',
+               Image.fromarray(sample_img.astype('uint8')))
+        gen_save_count[label] += 1
+
+    #logger.info("UnNormalized: %.3f,%.3f", np.max(sample_img), np.min(sample_img))
+    #logger.info('selected op: %s', selected_op)
+
     # normalization
-    sample_img = (sample_img-np.mean(sample_img))*1.0 / np.std(sample_img)
+    sample_img = normalize_img(sample_img)
+
+    #logger.info("Normalized: %.3f,%.3f",np.max(sample_img),np.min(sample_img))
+    #logger.info('selected op: %s', selected_op)
+    if not (np.max(sample_img)<=1.0 and np.min(sample_img)>=-1.0):
+        logger.critical(' max min smaple_img: %.3f %.3f',np.max(sample_img),np.min(sample_img))
+    assert np.max(sample_img)<=1.0 and np.min(sample_img)>=-1.0
+    if np.all(np.isnan(sample_img)):
+        logger.info("%.3f,%.3f", np.max(sample_img), np.min(sample_img))
+        logger.info('selected op: %s',selected_op)
+    assert not np.all(np.isnan(sample_img))
 
     if dataset_type =='imagenet-100':
         assert sample_img.shape[0]==resize_to
@@ -186,7 +214,6 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
 
 def generate_step_priors(batch_size,elements,chunk_size,num_labels,step_length):
     chunk_count = int(elements / chunk_size)
-
     raise NotImplementedError
 
 
@@ -213,9 +240,14 @@ def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_label
 
     return f_prior
 
+save_gen_data = False
+gen_save_count = {}
+gen_perist_dir = 'gen_data_test'
+
 def sample_cifar_10_with_distribution(dataset_info, data_filename, f_prior,
                                       save_directory, new_dataset_filename, new_labels_filename):
-    global image_use_counter,logger,class_distribution_logger
+    global image_use_counter,logger,class_distribution_logger,save_gen_data
+
     # dataset_info => ['elements']['chunk_size']['type']['image_size']['resize_dim']['num_channels']
     elements,chunk_size = dataset_info['elements'],dataset_info['chunk_size']
     num_chunks = elements/chunk_size
@@ -248,6 +280,51 @@ def sample_cifar_10_with_distribution(dataset_info, data_filename, f_prior,
         for li in range(num_labels):
             dist_str += str(cnt[li]/len(label_sequence)) + ',' if li in cnt else str(0) + ','
         class_distribution_logger.info('%d,%s',i,dist_str)
+
+
+def sample_cifar_100_with_distribution(dataset_info, data_filename, f_prior,
+                                      save_directory, new_dataset_filename, new_labels_filename):
+    global image_use_counter,logger,class_distribution_logger,save_gen_data
+
+    # dataset_info => ['elements']['chunk_size']['type']['image_size']['resize_dim']['num_channels']
+    elements,chunk_size = dataset_info['elements'],dataset_info['chunk_size']
+    num_chunks = elements/chunk_size
+    num_slices = dataset_info['dataset_size']/dataset_info['chunk_size']
+    dataset_type,image_size = dataset_info['dataset_type'],dataset_info['image_size']
+    num_channels = dataset_info['num_channels']
+
+    fp1 = np.memmap(filename=new_dataset_filename, dtype='float32', mode='w+', shape=(elements,image_size,image_size,num_channels))
+    fp2 = np.memmap(filename=new_labels_filename, dtype='int32', mode='w+', shape=(elements,1))
+
+    memmap_idx = 0
+    for i,dist in enumerate(f_prior):
+        start_slice = int(i%num_slices)*chunk_size
+        end_slice = min(int((i%num_slices)+1)*chunk_size,dataset_info['dataset_size'])
+        # rare occasions where slice is too small to have data for all classes
+        if end_slice - start_slice < num_labels * 2:
+            rand_idx = np.random.randint(0,num_slices-1)
+            start_slice = int(rand_idx % num_slices) * chunk_size
+            end_slice = min(int((rand_idx % num_slices) + 1) * chunk_size, dataset_info['dataset_size'])
+        dataset = load_slice_from_cifar_100(dataset_info,data_filename,start_slice,end_slice)
+        label_sequence = sample_from_distribution(dist,chunk_size)
+
+        for label in label_sequence:
+            sidx,sample = get_augmented_sample_for_label(dataset_info,dataset,label,image_use_counter)
+            image_use_counter[sidx] = image_use_counter[sidx]+1 if sidx in image_use_counter else 1
+            fp1[memmap_idx,:,:,:] = sample
+            fp2[memmap_idx,0] = label
+            memmap_idx += 1
+
+        logger.info('Sampling finished for %d/%d points of the curve',i,f_prior.shape[0])
+        logger.info('\t%d/%d Samples from this slice were used',len(image_use_counter),chunk_size)
+        logger.info('\tEach Sample was used %.2f on average',np.mean(list(image_use_counter.values())))
+
+        cnt = Counter(label_sequence)
+        dist_str = ''
+        for li in range(num_labels):
+            dist_str += str(cnt[li]/len(label_sequence)) + ',' if li in cnt else str(0) + ','
+        class_distribution_logger.info('%d,%s',i,dist_str)
+
 
 def sample_svhn_10_with_distribution(dataset_info, data_filename, f_prior,
                                       save_directory, new_dataset_filename, new_labels_filename):
@@ -286,7 +363,7 @@ def sample_svhn_10_with_distribution(dataset_info, data_filename, f_prior,
         class_distribution_logger.info('%d,%s',i,dist_str)
 
 
-def sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, f_prior, save_directory):
+def sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, f_prior, new_dataset_fname, new_labels_fname):
     global image_use_counter,logger,class_distribution_logger
     # dataset_info => ['elements']['chunk_size']['type']['image_size']['resize_dim']['num_channels']
     elements,chunk_size = dataset_info['elements'],dataset_info['chunk_size']
@@ -295,8 +372,8 @@ def sample_imagenet_with_distribution(dataset_info, dataset_filename, label_file
     dataset_type,image_size,resize_dim = dataset_info['dataset_type'],dataset_info['image_size'],dataset_info['resize_to']
     num_channels = dataset_info['num_channels']
 
-    fp1 = np.memmap(filename=save_directory+os.sep+'imagenet-100-nonstation-dataset.pkl', dtype='float32', mode='w+', shape=(elements,resize_dim,resize_dim,num_channels))
-    fp2 = np.memmap(filename=save_directory+os.sep+'imagenet-100-nonstation-labels.pkl', dtype='int32', mode='w+', shape=(elements,1))
+    fp1 = np.memmap(filename=new_dataset_fname, dtype='float32', mode='w+', shape=(elements,resize_dim,resize_dim,num_channels))
+    fp2 = np.memmap(filename=new_labels_fname, dtype='int32', mode='w+', shape=(elements,1))
 
     memmap_idx = 0
     for i,dist in enumerate(f_prior):
@@ -377,6 +454,27 @@ def load_slice_from_cifar_10(dataset_info,data_filename,start_idx,end_idx):
 
     return {'dataset':train_dataset[start_idx:end_idx+1,:,:,:],'labels':train_labels[start_idx:end_idx+1,None]}
 
+def load_slice_from_cifar_100(dataset_info,data_filename,start_idx,end_idx):
+    global image_use_counter,logger
+    global train_dataset,train_labels
+
+    image_use_counter = {}
+    col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
+
+    # Loading data from memmap
+    logger.info('Processing files %s',data_filename)
+    logger.info('Reading data from: %d to %d',start_idx,end_idx)
+
+    if train_labels is None and train_dataset is None:
+        # test file
+        with open(data_filename, 'rb') as f:
+            save = pickle.load(f, encoding="latin1")
+            train_dataset, train_labels = np.asarray(save['data']),np.asarray(save['fine_labels'])
+            train_dataset = train_dataset.reshape((-1,col_count[0],col_count[1],col_count[2]),order='F').astype(np.float32)
+            train_labels = train_labels.reshape(-1,)
+
+    return {'dataset':train_dataset[start_idx:end_idx+1,:,:,:],'labels':train_labels[start_idx:end_idx+1,None]}
+
 
 def load_slice_from_svhn_10(dataset_info,data_filename,start_idx,end_idx):
     global image_use_counter,logger
@@ -419,8 +517,8 @@ def generate_imagenet_test_data(dataset_filename,label_filename,save_directory):
 
     del fp1,fp2
 
-    fp1 = np.memmap(filename=save_directory+os.sep+'imagenet-100-nonstation-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,resize_dim,resize_dim,num_channels))
-    fp2 = np.memmap(filename=save_directory+os.sep+'imagenet-100-nonstation-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
+    fp1 = np.memmap(filename=save_directory+os.sep+'imagenet-100-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,resize_dim,resize_dim,num_channels))
+    fp2 = np.memmap(filename=save_directory+os.sep+'imagenet-100-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
 
     idx = 0
     for img,lbl in zip(test_dataset[:],test_labels[:]):
@@ -430,7 +528,8 @@ def generate_imagenet_test_data(dataset_filename,label_filename,save_directory):
         im = Image.fromarray(np.uint8(unnorm_image))
         im.thumbnail((resize_to,resize_to), Image.ANTIALIAS)
         sample_img = np.array(im)
-        sample_img = (sample_img - np.mean(sample_img))/np.std(sample_img)
+        sample_img = normalize_img(sample_img)
+        #assert np.min(sample_img)<-0.2 and np.max(sample_img)>0.2
         fp1[idx,:,:,:]=sample_img
         fp2[idx,0]=lbl
         idx+=1
@@ -453,7 +552,31 @@ def generate_cifar_test_data(data_filename,save_directory):
     idx = 0
     for img,lbl in zip(test_dataset[:],test_labels[:]):
         img = img.reshape((-1,col_count[0],col_count[1],col_count[2]),order='F').astype(np.float32)
-        img = (img - np.mean(img))/np.std(img)
+        img = normalize_img(img)
+        fp1[idx,:,:,:]=img
+        fp2[idx,0]=lbl
+        idx+=1
+
+    del fp1,fp2
+
+def generate_cifar_100_test_data(data_filename,save_directory):
+    image_size = dataset_info['image_size']
+    test_size = dataset_info['test_size']
+    num_channels = dataset_info['num_channels']
+    col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
+
+    with open(data_filename,'rb') as f:
+        save = pickle.load(f,encoding="latin1")
+        test_dataset, test_labels = np.asarray(save['data']),np.asarray(save['fine_labels']).reshape(-1,)
+    logger.info('Test data summary: %s, %d',test_dataset.shape,test_labels.shape[0])
+
+    fp1 = np.memmap(filename=save_directory+os.sep+'cifar-100-nonstation-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
+    fp2 = np.memmap(filename=save_directory+os.sep+'cifar-100-nonstation-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
+
+    idx = 0
+    for img,lbl in zip(test_dataset[:],test_labels[:]):
+        img = img.reshape((-1,col_count[0],col_count[1],col_count[2]),order='F').astype(np.float32)
+        img = normalize_img(img)
         fp1[idx,:,:,:]=img
         fp2[idx,0]=lbl
         idx+=1
@@ -478,12 +601,13 @@ def generate_svhn_test_data(dataset_info, data_filename,save_directory):
 
     idx = 0
     for img,lbl in zip(test_dataset,test_labels[:]):
-        img = (img - np.mean(img))/np.std(img)
+        img = normalize_img(img)
         fp1[idx,:,:,:]=img
         fp2[idx,0]=lbl
         idx+=1
 
     del fp1,fp2
+
 
 def test_generated_data(dataset_info,persist_dir,dataset_filename,label_filename):
     global logger
@@ -492,7 +616,7 @@ def test_generated_data(dataset_info,persist_dir,dataset_filename,label_filename
     logger.info('Persisting a random slice of generated data')
     if dataset_type=='imagenet-100':
         col_count = (dataset_info['resize_to'],dataset_info['resize_to'],dataset_info['num_channels'])
-    elif dataset_type=='cifar-10':
+    elif dataset_type=='cifar-10' or dataset_type=='cifar-100':
         col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
     elif dataset_type == 'svhn-10':
         col_count = (dataset_info['image_size'], dataset_info['image_size'], dataset_info['num_channels'])
@@ -519,6 +643,10 @@ def test_generated_data(dataset_info,persist_dir,dataset_filename,label_filename
         imsave(lbl_dir + os.sep + dataset_type+'_image_'+str(save_count_data[lbl])+'.png',random_slice_dataset[li,:,:,:])
         save_count_data[lbl]+=1
 
+
+def normalize_img(img_arr):
+    return (img_arr-128.0)/128.0
+
 image_use_counter = None
 logger = None
 class_distribution_logger = None
@@ -536,7 +664,7 @@ if __name__ == '__main__':
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
     distribution_type = 'stationary'
-    distribution_type2 = 'step' #gauss or step
+    distribution_type2 = 'gauss' #gauss or step
 
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
@@ -552,7 +680,7 @@ if __name__ == '__main__':
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = int(batch_size*10) # number of samples sampled for each instance of the gaussian curve
 
-    dataset_type = 'svhn-10' #'cifar-10 imagenet-100
+    dataset_type = 'cifar-100' #'cifar-10 imagenet-100
 
     data_save_directory = 'data_non_station'
     if not os.path.exists(data_save_directory):
@@ -561,6 +689,16 @@ if __name__ == '__main__':
     if dataset_type == 'cifar-10':
         image_size = 32
         num_labels = 10
+        num_channels = 3
+        dataset_size = 50000
+        test_size = 10000
+        image_use_counter = {}
+        dataset_info = {'dataset_type':dataset_type,'elements':elements,'chunk_size':chunk_size,'image_size':image_size,
+                        'num_channels':num_channels,'num_labels':num_labels,'dataset_size':dataset_size,'test_size':test_size}
+
+    if dataset_type == 'cifar-100':
+        image_size = 32
+        num_labels = 100
         num_channels = 3
         dataset_size = 50000
         test_size = 10000
@@ -587,7 +725,7 @@ if __name__ == '__main__':
         num_channels = 3
         dataset_size = 128000
         data_in_memory = chunk_size
-        resize_to = 128
+        resize_to = 64
         test_size = 5000
         image_use_counter = {}
         dataset_info = {'dataset_type':dataset_type,'elements':elements,'chunk_size':chunk_size,'image_size':image_size,'num_labels':num_labels,'dataset_size':dataset_size,
@@ -625,8 +763,8 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, data_save_directory)
-        #generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
+        #sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, new_dataset_filename, new_labels_filename)
+        generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
     elif dataset_type == 'svhn-10':
         test_data_filename = '..' +os.sep +'svhn' + os.sep + 'test_32x32.mat'
         train_data_filename = '..' + os.sep + 'svhn' + os.sep + 'train_32x32.mat'
@@ -661,7 +799,23 @@ if __name__ == '__main__':
         #generate_cifar_test_data(data_filename,data_save_directory)
         sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
 
-    #test_generated_data(dataset_info,persist_dir+os.sep+'test_data',new_dataset_filename,new_labels_filename)
+    elif dataset_type == 'cifar-100':
+        data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-100-python'+os.sep+'train'
+        test_data_filename = '..' + os.sep + '..' + os.sep + 'data' + os.sep + 'cifar-100-python' + os.sep + 'test'
+        if distribution_type=='non-stationary':
+            new_dataset_filename = data_save_directory+os.sep+'cifar-100-nonstation-dataset.pkl'
+            new_labels_filename = data_save_directory+os.sep+'cifar-100-nonstation-labels.pkl'
+        elif distribution_type == 'stationary':
+            new_dataset_filename = data_save_directory + os.sep + 'cifar-100-station-dataset.pkl'
+            new_labels_filename = data_save_directory + os.sep + 'cifar-100-station-labels.pkl'
+        else:
+            raise NotImplementedError
+
+        print(new_dataset_filename)
+        #generate_cifar_100_test_data(test_data_filename,data_save_directory)
+        #sample_cifar_100_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
+
+    test_generated_data(dataset_info,persist_dir+os.sep+'test_data_'+dataset_info['dataset_type'],new_dataset_filename,new_labels_filename)
 
     # =============== Quick Test =====================
     '''sample_size = 1000

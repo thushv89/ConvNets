@@ -31,7 +31,7 @@ logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-start_lr = 0.001
+start_lr = 0.005
 decay_learning_rate = False
 dropout_rate = 0.25
 use_dropout = False
@@ -41,7 +41,7 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 5
+epochs = 3
 
 
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
@@ -809,7 +809,7 @@ tf_layer_activations = {}
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : True,
+    'adapt_structure' : False,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
@@ -852,8 +852,8 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-10'
-    behavior = 'non-stationary'
+    datatype = 'cifar-100'
+    behavior = 'stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
@@ -879,21 +879,48 @@ if __name__=='__main__':
         test_dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-nonstation-test-labels.pkl'
 
+    elif datatype=='cifar-100':
+        image_size = 32
+        num_labels = 100
+        num_channels = 3 # rgb
+        dataset_size = 50000
+
+        if behavior == 'non-stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+        elif behavior == 'stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-station-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+
+        test_size=10000
+        test_dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'cifar-100-nonstation-test-labels.pkl'
+
     elif datatype=='imagenet-100':
-        image_size = 224
+        image_size = 64
         num_labels = 100
         num_channels = 3
         dataset_size = 128000
         if behavior == 'non-stationary':
-            dataset_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-dataset.pkl'
-            label_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-label.pkl'
-            image_size = 128
+            dataset_filename='data_non_station'+os.sep+'imagenet-100-non-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'imagenet-100-non-station-labels.pkl'
+            image_size = 64
+            dataset_size = 1280000
+            chunk_size = 12800
+        elif behavior == 'stationary':
+            dataset_filename='data_non_station'+os.sep+'imagenet-100-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'imagenet-100-station-labels.pkl'
+            image_size = 64
             dataset_size = 1280000
             chunk_size = 12800
 
         test_size=5000
-        test_dataset_filename='..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-dataset.pkl'
-        test_label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet-100-non-station-test-label.pkl'
+        test_dataset_filename='data_non_station'+os.sep+'imagenet-100-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'imagenet-100-test-labels.pkl'
 
     elif datatype=='svhn-10':
         image_size = 32
@@ -986,9 +1013,9 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,512#Terminate,0,0,0"
+        cnn_string = "C,5,1,256#P,5,4,0#C,5,1,256#P,3,2,0#C,5,1,512#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
+        cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1050,8 +1077,8 @@ if __name__=='__main__':
         state_history_length = 4
         adapter = qlearner.AdaCNNAdaptingQLearner(
             discount_rate=0.5, fit_interval = 1,
-            exploratory_tries = 10, exploratory_interval = 100,
-            filter_upper_bound=512, filter_min_bound=128,
+            exploratory_tries = 10, exploratory_interval = 250,
+            filter_upper_bound=1024, filter_min_bound=256,
             conv_ids=convolution_op_ids, net_depth=layer_count,
             n_conv = len([op for op in cnn_ops if 'conv' in op]),
             epsilon=1.0, target_update_rate=25,

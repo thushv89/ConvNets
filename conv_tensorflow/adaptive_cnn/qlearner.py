@@ -18,7 +18,7 @@ import tensorflow as tf
 
 from collections import OrderedDict
 
-logging_level = logging.DEBUG
+logging_level = logging.INFO
 logging_format = '[%(name)s] [%(funcName)s] %(message)s'
 
 class AdaCNNConstructionQLearner(object):
@@ -581,7 +581,7 @@ class AdaCNNAdaptingQLearner(object):
 
         # we try actions evenly otherwise cannot have the approximator
         if self.random_mode or (self.global_time_stamp%self.explore_interval)<self.explore_tries:
-            self.rl_logger.debug('(Exploratory Mode) Choosing action exploratory...')
+            self.rl_logger.info('(Exploratory Mode) Choosing action exploratory...')
             action_idx = np.random.randint(0,self.output_size)
 
             layer_actions_list = self.action_list_with_index(action_idx)
@@ -603,7 +603,7 @@ class AdaCNNAdaptingQLearner(object):
 
         # deterministic selection (if epsilon is not 1 or q is not empty)
         elif np.random.random()>self.epsilon:
-            self.rl_logger.debug('Choosing action deterministic...')
+            self.rl_logger.info('Choosing action deterministic...')
             # we create this copy_actions in case we need to change the order the actions processed
             # without changing the original action space (self.actions)
 
@@ -675,7 +675,7 @@ class AdaCNNAdaptingQLearner(object):
 
         # random selection
         else:
-            self.rl_logger.debug('Choosing action stochastic...')
+            self.rl_logger.info('Choosing action stochastic...')
             action_idx = np.random.randint(0,self.output_size)
             layer_actions_list = self.action_list_with_index(action_idx)
             self.rl_logger.debug('\tChose: %s'%str(layer_actions_list))
@@ -748,6 +748,7 @@ class AdaCNNAdaptingQLearner(object):
         self.prev_action = layer_actions_list
         self.prev_state = state
 
+        self.rl_logger.info('\tSelected action: %s\n',layer_actions_list)
         return state,layer_actions_list,invalid_actions
 
     def get_action_string(self,layer_action_list):
@@ -872,21 +873,36 @@ class AdaCNNAdaptingQLearner(object):
 
             if la[0]=='add':
                 assert sj[li+1] == si[li+1]+la[1]
-                aux_penalty.append(-0.01*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li])
+                aux_penalty.append(-0.001*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li])
+                break
             elif la[0]=='remove':
                 assert sj[li+1] == si[li+1]-la[1]
-                aux_penalty.append(0.10*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li])
+                aux_penalty.append(0.01*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li])
+                break
             elif la[0]=='replace':
-                aux_penalty.append((0.05*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li]))
-            elif la[0]=='finetune' or la[0]=='do_nothing':
-                if la[0]=='do_nothing' and np.random.random()<0.2:
-                    aux_penalty.append(0.1)
-                else:
-                    aux_penalty.append(
-                        0.05 * (self.filter_bound_vec[li] - sj[li + 1]) / self.filter_bound_vec[li]
-                    )
+                aux_penalty.append((0.001*(self.filter_bound_vec[li]-sj[li+1]) / self.filter_bound_vec[li]))
+            elif la[0]=='finetune':
+                aux_penalty.append(
+                    0.002 * (self.filter_bound_vec[li] - sj[li + 1]) / self.filter_bound_vec[li]
+                )
+                break
             else:
-                raise NotImplementedError
+                continue
+
+        # if all actions are do_nothing randomly apply a penalty
+        complete_do_nothing = False
+        for li,la in enumerate(ai_list):
+            if la is None:
+                continue
+
+            if la[0]=='do_nothing':
+                complete_do_nothing = True
+            else:
+                complete_do_nothing = False
+                break
+
+        if complete_do_nothing:
+            aux_penalty.append(0.005)
 
         reward = mean_accuracy - np.mean(aux_penalty)
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
@@ -926,17 +942,20 @@ class AdaCNNAdaptingQLearner(object):
             self.experience.append([history_t,action_idx,reward,history_t_plus_1])
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
-                self.experience.append([history_t,self.index_from_action_list(invalid_a),-0.1,history_t_plus_1])
+                if 'remove' in self.get_action_string(invalid_a):
+                    self.experience.append([history_t, self.index_from_action_list(invalid_a), -0.5, history_t_plus_1])
+                else:
+                    self.experience.append([history_t,self.index_from_action_list(invalid_a),-0.1,history_t_plus_1])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
                 self.rl_logger.debug('\t%s\n',self.experience[-1])
 
-        self.rl_logger.debug('Update Summary ')
-        self.rl_logger.debug('\tState: %s',si)
-        self.rl_logger.debug('\tAction: %d,%s',action_idx,ai_list)
-        self.rl_logger.debug('\tReward: %.3f',reward)
-        self.rl_logger.debug('\t\tReward (Mean Acc) (Penalty): %.4f,%.4f',mean_accuracy,np.mean(aux_penalty))
+        self.rl_logger.info('Update Summary ')
+        self.rl_logger.info('\tState: %s',si)
+        self.rl_logger.info('\tAction: %d,%s',action_idx,ai_list)
+        self.rl_logger.info('\tReward: %.3f',reward)
+        self.rl_logger.info('\t\tReward (Mean Acc) (Penalty): %.4f,%.4f',mean_accuracy,np.mean(aux_penalty))
 
         self.local_time_stamp += 1
         #if self.local_time_stamp%self.n_conv == 0:
