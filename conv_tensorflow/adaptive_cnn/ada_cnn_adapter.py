@@ -819,7 +819,8 @@ research_parameters = {
     'loss_diff_threshold':0.02,
     'debugging':True if logging_level==logging.DEBUG else False,
     'stop_training_at':11000,
-    'train_min_activation':False
+    'train_min_activation':False,
+    'use_weighted_loss':True
 }
 
 interval_parameters = {
@@ -853,7 +854,7 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-100'
-    behavior = 'stationary'
+    behavior = 'non-stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
@@ -1013,9 +1014,9 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,256#P,5,4,0#C,5,1,256#P,3,2,0#C,5,1,512#Terminate,0,0,0"
+        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,5,1,512#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1077,8 +1078,8 @@ if __name__=='__main__':
         state_history_length = 4
         adapter = qlearner.AdaCNNAdaptingQLearner(
             discount_rate=0.5, fit_interval = 1,
-            exploratory_tries = 10, exploratory_interval = 250,
-            filter_upper_bound=1024, filter_min_bound=256,
+            exploratory_tries = 20, exploratory_interval = 250,
+            filter_upper_bound=512, filter_min_bound=256,
             conv_ids=convolution_op_ids, net_depth=layer_count,
             n_conv = len([op for op in cnn_ops if 'conv' in op]),
             epsilon=1.0, target_update_rate=25,
@@ -1311,7 +1312,7 @@ if __name__=='__main__':
                     batch_labels_int = np.argmax(batch_labels, axis=1)
 
                     for li in range(num_labels):
-                        batch_weights[np.where(batch_labels_int==li)[0]] = 1.0 - (cnt[li]/batch_size)
+                        batch_weights[np.where(batch_labels_int==li)[0]] = 1.0 - (cnt[li]*1.0/batch_size)
                 elif behavior=='stationary':
                     batch_weights = np.ones((batch_size,))
                 else:
@@ -1614,15 +1615,18 @@ if __name__=='__main__':
                                 # This is a pretty important step
                                 # Unless you run this onces, the sizes of weights do not change
                                 _ = session.run([logits,tf_activation_ops],feed_dict=feed_dict)
-                                for pool_id in range((hard_pool.get_size() // batch_size) - 1):
+                                pbatch_train_count = 0
+                                # Train only with half of the batch
+                                for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1):
                                     if np.random.random() < research_parameters['replace_op_train_rate']:
                                         pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
                                         pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
 
-                                        if pool_id == 0:
+                                        if pbatch_train_count == 0:
                                             _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
                                                                                     tf_pool_labels: pbatch_labels}
                                                         )
+                                        pbatch_train_count += 1
 
                                         current_activations,_,_ = session.run([tf_layer_activations,tf_slice_optimize[current_op],tf_slice_vel_update[current_op]],
                                                         feed_dict={tf_pool_dataset: pbatch_data,
@@ -1758,14 +1762,17 @@ if __name__=='__main__':
 
                                 # without if can give problems in exploratory stage because of no data in the pool
                                 if hard_pool.get_size()>batch_size:
-                                    for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                                    pbatch_train_count = 0
+                                    # Train with latter half of the data
+                                    for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1):
 
                                         pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                                         pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
                                         pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
 
-                                        if pool_id == 0:
+                                        if pbatch_train_count == 0:
                                             _ = session.run([pool_logits, pool_loss], feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
+                                        pbatch_train_count += 1
                                         _, _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool, pool_vel_updates], feed_dict=pool_feed_dict)
 
                                 break # otherwise will do this repeadedly for the number of layers
@@ -1776,7 +1783,7 @@ if __name__=='__main__':
                             pool_accuracy = []
                             pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
                                                         hard_pool.get_pool_data()['pool_labels']
-                            for pool_id in range((hard_pool.get_size()//batch_size)-1):
+                            for pool_id in range((hard_pool.get_size()//batch_size)//2):
                                 pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                                 pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
                                 pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}

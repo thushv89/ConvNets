@@ -663,26 +663,27 @@ if __name__ == '__main__':
 
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
-    distribution_type = 'stationary'
+    distribution_type = 'non-stationary'
     distribution_type2 = 'gauss' #gauss or step
 
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
-
-    class_distribution_logger = logging.getLogger('class_distribution_logger')
-    class_distribution_logger.setLevel(logging.INFO)
-    cdfileHandler = logging.FileHandler(persist_dir+os.sep+'class_distribution_log.log', mode='w')
-    cdfileHandler.setFormatter(logging.Formatter('%(message)s'))
-    class_distribution_logger.addHandler(cdfileHandler)
 
     batch_size = 128
     elements = int(batch_size*10000) # number of elements in the whole dataset
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = int(batch_size*10) # number of samples sampled for each instance of the gaussian curve
 
-    dataset_type = 'cifar-100' #'cifar-10 imagenet-100
-
+    dataset_type = 'cifar-10' #'cifar-10 imagenet-100
     data_save_directory = 'data_non_station'
+
+    class_distribution_logger = logging.getLogger('class_distribution_logger')
+    class_distribution_logger.setLevel(logging.INFO)
+    cdfileHandler = logging.FileHandler(persist_dir + os.sep + 'class_distribution_log' + dataset_type + '.log',
+                                        mode='w')
+    cdfileHandler.setFormatter(logging.Formatter('%(message)s'))
+    class_distribution_logger.addHandler(cdfileHandler)
+
     if not os.path.exists(data_save_directory):
         os.makedirs(data_save_directory)
 
@@ -796,8 +797,8 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        #generate_cifar_test_data(data_filename,data_save_directory)
-        sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
+        generate_cifar_test_data(data_filename,data_save_directory)
+        #sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
 
     elif dataset_type == 'cifar-100':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-100-python'+os.sep+'train'
@@ -812,10 +813,10 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        #generate_cifar_100_test_data(test_data_filename,data_save_directory)
-        #sample_cifar_100_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
+        generate_cifar_100_test_data(test_data_filename,data_save_directory)
+        sample_cifar_100_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
 
-    test_generated_data(dataset_info,persist_dir+os.sep+'test_data_'+dataset_info['dataset_type'],new_dataset_filename,new_labels_filename)
+    #test_generated_data(dataset_info,persist_dir+os.sep+'test_data_'+dataset_info['dataset_type'],new_dataset_filename,new_labels_filename)
 
     # =============== Quick Test =====================
     '''sample_size = 1000
