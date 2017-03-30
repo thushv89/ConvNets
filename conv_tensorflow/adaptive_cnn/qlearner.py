@@ -938,7 +938,7 @@ class AdaCNNAdaptingQLearner(object):
 
         reward = mean_accuracy
         if complete_do_nothing:
-            reward = -0.001
+            reward = -1e-5
 
 
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
