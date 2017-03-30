@@ -41,7 +41,7 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 3
+epochs = 5
 
 
 def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
@@ -811,7 +811,7 @@ research_parameters = {
     'log_class_distribution':True,'log_distribution_every':128,
     'adapt_structure' : False,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
-    'replace_op_train_rate':0.5, # amount of batches from hard_pool selected to train
+    'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
     'use_custom_momentum_opt':True,
     'remove_filters_by':'Activation',
@@ -879,6 +879,26 @@ if __name__=='__main__':
         test_size=10000
         test_dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-nonstation-test-labels.pkl'
+    elif datatype=='cifar-100':
+        image_size = 32
+        num_labels = 100
+        num_channels = 3 # rgb
+        dataset_size = 50000
+        if behavior == 'non-stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+        elif behavior == 'stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-station-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+
+        test_size=10000
+        test_dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'cifar-100-nonstation-test-labels.pkl'
+
 
     elif datatype=='cifar-100':
         image_size = 32
@@ -1077,7 +1097,7 @@ if __name__=='__main__':
         # Adapting Policy Learner
         state_history_length = 4
         adapter = qlearner.AdaCNNAdaptingQLearner(
-            discount_rate=0.5, fit_interval = 1,
+            discount_rate=0.7, fit_interval = 1,
             exploratory_tries = 20, exploratory_interval = 250,
             filter_upper_bound=512, filter_min_bound=256,
             conv_ids=convolution_op_ids, net_depth=layer_count,
@@ -1265,7 +1285,6 @@ if __name__=='__main__':
 
         previous_loss = 1e5 # used for the check to start adapting
         prev_pool_accuracy = 0
-        prev_state,prev_action,prev_invalid_actions = None,None,None
         start_adapting = False
 
         batch_id_multiplier = (dataset_size//batch_size) - interval_parameters['test_interval']
@@ -1475,6 +1494,19 @@ if __name__=='__main__':
 
                     if batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
 
+                        pool_accuracy = []
+                        pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
+                                                    hard_pool.get_pool_data()['pool_labels']
+                        for pool_id in range((hard_pool.get_size()//batch_size)//2):
+                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+
+                            p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
+                            pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
+
+                        prev_pool_accuracy = np.mean(pool_accuracy)
+
                         # update distance measure for class distirbution
                         distMSE = 0.0
                         for li in range(num_labels):
@@ -1616,6 +1648,7 @@ if __name__=='__main__':
                                 # Unless you run this onces, the sizes of weights do not change
                                 _ = session.run([logits,tf_activation_ops],feed_dict=feed_dict)
                                 pbatch_train_count = 0
+
                                 # Train only with half of the batch
                                 for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1):
                                     if np.random.random() < research_parameters['replace_op_train_rate']:
@@ -1724,7 +1757,7 @@ if __name__=='__main__':
                                     # select indices amnt f2 indices
                                     indices_of_filters_replace = session.run(tf_rm_filters_ops[current_op])
 
-                                for pool_id in range((hard_pool.get_size() // batch_size) - 1):
+                                for pool_id in range((hard_pool.get_size()//batch_size)//2,(hard_pool.get_size()//batch_size)-1):
                                     if np.random.random() < research_parameters['replace_op_train_rate']:
                                         pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
                                         pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
@@ -1761,11 +1794,11 @@ if __name__=='__main__':
                                 assert biases[op].name in [v.name for v in tf.trainable_variables()]
 
                                 # without if can give problems in exploratory stage because of no data in the pool
+                                pbatch_train_count = 0
                                 if hard_pool.get_size()>batch_size:
                                     pbatch_train_count = 0
                                     # Train with latter half of the data
                                     for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1):
-
                                         pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                                         pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
                                         pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
@@ -1778,59 +1811,57 @@ if __name__=='__main__':
                                 break # otherwise will do this repeadedly for the number of layers
 
                         # updating the policy
-                        if prev_state is not None and prev_action is not None:
+                        pool_accuracy = []
+                        pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
+                                                    hard_pool.get_pool_data()['pool_labels']
+                        for pool_id in range((hard_pool.get_size()//batch_size)//2):
+                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
 
-                            pool_accuracy = []
-                            pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
-                                                        hard_pool.get_pool_data()['pool_labels']
-                            for pool_id in range((hard_pool.get_size()//batch_size)//2):
-                                pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
-                                pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                                pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+                            p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
+                            pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
-                                _, _, p_predictions = session.run([pool_logits, pool_loss, pool_pred], feed_dict=pool_feed_dict)
-                                pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
-
-                            # don't use current state as the next state, current state is for a different layer
-                            next_state = [distMSE]
-                            for li,la in enumerate(prev_action):
-                                if la is None:
-                                    assert li not in convolution_op_ids
-                                    next_state.append(0)
-                                    continue
-                                elif la[0]=='add':
-                                    next_state.append(prev_state[li+1] + la[1])
-                                elif la[0]=='remove':
-                                    next_state.append(prev_state[li+1] - la[1])
-                                else:
-                                    next_state.append(prev_state[li + 1])
-
-                            next_state = tuple(next_state)
-
-                            logger.info('\tState (prev): %s', str(prev_state))
-                            logger.info('\tAction (prev): %s', str(prev_action))
-                            logger.info('\tState (next): %s\n', str(next_state))
-
-                            adapter.update_policy({'prev_state': prev_state, 'prev_action': prev_action,
-                                                   'curr_state': next_state,
-                                                   'next_accuracy': None,
-                                                   'prev_accuracy': None,
-                                                   'pool_accuracy': np.mean(pool_accuracy),
-                                                   'prev_pool_accuracy': prev_pool_accuracy,
-                                                   'invalid_actions':prev_invalid_actions})
-
-                            if not reward_queue.full():
-                                reward_queue.put(np.mean(pool_accuracy))
-                                prev_pool_accuracy = 0
+                        # don't use current state as the next state, current state is for a different layer
+                        next_state = [distMSE]
+                        for li,la in enumerate(current_action):
+                            if la is None:
+                                assert li not in convolution_op_ids
+                                next_state.append(0)
+                                continue
+                            elif la[0]=='add':
+                                next_state.append(current_state[li+1] + la[1])
+                            elif la[0]=='remove':
+                                next_state.append(current_state[li+1] - la[1])
                             else:
-                                prev_pool_accuracy = reward_queue.get()
-                                reward_queue.put(np.mean(pool_accuracy))
+                                next_state.append(current_state[li + 1])
 
-                            cnn_structure_logger.info(
-                                '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
-                                utils.get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
-                            )
-                            #q_logger.info('%d,%.5f',epoch*batch_id_multiplier + batch_id,adapter.get_average_Q())
+                        next_state = tuple(next_state)
+
+                        logger.info('\tState (prev): %s', str(current_state))
+                        logger.info('\tAction (prev): %s', str(current_action))
+                        logger.info('\tState (next): %s\n', str(next_state))
+
+                        adapter.update_policy({'prev_state': current_state, 'prev_action': current_action,
+                                               'curr_state': next_state,
+                                               'next_accuracy': None,
+                                               'prev_accuracy': None,
+                                               'pool_accuracy': np.mean(pool_accuracy),
+                                               'prev_pool_accuracy': prev_pool_accuracy,
+                                               'invalid_actions':curr_invalid_actions})
+
+                            #if not reward_queue.full():
+                                #reward_queue.put(np.mean(pool_accuracy))
+                                #prev_pool_accuracy = 0
+                            #else:
+                                #prev_pool_accuracy = reward_queue.get()
+                                #reward_queue.put(np.mean(pool_accuracy))
+
+                        cnn_structure_logger.info(
+                            '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
+                            utils.get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
+                        )
+                        #q_logger.info('%d,%.5f',epoch*batch_id_multiplier + batch_id,adapter.get_average_Q())
 
                         logger.debug('Resetting both data distribution means')
 
@@ -1838,10 +1869,6 @@ if __name__=='__main__':
                         for li in range(num_labels):
                             rolling_data_distribution[li]=0.0
                             mean_data_distribution[li]=0.0
-
-                        prev_state = current_state
-                        prev_action = current_action
-                        prev_invalid_actions = curr_invalid_actions
 
                     if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
                         with open(output_dir + os.sep + 'state_actions_' + str(epoch) + "_" + str(batch_id)+'.pickle', 'wb') as f:

@@ -930,11 +930,17 @@ class AdaCNNAdaptingQLearner(object):
         for li,la in enumerate(ai_list):
             if la is None:
                 continue
-
-        if complete_do_nothing:
-            aux_penalty = 0.01
+            if la[0]=='do_nothing':
+                complete_do_nothing = True
+            else:
+                complete_do_nothing = False
+                break
 
         reward = mean_accuracy
+        if complete_do_nothing:
+            reward = -0.001
+
+
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
         # how the update on state_history looks like
         # t=5 (s2,a2),(s3,a3),(s4,a4)
@@ -973,9 +979,9 @@ class AdaCNNAdaptingQLearner(object):
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
-                    self.experience.append([history_t, invalid_a, -0.1, history_t_plus_1])
+                    self.experience.append([history_t, invalid_a, -1, history_t_plus_1])
                 else:
-                    self.experience.append([history_t,invalid_a,-0.05,history_t_plus_1])
+                    self.experience.append([history_t,invalid_a,-0.5,history_t_plus_1])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
