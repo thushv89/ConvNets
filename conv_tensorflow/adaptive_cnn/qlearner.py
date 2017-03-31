@@ -578,7 +578,9 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('Epsilons: %.3f\n',self.epsilon)
 
         # we try actions evenly otherwise cannot have the approximator
-        if self.random_mode or (self.global_time_stamp%self.explore_interval)<self.explore_tries:
+        if self.random_mode or (
+                    (self.global_time_stamp%self.explore_interval)<self.explore_tries and
+                        self.global_time_stamp<1000):
             self.rl_logger.info('(Exploratory Mode) Choosing action exploratory...')
             action_idx = np.random.randint(0,self.output_size)
 
@@ -938,7 +940,7 @@ class AdaCNNAdaptingQLearner(object):
 
         reward = mean_accuracy
         if complete_do_nothing:
-            reward = -1e-5
+            reward = -1e-3
 
 
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
