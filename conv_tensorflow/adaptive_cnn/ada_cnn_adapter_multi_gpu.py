@@ -200,14 +200,10 @@ def update_train_momentum_velocity(grads_and_vars):
     # update velocity vector
 
     for (g,v) in grads_and_vars:
-        var_scope = v.name.split(TF_SCOPE_DIVIDER)[0]
-        var_type = v.name.split(TF_SCOPE_DIVIDER)[1]
+        var_name = v.name.split(':')[0]
 
-        with tf.variable_scope(var_scope,reuse=True) as scope:
-            if var_type == TF_WEIGHTS:
-                vel = tf.get_variable(TF_TRAIN_WEIGHT_VELOCITY)
-            if var_type == TF_BIAS:
-                vel = tf.get_variable(TF_TRAIN_BIAS_VELOCITY)
+        with tf.variable_scope(var_name,reuse=True) as scope:
+            vel = tf.get_variable(TF_TRAIN_MOMENTUM)
 
             vel_update_ops.append(
                 tf.assign(vel,
@@ -403,14 +399,18 @@ def concat_loss_vector_towers(tower_loss_vectors):
 
 
 def mean_tower_activations(tower_activations):
-    stacked_activations = None
-    for a in tower_activations:
-        if stacked_activations is None:
-            stacked_activations = tf.identity(a)
-        else:
-            stacked_activations = tf.stack([stacked_activations,a],axis=0)
+    mean_activations = []
+    for a_i in zip(*tower_activations):
+        stacked_activations = None
+        for a in a_i:
+            if stacked_activations is None:
+                stacked_activations = tf.identity(a)
+            else:
+                stacked_activations = tf.stack([stacked_activations,a],axis=0)
 
-    return tf.reduce_mean(stacked_activations,[0])
+        mean_activations.append(tf.reduce_mean(stacked_activations,[0]))
+    return mean_activations
+
 
 def inc_global_step(global_step):
     return global_step.assign(global_step+1)
@@ -422,8 +422,8 @@ def predict_with_logits(logits):
     return prediction
 
 
-def predict_with_dataset(dataset):
-    logits,_ = inference(dataset,False)
+def predict_with_dataset(dataset,tf_cnn_hyperparameters):
+    logits,_ = inference(dataset,tf_cnn_hyperparameters)
     prediction = tf.nn.softmax(logits)
     return prediction
 
@@ -744,14 +744,14 @@ def update_tf_hyperparameters(op,tf_weight_shape,tf_in_size):
     return update_ops
 
 
-def define_velocity_vectors():
+def define_velocity_vectors(main_scope):
     # if using momentum
         vel_var_list = []
         if research_parameters['optimizer']=='Momentum':
             for tmp_op in cnn_ops:
                 op_scope = tmp_op
                 if 'conv' in tmp_op:
-                    for v in  tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,scope=op_scope):
+                    for v in  tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,scope=main_scope.name+TF_SCOPE_DIVIDER+op_scope):
                         if TF_WEIGHTS in v.name:
                             with tf.variable_scope(op_scope+TF_SCOPE_DIVIDER+TF_WEIGHTS) as scope:
                                 vel_var_list.append(
@@ -773,7 +773,7 @@ def define_velocity_vectors():
                                     dtype=tf.float32,trainable=False))
 
                 elif 'fulcon' in tmp_op:
-                    for v in  tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,scope=op_scope):
+                    for v in  tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,scope=main_scope.name+TF_SCOPE_DIVIDER+op_scope):
                         if TF_WEIGHTS in v.name:
                             with tf.variable_scope(op_scope+TF_SCOPE_DIVIDER+TF_WEIGHTS) as scope:
                                 vel_var_list.append(tf.get_variable(name=TF_TRAIN_MOMENTUM,
@@ -1090,10 +1090,11 @@ if __name__=='__main__':
         with tf.variable_scope(TF_THIS_SCOPE) as scope:
             global_step = tf.get_variable(initializer=0, dtype=tf.int32,trainable=False,name='global_step')
             tf_cnn_hyperparameters = init_tf_hyperparameters()
-            logger.debug('CNN_HYPERPARAMETERS 2')
-            logger.debug('\t%s\n',tf_cnn_hyperparameters)
             _ = initialize_cnn_with_ops(cnn_ops,cnn_hyperparameters)
-            _ = define_velocity_vectors()
+            _ = define_velocity_vectors(scope)
+
+        logger.debug('CNN_HYPERPARAMETERS 2')
+        logger.debug('\t%s\n',tf_cnn_hyperparameters)
 
         session = tf.InteractiveSession(config=config)
 
@@ -1130,7 +1131,7 @@ if __name__=='__main__':
 
         # tower_grads will contain
         # [[(grad0gpu0,var0gpu0),...,(gradNgpu0,varNgpu0)],...,[(grad0gpuD,var0gpuD),...,(gradNgpuD,varNgpuD)]]
-        tower_grads,tower_loss_vectors,tower_activation_update_ops = [],[],[]
+        tower_grads,tower_loss_vectors,tower_losses,tower_activation_update_ops = [],[],[],[]
 
         with tf.variable_scope(TF_THIS_SCOPE):
             for gpu_id in range(num_gpus):
@@ -1149,14 +1150,18 @@ if __name__=='__main__':
                         tower_activation_update_ops.append(tower_tf_activation_ops)
 
                         tf_tower_loss = tower_loss(tf_train_data_batch[-1],tf_train_label_batch[-1],True,tf_data_weights[-1],tf_cnn_hyperparameters)
+                        tower_losses.append(tf_tower_loss)
                         tf_tower_loss_vec = calc_loss_vector(scope,tf_train_data_batch[-1],tf_train_label_batch[-1],tf_cnn_hyperparameters)
                         tower_loss_vectors.append(tf_tower_loss_vec)
 
                         tower_grad = gradients(optimizer,tf_tower_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
                         tower_grads.append(tower_grad)
 
-        logger.debug('TRAINABLE_VARIABLES %d',9)
-        logger.debug('\t%s\n',[v.name for v in tf.get_collection(tf.GraphKeys.VARIABLES,scope=TF_THIS_SCOPE)])
+        logger.debug('GLOBAL_VARIABLES (all)')
+        logger.debug('\t%s\n',[v.name for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)])
+        logger.debug('GLOBAL_VARIABLES')
+        logger.debug('\t%s\n',[v.name for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES,scope=TF_THIS_SCOPE)])
+        logger.debug('TRAINABLE_VARIABLES')
         logger.debug('\t%s\n',[v.name for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES,scope=TF_THIS_SCOPE)])
 
         # avg_grad_and_vars = [(avggrad0,var0),(avggrad1,var1),...]
@@ -1165,7 +1170,7 @@ if __name__=='__main__':
         concat_loss_vec_op = concat_loss_vector_towers(tower_loss_vectors)
         update_train_velocity_op = update_train_momentum_velocity(tf_avg_grad_and_vars)
         tf_mean_activation = mean_tower_activations(tower_activation_update_ops)
-
+        mean_loss_op = tf.reduce_mean(tower_losses)
         with tf.variable_scope(TF_THIS_SCOPE) as main_scope,tf.device('/gpu:0'):
 
             increment_global_step_op = inc_global_step(global_step)
@@ -1175,7 +1180,7 @@ if __name__=='__main__':
                 tf.get_variable_scope().reuse_variables()
                 pool_logits, _ = inference(tf_pool_dataset,tf_cnn_hyperparameters)
                 pool_loss = tower_loss(tf_pool_dataset, tf_pool_labels,False,None,tf_cnn_hyperparameters)
-                pool_pred = predict_with_dataset(tf_pool_dataset)
+                pool_pred = predict_with_dataset(tf_pool_dataset,tf_cnn_hyperparameters)
 
             # TODO: Scope?
             # GLOBAL: Tensorflow operations for test data
@@ -1186,9 +1191,9 @@ if __name__=='__main__':
             tf_valid_label_batch = tf.placeholder(tf.float32, shape=(batch_size, num_labels), name='ValidLabels')
             # Tensorflow operations for validation data
             valid_loss_op = tower_loss(tf_valid_data_batch,tf_valid_label_batch,False,None,tf_cnn_hyperparameters)
-            valid_predictions_op = predict_with_dataset(tf_valid_data_batch)
+            valid_predictions_op = predict_with_dataset(tf_valid_data_batch,tf_cnn_hyperparameters)
 
-            test_predicitons_op = predict_with_dataset(tf_test_dataset)
+            test_predicitons_op = predict_with_dataset(tf_test_dataset,tf_cnn_hyperparameters)
 
             # GLOBAL: Structure adaptation
             with tf.name_scope(TF_ADAPTATION_NAME_SCOPE):
@@ -1280,7 +1285,7 @@ if __name__=='__main__':
         for epoch in range(epochs):
             memmap_idx = 0
 
-            for batch_id in range(stop=ceil(dataset_size//batch_size)-1,step=num_gpus):
+            for batch_id in range(0,ceil(dataset_size//batch_size)-1,num_gpus):
 
                 if batch_id+1>=research_parameters['stop_training_at']:
                     break
@@ -1292,9 +1297,6 @@ if __name__=='__main__':
                 logger.debug('=' * 80)
 
                 logger.debug('\tTraining with batch %d',batch_id)
-                for op in cnn_ops:
-                    if 'pool' not in op:
-                        assert weights[op].name in [v.name for v in tf.trainable_variables()]
 
                 chunk_batch_id = batch_id%batches_in_chunk
 
@@ -1339,8 +1341,8 @@ if __name__=='__main__':
                 t0_train = time.clock()
                 for _ in range(iterations_per_batch):
                     if research_parameters['optimizer']=='Momentum':
-                        _, _, l, super_loss_vec, current_activations = session.run(
-                            [apply_grads_op, update_train_velocity_op, concat_loss_vec_op, tf_mean_activation], feed_dict=feed_dict
+                        _, _,l, super_loss_vec, current_activations = session.run(
+                            [apply_grads_op, update_train_velocity_op,mean_loss_op, concat_loss_vec_op, tf_mean_activation], feed_dict=feed_dict
                         )
                     else:
                         raise NotImplementedError
@@ -1348,12 +1350,13 @@ if __name__=='__main__':
                 t1_train = time.clock()
 
                 # this snippet logs the normalized class distribution every specified interval
-                if chunk_batch_id%research_parameters['log_distribution_every']==0:
-                    dist_cnt = Counter(np.argmax(batch_labels, axis=1))
-                    norm_dist = ''
-                    for li in range(num_labels):
-                        norm_dist += '%.5f,'%(dist_cnt[li]*1.0/batch_size)
-                    class_dist_logger.info(norm_dist)
+                for bl in batch_labels:
+                    if chunk_batch_id%research_parameters['log_distribution_every']==0:
+                        dist_cnt = Counter(np.argmax(bl, axis=1))
+                        norm_dist = ''
+                        for li in range(num_labels):
+                            norm_dist += '%.5f,'%(dist_cnt[li]*1.0/batch_size)
+                        class_dist_logger.info(norm_dist)
 
                 if np.isnan(l):
                     logger.critical('Diverged (NaN detected) (batchID) %d (last Cost) %.3f',chunk_batch_id,train_losses[-1])
@@ -1397,8 +1400,6 @@ if __name__=='__main__':
                     logger.info('\tLearning rate: %.5f'%start_lr)
                     logger.info('\tMinibatch Mean Loss: %.3f'%mean_train_loss)
                     logger.info('\tValidation Accuracy (Unseen): %.3f'%next_valid_accuracy)
-
-                    logger.info('\tValidation Accuracy (Seen): %.3f'%prev_valid_accuracy)
 
                     test_accuracies = []
                     for test_batch_id in range(test_size//batch_size):
