@@ -207,7 +207,7 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,use_counter):
 
     if dataset_type =='imagenet-100':
         assert sample_img.shape[0]==resize_to
-    elif dataset_type=='cifar-10' or dataset_type=='svhn-10':
+    elif dataset_type=='cifar-10' or dataset_type=='svhn-10'or dataset_type=='cifar-100':
         assert sample_img.shape[0]==image_size
 
     return image_index,sample_img
@@ -224,7 +224,7 @@ def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_label
     # the upper bound of x defines the number of peaks
     # smaller bound => less peaks
     # larger bound => more peaks
-    x = np.linspace(0, 100, chunk_count).reshape(-1, 1)
+    x = np.linspace(0,num_labels, chunk_count).reshape(-1, 1)
     # 1e-6 * is for numerical stibility
     L = np.linalg.cholesky(kernel(x, x) + 1e-6 * np.eye(chunk_count))
 
@@ -559,6 +559,7 @@ def generate_cifar_test_data(data_filename,save_directory):
 
     del fp1,fp2
 
+
 def generate_cifar_100_test_data(data_filename,save_directory):
     image_size = dataset_info['image_size']
     test_size = dataset_info['test_size']
@@ -582,6 +583,7 @@ def generate_cifar_100_test_data(data_filename,save_directory):
         idx+=1
 
     del fp1,fp2
+
 
 def generate_svhn_test_data(dataset_info, data_filename,save_directory):
     image_size = dataset_info['image_size']
@@ -645,7 +647,10 @@ def test_generated_data(dataset_info,persist_dir,dataset_filename,label_filename
 
 
 def normalize_img(img_arr):
-    return (img_arr-128.0)/128.0
+    if np.max(img_arr)>20.0:
+        return (img_arr-128.0)/128.0
+    else:
+        return img_arr
 
 image_use_counter = None
 logger = None
@@ -788,8 +793,8 @@ if __name__ == '__main__':
     elif dataset_type == 'cifar-10':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-10.pickle'
         if distribution_type=='non-stationary':
-            new_dataset_filename = data_save_directory+os.sep+'cifar-10-high-nonstation-dataset.pkl'
-            new_labels_filename = data_save_directory+os.sep+'cifar-10-high-nonstation-labels.pkl'
+            new_dataset_filename = data_save_directory+os.sep+'cifar-10-nonstation-dataset.pkl'
+            new_labels_filename = data_save_directory+os.sep+'cifar-10-nonstation-labels.pkl'
         elif distribution_type == 'stationary':
             new_dataset_filename = data_save_directory + os.sep + 'cifar-10-station-dataset.pkl'
             new_labels_filename = data_save_directory + os.sep + 'cifar-10-station-labels.pkl'
@@ -798,7 +803,7 @@ if __name__ == '__main__':
 
         print(new_dataset_filename)
         generate_cifar_test_data(data_filename,data_save_directory)
-        #sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
+        sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
 
     elif dataset_type == 'cifar-100':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-100-python'+os.sep+'train'

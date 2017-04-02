@@ -809,7 +809,7 @@ tf_layer_activations = {}
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : True,
+    'adapt_structure' : False,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
@@ -853,7 +853,7 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-100'
+    datatype = 'cifar-10'
     behavior = 'non-stationary'
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
