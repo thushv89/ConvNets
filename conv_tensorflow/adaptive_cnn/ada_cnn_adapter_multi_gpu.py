@@ -209,6 +209,22 @@ def update_train_momentum_velocity(grads_and_vars):
 
     return vel_update_ops
 
+def update_pool_momentum_velocity(grads_and_vars):
+    vel_update_ops = []
+    # update velocity vector
+
+    for (g,v) in grads_and_vars:
+        var_name = v.name.split(':')[0]
+
+        with tf.variable_scope(var_name,reuse=True) as scope:
+            vel = tf.get_variable(TF_POOL_MOMENTUM)
+
+            vel_update_ops.append(
+                tf.assign(vel,
+                          research_parameters['momentum']*vel + g)
+            )
+
+    return vel_update_ops
 
 def apply_gradient_with_momentum(optimizer,learning_rate):
     grads_and_vars = []
@@ -220,6 +236,15 @@ def apply_gradient_with_momentum(optimizer,learning_rate):
 
     return optimizer.apply_gradients(grads_and_vars)
 
+def apply_gradient_with_pool_momentum(optimizer,learning_rate):
+    grads_and_vars = []
+    # for each trainable variable
+    for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
+        with tf.variable_scope(v.name.split(':')[0],reuse=True):
+            vel = tf.get_variable(TF_POOL_MOMENTUM)
+            grads_and_vars.append((vel*learning_rate,v))
+
+    return optimizer.apply_gradients(grads_and_vars)
 
 def optimize_with_momentum(optimizer, loss, global_step, learning_rate):
     vel_update_ops, grad_update_ops = [],[]
@@ -246,6 +271,142 @@ def optimize_with_momentum(optimizer, loss, global_step, learning_rate):
                 grad_update_ops.append([(w_vel*learning_rate,w),(b_vel*learning_rate,b)])
 
     return grad_update_ops,vel_update_ops
+
+def optimize_masked_momentum_gradient(optimizer,loss, filter_indices_to_replace, op, avg_grad_and_vars, tf_cnn_hyperparameters):
+    '''
+    Any adaptation of a convolutional layer would result in a change in the following layer.
+    This optimization optimize the filters/weights responsible in both those layer
+    :param loss:
+    :param filter_indices_to_replace:
+    :param op:
+    :param w:
+    :param b:
+    :param cnn_hyps:
+    :param cnn_ops:
+    :return:
+    '''
+    global cnn_ops,cnn_hyperparameters
+
+    vel_update_ops =[]
+    grad_ops = []
+
+    mask_grads_w,mask_grads_b = {},{}
+    learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
+
+    filter_indices_to_replace = tf.reshape(filter_indices_to_replace, [-1, 1])
+    replace_amnt = tf.shape(filter_indices_to_replace)[0]
+
+    if 'conv' in op:
+        with tf.variable_scope(op,reuse=True) as scope:
+            w,b = tf.get_variable(TF_WEIGHTS),tf.get_variable(TF_BIAS)
+            for (g,v) in avg_grad_and_vars:
+                if v.name == w.name:
+                    grads_w = g
+                if v.name == b.name:
+                    grads_b = g
+
+            transposed_shape = [tf_cnn_hyperparameters[op][TF_CONV_WEIGHT_SHAPE_STR][3],tf_cnn_hyperparameters[op][TF_CONV_WEIGHT_SHAPE_STR][0],
+                                tf_cnn_hyperparameters[op][TF_CONV_WEIGHT_SHAPE_STR][1], tf_cnn_hyperparameters[op][TF_CONV_WEIGHT_SHAPE_STR][2]]
+
+            logger.debug('Applying gradients for %s',op)
+            logger.debug('\tAnd filter IDs: %s',filter_indices_to_replace)
+
+            mask_grads_w[op] = tf.scatter_nd(
+                    filter_indices_to_replace,
+                    tf.ones(shape=[replace_amnt,transposed_shape[1],transposed_shape[2],transposed_shape[3]], dtype=tf.float32),
+                    shape=transposed_shape
+            )
+
+            mask_grads_w[op] = tf.transpose(mask_grads_w[op],[1,2,3,0])
+
+            mask_grads_b[op] = tf.scatter_nd(
+                    filter_indices_to_replace,
+                    tf.ones([replace_amnt], dtype=tf.float32),
+                    shape=[tf_cnn_hyperparameters[op][TF_CONV_WEIGHT_SHAPE_STR][3]]
+            )
+
+            grads_w = grads_w * mask_grads_w[op]
+            grads_b = grads_b * mask_grads_b[op]
+
+            with tf.variable_scope(TF_WEIGHTS) as child_scope:
+                w_vel = tf.get_variable(TF_POOL_MOMENTUM)
+            with tf.variable_scope(TF_BIAS) as child_scope:
+                b_vel = tf.get_variable(TF_POOL_MOMENTUM)
+
+            vel_update_ops.append(
+                tf.assign(w_vel, research_parameters['momentum'] * w_vel + grads_w))
+            vel_update_ops.append(
+                tf.assign(b_vel, research_parameters['momentum'] * b_vel + grads_b))
+
+            grad_ops.append(optimizer.apply_gradients([(w_vel*learning_rate,w),(b_vel*learning_rate,b)]))
+
+    next_op = None
+    for tmp_op in cnn_ops[cnn_ops.index(op)+1:]:
+        if 'conv' in tmp_op or 'fulcon' in tmp_op:
+            next_op = tmp_op
+            break
+    logger.debug('Next conv op: %s',next_op)
+
+    if 'conv' in next_op:
+        with tf.variable_scope(next_op,reuse=True) as scope:
+            w = tf.get_variable(TF_WEIGHTS)
+            for (g,v) in avg_grad_and_vars:
+                if v.name == w.name:
+                    grads_w = g
+                    break
+
+            transposed_shape = [tf_cnn_hyperparameters[next_op][TF_CONV_WEIGHT_SHAPE_STR][2], tf_cnn_hyperparameters[next_op][TF_CONV_WEIGHT_SHAPE_STR][0],
+                                tf_cnn_hyperparameters[next_op][TF_CONV_WEIGHT_SHAPE_STR][1],tf_cnn_hyperparameters[next_op][TF_CONV_WEIGHT_SHAPE_STR][3]]
+
+            logger.debug('Applying gradients for %s', next_op)
+            logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
+
+            mask_grads_w[next_op] = tf.scatter_nd(
+                tf.reshape(filter_indices_to_replace, [-1, 1]),
+                tf.ones(shape=[replace_amnt, transposed_shape[1], transposed_shape[2], transposed_shape[3]],
+                        dtype=tf.float32),
+                shape=transposed_shape
+            )
+
+            mask_grads_w[next_op] = tf.transpose(mask_grads_w[next_op], [1, 2, 0, 3])
+            grads_w = grads_w * mask_grads_w[next_op]
+
+            with tf.variable_scope(TF_WEIGHTS) as child_scope:
+                pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
+            vel_update_ops.append(
+                tf.assign(pool_w_vel, research_parameters['momentum'] * pool_w_vel + grads_w))
+
+            grad_ops.append(optimizer.apply_gradients([(pool_w_vel*learning_rate, w)]))
+
+    elif 'fulcon' in next_op:
+        with tf.variable_scope(next_op,reuse=True) as scope:
+            w = tf.get_variable(TF_WEIGHTS)
+            for (g,v) in avg_grad_and_vars:
+                if v.name == w.name:
+                    grads_w = g
+                    break
+
+            logger.debug('Applying gradients for %s', next_op)
+            logger.debug('\tAnd filter IDs: %s', filter_indices_to_replace)
+
+            mask_grads_w[next_op] = tf.scatter_nd(
+                tf.reshape(filter_indices_to_replace, [-1, 1]),
+                tf.ones(shape=[replace_amnt, tf_cnn_hyperparameters[next_op][TF_FC_WEIGHT_OUT_STR]],
+                        dtype=tf.float32),
+                shape=[tf_cnn_hyperparameters[next_op][TF_FC_WEIGHT_IN_STR],tf_cnn_hyperparameters[next_op][TF_FC_WEIGHT_OUT_STR]]
+            )
+
+            grads_w = grads_w * mask_grads_w[next_op]
+            with tf.variable_scope(TF_WEIGHTS) as child_scope:
+                pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
+
+            vel_update_ops.append(
+                tf.assign(pool_w_vel,
+                          research_parameters['momentum'] * pool_w_vel + grads_w))
+
+            grad_ops.append(optimizer.apply_gradients([(pool_w_vel*learning_rate, w)]))
+
+    return grad_ops,vel_update_ops
 
 
 def momentum_gradient_with_indices(optimizer,loss, filter_indices_to_replace, op, tf_cnn_hyperparameters):
@@ -1085,10 +1246,6 @@ if __name__=='__main__':
             if 'conv' in op:
                 convolution_op_ids.append(op_i)
 
-        # GLOBAL: Pool data
-        tf_pool_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='PoolDataset')
-        tf_pool_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='PoolLabels')
-
         # Test data (Global)
         tf_test_dataset = tf.placeholder(tf.float32, shape=(batch_size, image_size, image_size, num_channels),name='TestDataset')
         tf_test_labels = tf.placeholder(tf.float32, shape=(batch_size, num_labels),name='TestLabels')
@@ -1134,11 +1291,13 @@ if __name__=='__main__':
         _ = session.run(init_op)
 
         tf_train_data_batch,tf_train_label_batch,tf_data_weights = [],[],[]
+        tf_pool_data_batch,tf_pool_label_batch = [],[]
         tf_valid_data_batch,tf_valid_label_batch = None,None
 
         # tower_grads will contain
         # [[(grad0gpu0,var0gpu0),...,(gradNgpu0,varNgpu0)],...,[(grad0gpuD,var0gpuD),...,(gradNgpuD,varNgpuD)]]
         tower_grads,tower_loss_vectors,tower_losses,tower_activation_update_ops,tower_predictions = [],[],[],[],[]
+        tower_pool_grads,tower_pool_losses,tower_pool_activation_update_ops = [],[],[]
         tower_logits = []
         with tf.variable_scope(TF_GLOBAL_SCOPE):
             for gpu_id in range(num_gpus):
@@ -1151,8 +1310,9 @@ if __name__=='__main__':
                                                     shape=(batch_size, image_size, image_size, num_channels),
                                                     name='TrainDataset'))
                         tf_train_label_batch.append(tf.placeholder(tf.float32, shape=(batch_size, num_labels), name='TrainLabels'))
-                        tf_data_weights.append(tf.placeholder(tf.float32, shape=(batch_size), name='TrainLabels'))
+                        tf_data_weights.append(tf.placeholder(tf.float32, shape=(batch_size), name='TrainWeights'))
 
+                        # Training data opearations
                         tower_logit_op,tower_tf_activation_ops = inference(tf_train_data_batch[-1],tf_cnn_hyperparameters)
                         tower_logits.append(tower_logit_op)
                         tower_activation_update_ops.append(tower_tf_activation_ops)
@@ -1168,14 +1328,30 @@ if __name__=='__main__':
                         tower_pred = predict_with_logits(tower_logit_op)
                         tower_predictions.append(tower_pred)
 
-        logger.debug('GLOBAL_VARIABLES (all)')
-        logger.debug('\t%s\n',[v.name for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)])
-        logger.debug('GLOBAL_VARIABLES')
-        logger.debug('\t%s\n', [v.name for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=TF_GLOBAL_SCOPE)])
-        logger.debug('TRAINABLE_VARIABLES')
-        logger.debug('\t%s\n', [v.name for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE)])
+                        # Pooling data operations
+                        tf_pool_data_batch.append(tf.placeholder(tf.float32,
+                                                    shape=(batch_size, image_size, image_size, num_channels),
+                                                    name='PoolDataset'))
+                        tf_pool_label_batch.append(tf.placeholder(tf.float32, shape=(batch_size, num_labels), name='PoolLabels'))
+
+                        with tf.name_scope('pool') as scope:
+                            single_pool_logit_op, single_activation_update_op = inference(tf_pool_data_batch[-1],tf_cnn_hyperparameters)
+                            tower_pool_activation_update_ops.append(single_activation_update_op)
+
+                            single_pool_loss = tower_loss(tf_pool_data_batch[-1],tf_pool_label_batch[-1],False,None,tf_cnn_hyperparameters)
+                            tower_pool_losses.append(single_pool_loss)
+                            single_pool_grad = gradients(optimizer,single_pool_loss,global_step,tf.constant(start_lr,dtype=tf.float32))
+                            tower_pool_grads.append(single_pool_grad)
+
+        logger.info('GLOBAL_VARIABLES (all)')
+        logger.info('\t%s\n',[v.name for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES)])
+        logger.info('GLOBAL_VARIABLES')
+        logger.info('\t%s\n', [v.name for v in tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope=TF_GLOBAL_SCOPE)])
+        logger.info('TRAINABLE_VARIABLES')
+        logger.info('\t%s\n', [v.name for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE)])
 
         with tf.device('/gpu:0'):
+            # Train data operations
             # avg_grad_and_vars = [(avggrad0,var0),(avggrad1,var1),...]
             tf_avg_grad_and_vars = average_gradients(tower_grads)
             apply_grads_op = apply_gradient_with_momentum(optimizer,tf.constant(start_lr,dtype=tf.float32))
@@ -1184,6 +1360,13 @@ if __name__=='__main__':
             tf_mean_activation = mean_tower_activations(tower_activation_update_ops)
             mean_loss_op = tf.reduce_mean(tower_losses)
 
+            # Pool data operations
+            tf_pool_avg_gradvars = average_gradients(tower_pool_grads)
+            apply_pool_grads_op = apply_gradient_with_pool_momentum(optimizer,tf.constant(start_lr,dtype=tf.float32))
+            update_pool_velocity_ops = update_pool_momentum_velocity(tf_pool_avg_gradvars)
+            tf_mean_pool_activations = mean_tower_activations(tower_pool_activation_update_ops)
+            mean_pool_loss = tf.reduce_mean(tower_pool_losses)
+
         with tf.variable_scope(TF_GLOBAL_SCOPE) as main_scope,tf.device('/gpu:0'):
 
             increment_global_step_op = inc_global_step(global_step)
@@ -1191,9 +1374,7 @@ if __name__=='__main__':
             # GLOBAL: Tensorflow operations for hard_pool
             with tf.name_scope('pool') as scope:
                 tf.get_variable_scope().reuse_variables()
-                pool_logits, tf_pool_activations = inference(tf_pool_dataset,tf_cnn_hyperparameters)
-                pool_loss = tower_loss(tf_pool_dataset, tf_pool_labels,False,None,tf_cnn_hyperparameters)
-                pool_pred = predict_with_dataset(tf_pool_dataset,tf_cnn_hyperparameters)
+                pool_pred = predict_with_dataset(tf_pool_data_batch[0],tf_cnn_hyperparameters)
 
             # TODO: Scope?
             # GLOBAL: Tensorflow operations for test data
@@ -1242,17 +1423,13 @@ if __name__=='__main__':
                                                                          tf_wvelocity_this,tf_bvelocity_this,tf_wvelocity_next)
                             tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
                             #tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
-                            tf_slice_optimize[tmp_op],tf_slice_vel_update[tmp_op] = momentum_gradient_with_indices(
-                                optimizer,pool_loss, tf_indices,
-                                tmp_op, tf_cnn_hyperparameters
+                            tf_slice_optimize[tmp_op],tf_slice_vel_update[tmp_op] = optimize_masked_momentum_gradient(
+                                optimizer,tower_pool_losses[0], tf_indices,
+                                tmp_op, tf_pool_avg_gradvars, tf_cnn_hyperparameters
                             )
 
                         elif 'fulcon' in tmp_op:
                             tf_update_hyp_ops[tmp_op] = update_tf_hyperparameters(tmp_op, tf_weight_shape, tf_in_size)
-
-                    # Lower learning rates for pool op doesnt help
-                    # Momentum or SGD for pooling? Go with SGD
-                    optimize_with_pool, pool_vel_updates = optimize_with_momentum(optimizer,pool_loss, global_step, tf.constant(start_lr, dtype=tf.float32))
 
         init_op = tf.global_variables_initializer()
         _ = session.run(init_op)
@@ -1505,7 +1682,7 @@ if __name__=='__main__':
                         for pool_id in range((hard_pool.get_size()//batch_size)//2):
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                             pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
+                            pool_feed_dict = {tf_pool_data_batch[0]:pbatch_data,tf_pool_label_batch[0]:pbatch_labels}
 
                             p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
                             pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
@@ -1656,22 +1833,23 @@ if __name__=='__main__':
                                 pbatch_train_count = 0
 
                                 # Train only with half of the batch
-                                for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1):
+                                for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1,num_gpus):
                                     if np.random.random() < research_parameters['replace_op_train_rate']:
-                                        pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
-                                        pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
+                                        pbatch_data,pbatch_labels = [],[]
+                                        pool_feed_dict = {
+                                            tf_indices: np.arange(cnn_hyperparameters[current_op]['weights'][3] - ai[1],
+                                                                  cnn_hyperparameters[current_op]['weights'][3])}
 
-                                        if pbatch_train_count == 0:
-                                            _ = session.run(pool_logits,feed_dict= {tf_pool_dataset: pbatch_data, tf_pool_labels: pbatch_labels}
-                                                        )
+                                        for gpu_id in range(num_gpus):
+                                            pbatch_data.append(pool_dataset[(pool_id+gpu_id) * batch_size:(pool_id +gpu_id+ 1) * batch_size, :, :, :])
+                                            pbatch_labels.append(pool_labels[(pool_id+gpu_id) * batch_size:(pool_id+gpu_id + 1) * batch_size, :])
+                                            pool_feed_dict.update({tf_pool_data_batch[gpu_id]:pbatch_data[-1],tf_pool_label_batch[gpu_id]:pbatch_labels[-1]})
+
                                         pbatch_train_count += 1
 
                                         current_activations_list,_,_ = session.run(
-                                            [tf_pool_activations, tf_slice_optimize[current_op],tf_slice_vel_update[current_op]],
-                                            feed_dict={
-                                                tf_pool_dataset: pbatch_data,tf_pool_labels: pbatch_labels,
-                                                tf_indices:np.arange(cnn_hyperparameters[current_op]['weights'][3]-ai[1],cnn_hyperparameters[current_op]['weights'][3])
-                                            }
+                                            [tf_mean_pool_activations, tf_slice_optimize[current_op],tf_slice_vel_update[current_op]],
+                                            feed_dict=pool_feed_dict
                                         )
 
                                         current_activations = get_activation_dictionary(current_activations_list,cnn_ops,convolution_op_ids)
@@ -1762,40 +1940,7 @@ if __name__=='__main__':
                                 _ = session.run([tower_logits, tower_activation_update_ops], feed_dict=train_feed_dict)
 
                             elif 'conv' in current_op and (ai[0]=='replace'):
-
-                                if research_parameters['remove_filters_by'] == 'Activation':
-                                    layer_activations = rolling_ativation_means[current_op]
-                                    indices_of_filters_replace = (np.argsort(layer_activations).flatten()[:ai[1]]).astype(
-                                        'int32')
-                                elif research_parameters['remove_filters_by'] == 'Distance':
-                                    # calculate cosine distance for F filters (FxF matrix)
-                                    # take one side of diagonal, find (f1,f2) pairs with least distance
-                                    # select indices amnt f2 indices
-                                    indices_of_filters_replace = session.run(tf_rm_filters_ops[current_op])
-
-                                for pool_id in range((hard_pool.get_size()//batch_size)//2,(hard_pool.get_size()//batch_size)-1):
-                                    if np.random.random() < research_parameters['replace_op_train_rate']:
-                                        pbatch_data = pool_dataset[pool_id * batch_size:(pool_id + 1) * batch_size, :, :, :]
-                                        pbatch_labels = pool_labels[pool_id * batch_size:(pool_id + 1) * batch_size, :]
-
-                                        if pool_id==0:
-                                            _ = session.run([pool_logits,pool_loss],feed_dict= {tf_pool_dataset: pbatch_data,
-                                                                                    tf_pool_labels: pbatch_labels}
-                                                            )
-                                        current_activations_list,_,_ = session.run([tf_mean_activation,tf_slice_optimize[current_op],tf_slice_vel_update[current_op]],
-                                                        feed_dict={tf_pool_dataset: pbatch_data,
-                                                                   tf_pool_labels: pbatch_labels,
-                                                                   tf_indices:indices_of_filters_replace,
-                                                                   tf_indices_size:ai[1]}
-                                                        )
-                                        current_activations = get_activation_dictionary(current_activations_list,
-                                                                                        cnn_ops, convolution_op_ids)
-                                        # update rolling activation means
-                                        for op, op_activations in current_activations.items():
-                                            assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
-                                            rolling_ativation_means[op] = (1 - act_decay) * rolling_ativation_means[
-                                                op] + decay * current_activations[op]
-
+                                raise NotImplementedError
 
                             elif 'conv' in current_op and ai[0]=='finetune':
                                 # pooling takes place here
@@ -1808,17 +1953,16 @@ if __name__=='__main__':
                                 if hard_pool.get_size()>batch_size:
                                     pbatch_train_count = 0
                                     # Train with latter half of the data
-                                    for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1):
-                                        pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
-                                        pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                                        pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
 
-                                        if pbatch_train_count == 0:
-                                            _ = session.run([pool_logits, pool_loss], feed_dict={tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels})
+                                    for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1,num_gpus):
+                                        pool_feed_dict = {}
+                                        for gpu_id in range(num_gpus):
+                                            pbatch_data = pool_dataset[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :, :, :]
+                                            pbatch_labels = pool_labels[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :]
+                                            pool_feed_dict.update({tf_pool_data_batch[gpu_id]:pbatch_data,tf_pool_label_batch[gpu_id]:pbatch_labels})
+
                                         pbatch_train_count += 1
-                                        _, _, _, _ = session.run([pool_logits, pool_loss, optimize_with_pool, pool_vel_updates], feed_dict=pool_feed_dict)
-
-                                break # otherwise will do this repeadedly for the number of layers
+                                        _, _ = session.run([apply_pool_grads_op,update_pool_velocity_ops], feed_dict=pool_feed_dict)
 
                         assert hard_pool.get_size()>0
                         # updating the policy
@@ -1828,8 +1972,7 @@ if __name__=='__main__':
                         for pool_id in range((hard_pool.get_size()//batch_size)//2):
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                             pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                            pool_feed_dict = {tf_pool_dataset:pbatch_data,tf_pool_labels:pbatch_labels}
-
+                            pool_feed_dict = {tf_pool_data_batch[0]:pbatch_data,tf_pool_label_batch[0]:pbatch_labels}
                             p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
                             pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
@@ -1852,7 +1995,7 @@ if __name__=='__main__':
                         logger.info('\tState (prev): %s', str(current_state))
                         logger.info('\tAction (prev): %s', str(current_action))
                         logger.info('\tState (next): %s\n', str(next_state))
-                        logger.info('\tPool Accuracy: %d %.3f %s\n',hard_pool.get_size(),np.mean(pool_accuracy),pool_accuracy[:5])
+                        logger.info('\tPool Accuracy: %.3f\n',np.mean(pool_accuracy))
 
                         adapter.update_policy({'prev_state': current_state, 'prev_action': current_action,
                                                'curr_state': next_state,
