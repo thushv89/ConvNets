@@ -224,7 +224,7 @@ def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_label
     # the upper bound of x defines the number of peaks
     # smaller bound => less peaks
     # larger bound => more peaks
-    x = np.linspace(0,num_labels, chunk_count).reshape(-1, 1)
+    x = np.linspace(0,max(num_labels,20), chunk_count).reshape(-1, 1)
     # 1e-6 * is for numerical stibility
     L = np.linalg.cholesky(kernel(x, x) + 1e-6 * np.eye(chunk_count))
 
@@ -546,8 +546,8 @@ def generate_cifar_test_data(data_filename,save_directory):
         save = pickle.load(f)
         test_dataset, test_labels = save['test_dataset'],save['test_labels']
 
-    fp1 = np.memmap(filename=save_directory+os.sep+'cifar-10-nonstation-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
-    fp2 = np.memmap(filename=save_directory+os.sep+'cifar-10-nonstation-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
+    fp1 = np.memmap(filename=save_directory+os.sep+'cifar-10-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
+    fp2 = np.memmap(filename=save_directory+os.sep+'cifar-10-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
 
     idx = 0
     for img,lbl in zip(test_dataset[:],test_labels[:]):
@@ -571,8 +571,8 @@ def generate_cifar_100_test_data(data_filename,save_directory):
         test_dataset, test_labels = np.asarray(save['data']),np.asarray(save['fine_labels']).reshape(-1,)
     logger.info('Test data summary: %s, %d',test_dataset.shape,test_labels.shape[0])
 
-    fp1 = np.memmap(filename=save_directory+os.sep+'cifar-100-nonstation-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
-    fp2 = np.memmap(filename=save_directory+os.sep+'cifar-100-nonstation-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
+    fp1 = np.memmap(filename=save_directory+os.sep+'cifar-100-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
+    fp2 = np.memmap(filename=save_directory+os.sep+'cifar-100-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
 
     idx = 0
     for img,lbl in zip(test_dataset[:],test_labels[:]):
@@ -668,8 +668,10 @@ if __name__ == '__main__':
 
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
-    distribution_type = 'non-stationary'
-    distribution_type2 = 'gauss' #gauss or step
+    dataset_type = 'cifar-10'  # 'cifar-10 imagenet-100
+    distribution_type = 'stationary'
+    distribution_type2 = 'gauss'  # gauss or step
+    data_save_directory = 'data_non_station'
 
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
@@ -678,9 +680,6 @@ if __name__ == '__main__':
     elements = int(batch_size*10000) # number of elements in the whole dataset
     # there are elements/chunk_size points in the gaussian curve for each class
     chunk_size = int(batch_size*10) # number of samples sampled for each instance of the gaussian curve
-
-    dataset_type = 'cifar-10' #'cifar-10 imagenet-100
-    data_save_directory = 'data_non_station'
 
     class_distribution_logger = logging.getLogger('class_distribution_logger')
     class_distribution_logger.setLevel(logging.INFO)
@@ -769,8 +768,8 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        #sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, new_dataset_filename, new_labels_filename)
-        generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
+        sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, new_dataset_filename, new_labels_filename)
+        #generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
     elif dataset_type == 'svhn-10':
         test_data_filename = '..' +os.sep +'svhn' + os.sep + 'test_32x32.mat'
         train_data_filename = '..' + os.sep + 'svhn' + os.sep + 'train_32x32.mat'
@@ -788,7 +787,7 @@ if __name__ == '__main__':
 
         print(new_dataset_filename)
         sample_svhn_10_with_distribution(dataset_info, train_data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
-        generate_svhn_test_data(dataset_info,test_data_filename,data_save_directory)
+        #generate_svhn_test_data(dataset_info,test_data_filename,data_save_directory)
 
     elif dataset_type == 'cifar-10':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-10.pickle'
@@ -802,7 +801,7 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        generate_cifar_test_data(data_filename,data_save_directory)
+        #generate_cifar_test_data(data_filename,data_save_directory)
         sample_cifar_10_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
 
     elif dataset_type == 'cifar-100':
@@ -818,7 +817,7 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        generate_cifar_100_test_data(test_data_filename,data_save_directory)
+        #generate_cifar_100_test_data(test_data_filename,data_save_directory)
         sample_cifar_100_with_distribution(dataset_info, data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
 
     #test_generated_data(dataset_info,persist_dir+os.sep+'test_data_'+dataset_info['dataset_type'],new_dataset_filename,new_labels_filename)
