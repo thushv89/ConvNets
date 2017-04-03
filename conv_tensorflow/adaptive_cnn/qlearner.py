@@ -940,7 +940,7 @@ class AdaCNNAdaptingQLearner(object):
 
         reward = mean_accuracy
         if complete_do_nothing:
-            reward = -1e-3
+            reward = -1e-3 * max(self.same_action_count+1,5)
 
 
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
@@ -983,7 +983,7 @@ class AdaCNNAdaptingQLearner(object):
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
                     self.experience.append([history_t, invalid_a, -1, history_t_plus_1])
                 else:
-                    self.experience.append([history_t,invalid_a,-0.5,history_t_plus_1])
+                    self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')

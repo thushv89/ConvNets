@@ -1964,6 +1964,7 @@ if __name__=='__main__':
                                         pbatch_train_count += 1
                                         _, _ = session.run([apply_pool_grads_op,update_pool_velocity_ops], feed_dict=pool_feed_dict)
 
+                                break # action include finetune actions for number of conv layers there are
                         assert hard_pool.get_size()>0
                         # updating the policy
                         pool_accuracy = []
