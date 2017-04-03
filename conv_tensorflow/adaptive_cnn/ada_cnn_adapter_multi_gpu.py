@@ -41,7 +41,8 @@ beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 5
+epochs = 3
+final_2d_width = 2
 
 TOWER_NAME = 'tower'
 
@@ -60,8 +61,11 @@ TF_SCOPE_DIVIDER = '/'
 TF_ADAPTATION_NAME_SCOPE = 'Adapt'
 TF_GLOBAL_SCOPE = 'AdaCNN'
 
-def initialize_cnn_with_ops(cnn_ops,cnn_hyps):
+
+def initialize_cnn_with_ops(cnn_ops, cnn_hyps):
     var_list = []
+    logger.info('CNN Hyperparameters')
+    logger.info('%s\n',cnn_hyps)
 
     logger.info('Initializing the iConvNet (conv_global,pool_global,classifier)...\n')
     for op in cnn_ops:
@@ -154,6 +158,9 @@ def inference(dataset,tf_cnn_hyperparameters):
                     # e.g subsample layer output [batch_size,width,height,depth] -> [batch_size,width*height*depth]
 
                     logger.debug('Input size of fulcon_out : %d', cnn_hyperparameters[op]['in'])
+                    # Transpose x (b,h,w,d) to (b,d,w,h)
+                    # This help us to do adaptations more easily
+                    x = tf.transpose(x,[0,3,1,2])
                     x = tf.reshape(x, [batch_size, tf_cnn_hyperparameters[op][TF_FC_WEIGHT_IN_STR]])
                     x = tf.nn.relu(tf.matmul(x, w) + b,name=scope.name+'/top')
                 elif 'fulcon_out' == op:
@@ -541,7 +548,6 @@ def average_gradients(tower_grads):
     for grad_and_vars in zip(*tower_grads):
         grads = []
         for g, v in grad_and_vars:
-            print(v.name)
             expanded_g = tf.expand_dims(g,0)
             grads.append(expanded_g)
         grad = tf.concat(0,values=grads)
@@ -743,7 +749,7 @@ def get_rm_indices_with_distance(op,tf_action_info):
     return tf_unique_rm_ind
 
 
-def remove_with_action(op, tf_action_info, tf_activations):
+def remove_with_action(op, tf_action_info, tf_activations,tf_cnn_hyperparameters):
     global cnn_hyperparameters,cnn_ops
     global logger
 
@@ -824,12 +830,37 @@ def remove_with_action(op, tf_action_info, tf_activations):
                 w_vel = tf.get_variable(TF_TRAIN_MOMENTUM)
                 pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
 
-            tf_new_weights = tf.gather_nd(w,tf_indices_to_keep)
+            if final_2d_width>1:
+                tf_new_weights = tf.transpose(w,[1,0])
+                tf_new_weights = tf.reshape(tf_new_weights,[
+                    tf.floordiv(tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_IN_STR],final_2d_width**2),
+                    final_2d_width,final_2d_width,tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_OUT_STR]])
+                tf_new_weights = tf.gather_nd(tf_new_weights,tf_indices_to_keep)
+                tf_new_weights = tf.reshape(tf_new_weights,[-1,tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_OUT_STR]])
+            else:
+                tf_new_weights = tf.gather_nd(w_vel,tf_indices_to_keep)
+
             update_ops.append(tf.assign(w,tf_new_weights,validate_shape=False))
 
             if research_parameters['optimizer']=='Momentum':
-                new_weight_vel=tf.gather_nd(w_vel,tf_indices_to_keep)
-                new_pool_w_vel = tf.gather_nd(pool_w_vel,tf_indices_to_keep)
+                if final_2d_width>1:
+                    new_weight_vel = tf.transpose(w_vel,[1,0])
+                    new_weight_vel = tf.reshape(new_weight_vel,[
+                        tf.floordiv(tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_IN_STR],final_2d_width**2),
+                        final_2d_width,final_2d_width,tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_OUT_STR]])
+                    new_weight_vel=tf.gather_nd(new_weight_vel,tf_indices_to_keep)
+                    new_weight_vel = tf.reshape(new_weight_vel,[-1,tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_OUT_STR]])
+
+                    new_pool_w_vel = tf.transpose(pool_w_vel,[1,0])
+                    new_pool_w_vel = tf.reshape(new_pool_w_vel,[
+                        tf.floordiv(tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_IN_STR],final_2d_width**2),
+                        final_2d_width,final_2d_width,tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_OUT_STR]])
+                    new_pool_w_vel = tf.gather_nd(new_pool_w_vel,tf_indices_to_keep)
+                    new_pool_w_vel = tf.reshape(new_pool_w_vel,[-1,tf_cnn_hyperparameters[first_fc][TF_FC_WEIGHT_OUT_STR]])
+                else:
+                    new_weight_vel=tf.gather_nd(w_vel,tf_indices_to_keep)
+                    new_pool_w_vel = tf.gather_nd(pool_w_vel,tf_indices_to_keep)
+                    
                 update_ops.append(tf.assign(w_vel,new_weight_vel,validate_shape=False))
                 update_ops.append(tf.assign(pool_w_vel,new_pool_w_vel,validate_shape=False))
 
@@ -1192,13 +1223,13 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,5,1,512#Terminate,0,0,0"
+        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,5,1,512#FC,0,0,1024#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,5,1,64#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,5,1,64#FC,1024,0,0#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
-    cnn_ops,cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string)
+    cnn_ops,cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string,final_2d_width)
 
     hyp_logger = logging.getLogger('hyperparameter_logger')
     hyp_logger.setLevel(logging.INFO)
@@ -1421,7 +1452,7 @@ if __name__=='__main__':
                             tf_add_filters_ops[tmp_op] = add_with_action(tmp_op,tf_action_info,tf_weights_this,
                                                                          tf_bias_this,tf_weights_next,tf_running_activations,
                                                                          tf_wvelocity_this,tf_bvelocity_this,tf_wvelocity_next)
-                            tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations)
+                            tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations,tf_cnn_hyperparameters)
                             #tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
                             tf_slice_optimize[tmp_op],tf_slice_vel_update[tmp_op] = optimize_masked_momentum_gradient(
                                 optimizer,tower_pool_losses[0], tf_indices,
@@ -1742,7 +1773,7 @@ if __name__=='__main__':
                                                         cnn_hyperparameters[next_conv_op]['weights'][0],cnn_hyperparameters[next_conv_op]['weights'][1],
                                                         amount_to_add,cnn_hyperparameters[next_conv_op]['weights'][3])
                                                                                      ) if last_conv_id != current_op else
-                                                    np.random.normal(scale=0.01,size=(amount_to_add,cnn_hyperparameters[first_fc]['out'],1,1)),
+                                                    np.random.normal(scale=0.01,size=(amount_to_add*final_2d_width*final_2d_width,cnn_hyperparameters[first_fc]['out'],1,1)),
                                                     tf_running_activations:rolling_ativation_means[current_op],
 
                                                     tf_wvelocity_this:np.zeros(shape=(
@@ -1752,7 +1783,7 @@ if __name__=='__main__':
                                                     tf_wvelocity_next:np.zeros(shape=(
                                                         cnn_hyperparameters[next_conv_op]['weights'][0],cnn_hyperparameters[next_conv_op]['weights'][1],
                                                         amount_to_add,cnn_hyperparameters[next_conv_op]['weights'][3]),dtype=np.float32) if last_conv_id != current_op else
-                                                    np.zeros(shape=(amount_to_add,cnn_hyperparameters[first_fc]['out'],1,1),dtype=np.float32),
+                                                    np.zeros(shape=(final_2d_width*final_2d_width*amount_to_add,cnn_hyperparameters[first_fc]['out'],1,1),dtype=np.float32),
                                                 })
 
                                 # change both weights and biase in the current op
@@ -1778,7 +1809,7 @@ if __name__=='__main__':
 
                                     with tf.variable_scope(TF_GLOBAL_SCOPE+TF_SCOPE_DIVIDER+first_fc,reuse=True):
                                         first_fc_weights = tf.get_variable(TF_WEIGHTS)
-                                    cnn_hyperparameters[first_fc]['in']+=amount_to_add
+                                    cnn_hyperparameters[first_fc]['in']+=final_2d_width*final_2d_width*amount_to_add
 
                                     if research_parameters['debugging']:
                                         logger.debug('\tNew %s in: %d',first_fc,cnn_hyperparameters[first_fc]['in'])
@@ -1902,7 +1933,7 @@ if __name__=='__main__':
                                     with tf.variable_scope(TF_GLOBAL_SCOPE + TF_SCOPE_DIVIDER + first_fc,reuse=True):
                                         first_fc_weights = tf.get_variable(TF_WEIGHTS)
 
-                                    cnn_hyperparameters[first_fc]['in'] -= amount_to_rmv
+                                    cnn_hyperparameters[first_fc]['in'] -= final_2d_width*final_2d_width*amount_to_rmv
                                     if research_parameters['debugging']:
                                         logger.debug('\tSize after feature map reduction: %s,%s',
                                                      first_fc,str(tf.shape(first_fc_weights).eval()))

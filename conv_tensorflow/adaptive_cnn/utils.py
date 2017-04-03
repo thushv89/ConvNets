@@ -30,7 +30,7 @@ def get_final_x(dataset_info,cnn_ops,cnn_hyps):
     return x
 
 
-def get_ops_hyps_from_string(dataset_info,net_string):
+def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
     # E.g. String
     # Init,0,0,0#C,1,1,64#C,5,1,64#C,5,1,128#P,5,2,0#C,1,1,64#P,2,2,0#Terminate,0,0,0
 
@@ -86,12 +86,12 @@ def get_ops_hyps_from_string(dataset_info,net_string):
 
                 if output_size > 1:
                     cnn_ops.append('pool_global')
-                    pg_hyps = {'type': 'avg', 'kernel': [1, output_size, output_size, 1], 'stride': [1, 1, 1, 1],
-                               'padding': 'VALID'}
+                    pg_hyps = {'type': 'avg', 'kernel': [1, output_size//final_2d_width, output_size//final_2d_width, 1],
+                               'stride': [1, output_size//final_2d_width, output_size//final_2d_width, 1], 'padding': 'VALID'}
                     cnn_hyperparameters['pool_global'] = pg_hyps
 
             op_id = 'fulcon_' + str(fulcon_depth_index)
-            hyps = {'in': 1 * 1 * last_feature_map_depth, 'out': op[1]}
+            hyps = {'in': final_2d_width * final_2d_width * last_feature_map_depth, 'out': op[1]}
             cnn_ops.append(op_id)
             cnn_hyperparameters[op_id] = hyps
             fulcon_depth_index += 1
@@ -107,14 +107,20 @@ def get_ops_hyps_from_string(dataset_info,net_string):
                 else:
                     output_size = image_size
 
-                if output_size > 1:
+                if fulcon_depth_index==0 and output_size > 1:
                     cnn_ops.append('pool_global')
-                    pg_hyps = {'type': 'avg', 'kernel': [1, output_size, output_size, 1], 'stride': [1, 1, 1, 1],
+                    pg_hyps = {'type': 'avg',
+                               'kernel': [1, output_size//final_2d_width, output_size//final_2d_width, 1],
+                               'stride': [1, output_size//final_2d_width, output_size//final_2d_width, 1],
                                'padding': 'VALID'}
                     cnn_hyperparameters['pool_global'] = pg_hyps
 
                 op_id = 'fulcon_out'
-                hyps = {'in': 1 * 1 * last_feature_map_depth, 'out': num_labels}
+                if fulcon_depth_index==0:
+                    hyps = {'in': final_2d_width * final_2d_width * last_feature_map_depth, 'out': num_labels}
+                else:
+                    hyps = {'in':cnn_hyperparameters['fulcon_'+str(depth_index-1)]['out'],'out':num_labels}
+
                 cnn_ops.append(op_id)
                 cnn_hyperparameters[op_id] = hyps
 
