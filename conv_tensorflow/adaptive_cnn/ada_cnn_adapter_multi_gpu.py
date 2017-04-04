@@ -31,18 +31,20 @@ logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
-start_lr = 0.005
-decay_learning_rate = False
+start_lr = 0.1
+decay_learning_rate = True
+decay_rate = 0.5
 dropout_rate = 0.25
-use_dropout = False
+use_dropout = True
+use_loc_res_norm = True
 #keep beta small (0.2 is too much >0.002 seems to be fine)
 include_l2_loss = False
 beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 3
-final_2d_width = 2
+epochs = 5
+final_2d_width = 8
 
 TOWER_NAME = 'tower'
 
@@ -111,16 +113,27 @@ def initialize_cnn_with_ops(cnn_ops, cnn_hyps):
     return var_list
 
 
-def inference(dataset,tf_cnn_hyperparameters):
+def inference(dataset,tf_cnn_hyperparameters,training):
     global cnn_ops
 
     first_fc = 'fulcon_out' if 'fulcon_0' not in cnn_ops else 'fulcon_0'
+
+    last_conv_id = ''
+    for op in cnn_ops:
+        if 'conv' in op:
+            last_conv_id = op
 
     logger.debug('Defining the logit calculation ...')
     logger.debug('\tCurrent set of operations: %s'%cnn_ops)
     activation_ops = []
 
     x = dataset
+    if research_parameters['whiten_images']:
+        mu,var = tf.nn.moments(x,axes=[1,2,3])
+        tr_x = tf.transpose(x,[1,2,3,0])
+        tr_x = (tr_x-mu)/tf.maximum(tf.sqrt(var),1.0/(image_size*image_size*num_channels))
+        x = tf.transpose(tr_x,[3,0,1,2])
+
     logger.debug('\tReceived data for X(%s)...'%x.get_shape().as_list())
 
     #need to calculate the output according to the layers we have
@@ -137,6 +150,9 @@ def inference(dataset,tf_cnn_hyperparameters):
 
                 activation_ops.append(tf.assign(tf.get_variable(TF_ACTIVAIONS_STR),tf.reduce_mean(x,[0,1,2]),validate_shape=False))
 
+                if use_loc_res_norm and op==last_conv_id:
+                    x = tf.nn.local_response_normalization(x,depth_radius=4,alpha=0.001/9.0, beta=0.75) # hyperparameters from tensorflow cifar10 tutorial
+
         if 'pool' in op:
             logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,cnn_hyperparameters[op]['kernel'],cnn_hyperparameters[op]['stride']))
             if cnn_hyperparameters[op]['type'] is 'max':
@@ -147,6 +163,8 @@ def inference(dataset,tf_cnn_hyperparameters):
                 x = tf.nn.avg_pool(x,ksize=cnn_hyperparameters[op]['kernel'],
                                    strides=cnn_hyperparameters[op]['stride'],
                                    padding=cnn_hyperparameters[op]['padding'])
+            if use_loc_res_norm and 'pool_global'!= op:
+                x = tf.nn.local_response_normalization(x,depth_radius=4,alpha=0.001/9.0, beta=0.75)
 
         if 'fulcon' in op:
             with tf.variable_scope(op,reuse=True) as scope:
@@ -162,20 +180,24 @@ def inference(dataset,tf_cnn_hyperparameters):
                     # This help us to do adaptations more easily
                     x = tf.transpose(x,[0,3,1,2])
                     x = tf.reshape(x, [batch_size, tf_cnn_hyperparameters[op][TF_FC_WEIGHT_IN_STR]])
-                    x = tf.nn.relu(tf.matmul(x, w) + b,name=scope.name+'/top')
+                    x = tf.nn.relu(tf.matmul(x, w)+b,name=scope.name+'/top')
+                    if training and use_dropout:
+                        x = tf.nn.dropout(x,keep_prob= 1.0-dropout_rate,name='dropout')
+
                 elif 'fulcon_out' == op:
-                    x = tf.add(tf.matmul(x, w), b,
-                               name=scope.name+'/top')
+                    x = tf.matmul(x, w)+ b
+
                 else:
-                    x = tf.add(tf.nn.relu(tf.matmul(x, w), b,
-                                          name = scope.name+'/top'))
+                    x = tf.nn.relu(tf.matmul(x, w)+ b,name = scope.name+'/top')
+                    if training and use_dropout:
+                        x = tf.nn.dropout(x,keep_prob= 1.0-dropout_rate,name='dropout')
 
     return x,activation_ops
 
 
 def tower_loss(dataset,labels,weighted,tf_data_weights, tf_cnn_hyperparameters):
 
-    logits,_ = inference(dataset,tf_cnn_hyperparameters)
+    logits,_ = inference(dataset,tf_cnn_hyperparameters,True)
     # use weighted loss
     if weighted:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels) * tf_data_weights)
@@ -188,7 +210,7 @@ def tower_loss(dataset,labels,weighted,tf_data_weights, tf_cnn_hyperparameters):
 
 
 def calc_loss_vector(scope,dataset,labels,tf_cnn_hyperparameters):
-    logits,_ = inference(dataset,tf_cnn_hyperparameters)
+    logits,_ = inference(dataset,tf_cnn_hyperparameters,True)
     return tf.nn.softmax_cross_entropy_with_logits(logits, labels,name=TF_LOSS_VEC_STR)
 
 
@@ -230,12 +252,13 @@ def update_pool_momentum_velocity(grads_and_vars):
                 tf.assign(vel,
                           research_parameters['momentum']*vel + g)
             )
-
     return vel_update_ops
 
-def apply_gradient_with_momentum(optimizer,learning_rate):
+def apply_gradient_with_momentum(optimizer,learning_rate,global_step):
     grads_and_vars = []
     # for each trainable variable
+    if decay_learning_rate:
+        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
     for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
         with tf.variable_scope(v.name.split(':')[0],reuse=True):
             vel = tf.get_variable(TF_TRAIN_MOMENTUM)
@@ -243,9 +266,11 @@ def apply_gradient_with_momentum(optimizer,learning_rate):
 
     return optimizer.apply_gradients(grads_and_vars)
 
-def apply_gradient_with_pool_momentum(optimizer,learning_rate):
+def apply_gradient_with_pool_momentum(optimizer,learning_rate,global_step):
     grads_and_vars = []
     # for each trainable variable
+    if decay_learning_rate:
+        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
     for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
         with tf.variable_scope(v.name.split(':')[0],reuse=True):
             vel = tf.get_variable(TF_POOL_MOMENTUM)
@@ -255,6 +280,9 @@ def apply_gradient_with_pool_momentum(optimizer,learning_rate):
 
 def optimize_with_momentum(optimizer, loss, global_step, learning_rate):
     vel_update_ops, grad_update_ops = [],[]
+
+    if decay_learning_rate:
+        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
 
     for op in cnn_ops:
         if 'conv' in op and 'fulcon' in op:
@@ -279,7 +307,7 @@ def optimize_with_momentum(optimizer, loss, global_step, learning_rate):
 
     return grad_update_ops,vel_update_ops
 
-def optimize_masked_momentum_gradient(optimizer,loss, filter_indices_to_replace, op, avg_grad_and_vars, tf_cnn_hyperparameters):
+def optimize_masked_momentum_gradient(optimizer, filter_indices_to_replace, op, avg_grad_and_vars, tf_cnn_hyperparameters,learning_rate,global_step):
     '''
     Any adaptation of a convolutional layer would result in a change in the following layer.
     This optimization optimize the filters/weights responsible in both those layer
@@ -294,11 +322,16 @@ def optimize_masked_momentum_gradient(optimizer,loss, filter_indices_to_replace,
     '''
     global cnn_ops,cnn_hyperparameters
 
+    if decay_learning_rate:
+        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
+    else:
+        learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
+
     vel_update_ops =[]
     grad_ops = []
 
     mask_grads_w,mask_grads_b = {},{}
-    learning_rate = tf.constant(start_lr,dtype=tf.float32,name='learning_rate')
+
 
     filter_indices_to_replace = tf.reshape(filter_indices_to_replace, [-1, 1])
     replace_amnt = tf.shape(filter_indices_to_replace)[0]
@@ -584,7 +617,7 @@ def mean_tower_activations(tower_activations):
 
 
 def inc_global_step(global_step):
-    return global_step.assign(global_step+1)
+    return global_step+1
 
 
 def predict_with_logits(logits):
@@ -594,7 +627,7 @@ def predict_with_logits(logits):
 
 
 def predict_with_dataset(dataset,tf_cnn_hyperparameters):
-    logits,_ = inference(dataset,tf_cnn_hyperparameters)
+    logits,_ = inference(dataset,tf_cnn_hyperparameters,False)
     prediction = tf.nn.softmax(logits)
     return prediction
 
@@ -909,6 +942,7 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
                     offset=np.dtype('int32').itemsize*1*start_idx,shape=(size,1))
 
     train_dataset = fp1[:,:,:,:]
+
     # labels is nx1 shape
     train_labels = fp2[:]
 
@@ -1015,7 +1049,7 @@ def get_activation_dictionary(activation_list,cnn_ops,conv_op_ids):
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : True,
+    'adapt_structure' : False,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
@@ -1026,7 +1060,8 @@ research_parameters = {
     'debugging':True if logging_level==logging.DEBUG else False,
     'stop_training_at':11000,
     'train_min_activation':False,
-    'use_weighted_loss':True
+    'use_weighted_loss':True,
+    'whiten_images':True,
 }
 
 
@@ -1223,9 +1258,9 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,5,1,512#FC,0,0,1024#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#FC,512,0,0#FC,256,0,0#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,5,1,64#FC,1024,0,0#Terminate,0,0,0"
+        cnn_string = "C,5,1,48#P,3,2,0#C,5,1,48#P,3,2,0#C,3,1,48#FC,1024,0,0#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1293,20 +1328,21 @@ if __name__=='__main__':
 
         session = tf.InteractiveSession(config=config)
 
-        # Adapting Policy Learner
-        state_history_length = 4
-        adapter = qlearner.AdaCNNAdaptingQLearner(
-            discount_rate=0.7, fit_interval=1,
-            exploratory_tries=20, exploratory_interval=250,
-            filter_upper_bound=512, filter_min_bound=256,
-            conv_ids=convolution_op_ids, net_depth=layer_count,
-            n_conv=len([op for op in cnn_ops if 'conv' in op]),
-            epsilon=1.0, target_update_rate=25,
-            batch_size=32, persist_dir=output_dir,
-            session=session, random_mode=False,
-            state_history_length=state_history_length
-        )
-        reward_queue = queue.Queue(maxsize=state_history_length - 1)
+        if research_parameters['adapt_structure']:
+            # Adapting Policy Learner
+            state_history_length = 4
+            adapter = qlearner.AdaCNNAdaptingQLearner(
+                discount_rate=0.7, fit_interval=1,
+                exploratory_tries=20, exploratory_interval=250,
+                filter_upper_bound=512, filter_min_bound=256,
+                conv_ids=convolution_op_ids, net_depth=layer_count,
+                n_conv=len([op for op in cnn_ops if 'conv' in op]),
+                epsilon=1.0, target_update_rate=25,
+                batch_size=32, persist_dir=output_dir,
+                session=session, random_mode=False,
+                state_history_length=state_history_length
+            )
+            reward_queue = queue.Queue(maxsize=state_history_length - 1)
 
         # custom momentum optimizing
         # apply_gradient([g,v]) does the following v -= eta*g
@@ -1344,7 +1380,7 @@ if __name__=='__main__':
                         tf_data_weights.append(tf.placeholder(tf.float32, shape=(batch_size), name='TrainWeights'))
 
                         # Training data opearations
-                        tower_logit_op,tower_tf_activation_ops = inference(tf_train_data_batch[-1],tf_cnn_hyperparameters)
+                        tower_logit_op,tower_tf_activation_ops = inference(tf_train_data_batch[-1],tf_cnn_hyperparameters,True)
                         tower_logits.append(tower_logit_op)
                         tower_activation_update_ops.append(tower_tf_activation_ops)
 
@@ -1356,7 +1392,7 @@ if __name__=='__main__':
                         tower_grad = gradients(optimizer,tf_tower_loss, global_step, tf.constant(start_lr,dtype=tf.float32))
                         tower_grads.append(tower_grad)
 
-                        tower_pred = predict_with_logits(tower_logit_op)
+                        tower_pred = predict_with_dataset(tf_train_data_batch[-1],tf_cnn_hyperparameters)
                         tower_predictions.append(tower_pred)
 
                         # Pooling data operations
@@ -1366,12 +1402,12 @@ if __name__=='__main__':
                         tf_pool_label_batch.append(tf.placeholder(tf.float32, shape=(batch_size, num_labels), name='PoolLabels'))
 
                         with tf.name_scope('pool') as scope:
-                            single_pool_logit_op, single_activation_update_op = inference(tf_pool_data_batch[-1],tf_cnn_hyperparameters)
+                            single_pool_logit_op, single_activation_update_op = inference(tf_pool_data_batch[-1],tf_cnn_hyperparameters,True)
                             tower_pool_activation_update_ops.append(single_activation_update_op)
 
                             single_pool_loss = tower_loss(tf_pool_data_batch[-1],tf_pool_label_batch[-1],False,None,tf_cnn_hyperparameters)
                             tower_pool_losses.append(single_pool_loss)
-                            single_pool_grad = gradients(optimizer,single_pool_loss,global_step,tf.constant(start_lr,dtype=tf.float32))
+                            single_pool_grad = gradients(optimizer,single_pool_loss,global_step,start_lr)
                             tower_pool_grads.append(single_pool_grad)
 
         logger.info('GLOBAL_VARIABLES (all)')
@@ -1385,7 +1421,7 @@ if __name__=='__main__':
             # Train data operations
             # avg_grad_and_vars = [(avggrad0,var0),(avggrad1,var1),...]
             tf_avg_grad_and_vars = average_gradients(tower_grads)
-            apply_grads_op = apply_gradient_with_momentum(optimizer,tf.constant(start_lr,dtype=tf.float32))
+            apply_grads_op = apply_gradient_with_momentum(optimizer,start_lr,global_step)
             concat_loss_vec_op = concat_loss_vector_towers(tower_loss_vectors)
             update_train_velocity_op = update_train_momentum_velocity(tf_avg_grad_and_vars)
             tf_mean_activation = mean_tower_activations(tower_activation_update_ops)
@@ -1393,14 +1429,14 @@ if __name__=='__main__':
 
             # Pool data operations
             tf_pool_avg_gradvars = average_gradients(tower_pool_grads)
-            apply_pool_grads_op = apply_gradient_with_pool_momentum(optimizer,tf.constant(start_lr,dtype=tf.float32))
+            apply_pool_grads_op = apply_gradient_with_pool_momentum(optimizer,start_lr,global_step)
             update_pool_velocity_ops = update_pool_momentum_velocity(tf_pool_avg_gradvars)
             tf_mean_pool_activations = mean_tower_activations(tower_pool_activation_update_ops)
             mean_pool_loss = tf.reduce_mean(tower_pool_losses)
 
         with tf.variable_scope(TF_GLOBAL_SCOPE) as main_scope,tf.device('/gpu:0'):
 
-            increment_global_step_op = inc_global_step(global_step)
+            increment_global_step_op = tf.assign(global_step,global_step+1)
 
             # GLOBAL: Tensorflow operations for hard_pool
             with tf.name_scope('pool') as scope:
@@ -1456,7 +1492,7 @@ if __name__=='__main__':
                             #tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
                             tf_slice_optimize[tmp_op],tf_slice_vel_update[tmp_op] = optimize_masked_momentum_gradient(
                                 optimizer,tower_pool_losses[0], tf_indices,
-                                tmp_op, tf_pool_avg_gradvars, tf_cnn_hyperparameters
+                                tmp_op, tf_pool_avg_gradvars, tf_cnn_hyperparameters,tf.constant(start_lr,dtype=tf.float32),global_step
                             )
 
                         elif 'fulcon' in tmp_op:
@@ -1540,6 +1576,7 @@ if __name__=='__main__':
                 batch_data,batch_labels,batch_weights = [],[],[]
                 train_feed_dict = {}
                 for gpu_id in range(num_gpus):
+
                     batch_data.append(train_dataset[(chunk_batch_id+gpu_id)*batch_size:(chunk_batch_id+gpu_id+1)*batch_size, :, :, :])
                     batch_labels.append(train_labels[(chunk_batch_id+gpu_id)*batch_size:(chunk_batch_id+gpu_id+1)*batch_size, :])
 
@@ -1631,7 +1668,11 @@ if __name__=='__main__':
                     mean_train_loss = np.mean(train_losses)
                     logger.info('='*60)
                     logger.info('\tBatch ID: %d'%batch_id)
-                    logger.info('\tLearning rate: %.5f'%start_lr)
+                    if decay_learning_rate:
+                        logger.info('\tLearning rate: %.5f'%session.run(tf.train.exponential_decay(start_lr,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)))
+                    else:
+                        logger.info('\tLearning rate: %.5f' %start_lr)
+
                     logger.info('\tMinibatch Mean Loss: %.3f'%mean_train_loss)
                     logger.info('\tValidation Accuracy (Unseen): %.3f'%next_valid_accuracy)
 
@@ -2075,3 +2116,5 @@ if __name__=='__main__':
                 op_count = len(graph.get_operations())
                 var_count = len(tf.global_variables()) + len(tf.local_variables()) + len(tf.model_variables())
                 perf_logger.info('%d,%.5f,%.5f,%d,%d',(batch_id_multiplier*epoch)+batch_id,t1-t0,(t1_train-t0_train)/num_gpus,op_count,var_count)
+
+            session.run(increment_global_step_op)

@@ -1,4 +1,4 @@
-from math import ceil
+from math import ceil,floor
 
 def get_final_x(dataset_info,cnn_ops,cnn_hyps):
     '''
@@ -84,14 +84,25 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
                 else:
                     output_size = image_size
 
-                if output_size > 1:
+                if output_size > final_2d_width:
                     cnn_ops.append('pool_global')
-                    pg_hyps = {'type': 'avg', 'kernel': [1, output_size//final_2d_width, output_size//final_2d_width, 1],
-                               'stride': [1, output_size//final_2d_width, output_size//final_2d_width, 1], 'padding': 'VALID'}
+
+                    #k_size = ceil(output_size // final_2d_width) + floor(ceil(output_size // final_2d_width) // 2)
+                    #s_size = k_size - floor(output_size // final_2d_width)
+                    k_size,s_size = output_size // final_2d_width,output_size // final_2d_width
+                    pg_hyps = {'type': 'avg',
+                               'kernel': [1, k_size, k_size, 1],
+                               'stride': [1, s_size, s_size, 1],
+                               'padding': 'VALID'}
                     cnn_hyperparameters['pool_global'] = pg_hyps
 
             op_id = 'fulcon_' + str(fulcon_depth_index)
-            hyps = {'in': final_2d_width * final_2d_width * last_feature_map_depth, 'out': op[1]}
+            # for the first fulcon layer size comes from the last convolutional layer
+            if fulcon_depth_index==0:
+                hyps = {'in': final_2d_width * final_2d_width * last_feature_map_depth, 'out': op[1]}
+            # all the other fulcon layers the size comes from the previous fulcon layer
+            else:
+                hyps = {'in': cnn_hyperparameters['fulcon_'+str(fulcon_depth_index-1)]['out'], 'out': op[1]}
             cnn_ops.append(op_id)
             cnn_hyperparameters[op_id] = hyps
             fulcon_depth_index += 1
@@ -107,11 +118,14 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
                 else:
                     output_size = image_size
 
-                if fulcon_depth_index==0 and output_size > 1:
+                if fulcon_depth_index==0 and output_size > final_2d_width:
                     cnn_ops.append('pool_global')
+                    #k_size = ceil(output_size//final_2d_width)+floor(ceil(output_size//final_2d_width)//2)
+                    #s_size = k_size - floor(output_size//final_2d_width)
+                    k_size, s_size = output_size // final_2d_width, output_size // final_2d_width
                     pg_hyps = {'type': 'avg',
-                               'kernel': [1, output_size//final_2d_width, output_size//final_2d_width, 1],
-                               'stride': [1, output_size//final_2d_width, output_size//final_2d_width, 1],
+                               'kernel': [1, k_size,k_size, 1],
+                               'stride': [1, s_size,s_size, 1],
                                'padding': 'VALID'}
                     cnn_hyperparameters['pool_global'] = pg_hyps
 
