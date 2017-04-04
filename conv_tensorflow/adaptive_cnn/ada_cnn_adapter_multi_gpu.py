@@ -17,7 +17,7 @@ import getopt
 import time
 import utils
 import queue
-
+from multiprocessing import Pool as MPPool
 ##################################################################
 # AdaCNN Adapter
 # ===============================================================
@@ -930,7 +930,7 @@ def remove_with_action(op, tf_action_info, tf_activations,tf_cnn_hyperparameters
     return update_ops,tf_indices_to_rm
 
 
-def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size):
+def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size,randomize):
     global logger
     num_labels = dataset_info['num_labels']
     col_count = (dataset_info['image_w'],dataset_info['image_w'],dataset_info['num_channels'])
@@ -942,9 +942,19 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
                     offset=np.dtype('int32').itemsize*1*start_idx,shape=(size,1))
 
     train_dataset = fp1[:,:,:,:]
+    if randomize:
+        try:
+            pool = MPPool(processes=10)
+            distorted_imgs = pool.map(distort_img,[item for item in train_dataset])
+            train_dataset = np.asarray(distorted_imgs)
+            pool.close()
+            pool.join()
+        except Exception:
+            raise AssertionError
 
     # labels is nx1 shape
     train_labels = fp2[:]
+
 
     train_ohe_labels = (np.arange(num_labels) == train_labels[:]).astype(np.float32)
     del fp1,fp2
@@ -952,6 +962,14 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
     assert np.all(np.argmax(train_ohe_labels[:10],axis=1).flatten()==train_labels[:10].flatten())
     return train_dataset,train_ohe_labels
 
+def distort_img(img):
+
+    if np.random.random()<0.4:
+        return np.fliplr(img)
+    elif np.random.random()<0.8:
+        return np.flipud(img)
+    else:
+        return img
 
 def init_tf_hyperparameters():
     global cnn_ops, cnn_hyperparameters
@@ -1247,7 +1265,7 @@ if __name__=='__main__':
     # Loading test data
     train_dataset,train_labels = None,None
 
-    test_dataset,test_labels = load_data_from_memmap(dataset_info,test_dataset_filename,test_label_filename,0,test_size)
+    test_dataset,test_labels = load_data_from_memmap(dataset_info,test_dataset_filename,test_label_filename,0,test_size,False)
 
     assert chunk_size%batch_size==0
     batches_in_chunk = chunk_size//batch_size
@@ -1562,10 +1580,10 @@ if __name__=='__main__':
                     # We load 1 extra batch (chunk_size+1) because we always make the valid batch the batch_id+1
                     logger.info('\tCurrent memmap start index: %d', memmap_idx)
                     if memmap_idx+chunk_size+batch_size<dataset_size:
-                        train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size)
+                        train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size,True)
                     else:
                         train_dataset, train_labels = load_data_from_memmap(dataset_info, dataset_filename, label_filename,
-                                                                            memmap_idx, chunk_size)
+                                                                            memmap_idx, chunk_size,True)
                     memmap_idx += chunk_size
                     logger.info('Loading dataset chunk of size (chunk size + batch size): %d',train_dataset.shape[0])
                     logger.info('\tDataset shape: %s',train_dataset.shape)
