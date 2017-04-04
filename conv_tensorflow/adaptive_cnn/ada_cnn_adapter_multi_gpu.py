@@ -929,9 +929,11 @@ def remove_with_action(op, tf_action_info, tf_activations,tf_cnn_hyperparameters
 
     return update_ops,tf_indices_to_rm
 
+tf_distort_data_batch,distorted_imgs = None,None
 
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size,randomize):
-    global logger
+    global logger,tf_distort_data_batch,distorted_imgs
+
     num_labels = dataset_info['num_labels']
     col_count = (dataset_info['image_w'],dataset_info['image_w'],dataset_info['num_channels'])
     logger.info('Processing files %s,%s'%(dataset_filename,label_filename))
@@ -942,19 +944,33 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
                     offset=np.dtype('int32').itemsize*1*start_idx,shape=(size,1))
 
     train_dataset = fp1[:,:,:,:]
+    rand_train_dataset = None
     if randomize:
-        try:
-            pool = MPPool(processes=10)
-            distorted_imgs = pool.map(distort_img,[item for item in train_dataset])
-            train_dataset = np.asarray(distorted_imgs)
-            pool.close()
-            pool.join()
-        except Exception:
-            raise AssertionError
+        #try:
+            #pool = MPPool(processes=10)
+            #distorted_imgs = pool.map(distort_img_with_tf,[tf.constant(item,dtype=tf.float32) for item in train_dataset])
+            #train_dataset = np.asarray(session.run(distorted_imgs))
+            #pool.close()
+            #pool.join()
+        #except Exception:
+        #   raise AssertionError
+        if tf_distort_data_batch is None:
+            tf_distort_data_batch = tf.placeholder(shape=[batch_size,image_size,image_size,num_channels],dtype=tf.float32)
+        with tf.device('/gpu:0'):
+            if distorted_imgs is None:
+                distorted_imgs = distort_img_with_tf(tf_distort_data_batch)
+            for dist_i in range((size//batch_size)):
+                dist_databatch = session.run(distorted_imgs,feed_dict={tf_distort_data_batch:train_dataset[dist_i*batch_size:(dist_i+1)*batch_size,:,:,:]})
+                if rand_train_dataset is None:
+                    rand_train_dataset = dist_databatch
+                else:
+                    rand_train_dataset = np.append(rand_train_dataset,dist_databatch,axis=0)
+
+        assert train_dataset.shape[0]==rand_train_dataset.shape[0]
+        train_dataset = rand_train_dataset
 
     # labels is nx1 shape
     train_labels = fp2[:]
-
 
     train_ohe_labels = (np.arange(num_labels) == train_labels[:]).astype(np.float32)
     del fp1,fp2
@@ -970,6 +986,22 @@ def distort_img(img):
         return np.flipud(img)
     else:
         return img
+
+def distort_img_with_tf(distort_img_batch):
+    dist_img_list = []
+    img_list = tf.unpack(distort_img_batch,axis=0)
+    for img in img_list:
+        if np.random.random()<0.2:
+            dist_img_list.append(tf.image.flip_left_right(img))
+        elif np.random.random()<0.4:
+            dist_img_list.append(tf.image.flip_up_down(img))
+        elif np.random.random()<0.6:
+            dist_img_list.append(tf.image.random_brightness(img,0.7))
+        elif np.random.random()<0.8:
+            dist_img_list.append(tf.image.random_contrast(img,0.2,0.7))
+        else:
+            dist_img_list.append(img)
+    return tf.pack(dist_img_list,axis=0)
 
 def init_tf_hyperparameters():
     global cnn_ops, cnn_hyperparameters
