@@ -31,20 +31,22 @@ logging_level = logging.INFO
 logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
+# stationary 0.1 non-stationary 0.01
 start_lr = 0.1
+min_learning_rate = 0.0001
 decay_learning_rate = True
 decay_rate = 0.5
 dropout_rate = 0.25
 use_dropout = True
 use_loc_res_norm = True
 #keep beta small (0.2 is too much >0.002 seems to be fine)
-include_l2_loss = False
+include_l2_loss = True
 beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
 epochs = 5
-final_2d_width = 8
+final_2d_width = 3
 
 TOWER_NAME = 'tower'
 
@@ -63,6 +65,12 @@ TF_SCOPE_DIVIDER = '/'
 TF_ADAPTATION_NAME_SCOPE = 'Adapt'
 TF_GLOBAL_SCOPE = 'AdaCNN'
 
+
+def lrelu(x, leak=0.2, name="lrelu"):
+    with tf.variable_scope(name):
+        f1 = 0.5 * (1 + leak)
+        f2 = 0.5 * (1 - leak)
+        return f1 * x + f2 * abs(x)
 
 def initialize_cnn_with_ops(cnn_ops, cnn_hyps):
     var_list = []
@@ -146,7 +154,7 @@ def inference(dataset,tf_cnn_hyperparameters,training):
 
                 x = tf.nn.conv2d(x, w, cnn_hyperparameters[op]['stride'],
                                  padding=cnn_hyperparameters[op]['padding'])
-                x = tf.nn.relu(x + b, name=scope.name+'/top')
+                x = lrelu(x + b, name=scope.name+'/top')
 
                 activation_ops.append(tf.assign(tf.get_variable(TF_ACTIVAIONS_STR),tf.reduce_mean(x,[0,1,2]),validate_shape=False))
 
@@ -180,7 +188,7 @@ def inference(dataset,tf_cnn_hyperparameters,training):
                     # This help us to do adaptations more easily
                     x = tf.transpose(x,[0,3,1,2])
                     x = tf.reshape(x, [batch_size, tf_cnn_hyperparameters[op][TF_FC_WEIGHT_IN_STR]])
-                    x = tf.nn.relu(tf.matmul(x, w)+b,name=scope.name+'/top')
+                    x = lrelu(tf.matmul(x, w)+b,name=scope.name+'/top')
                     if training and use_dropout:
                         x = tf.nn.dropout(x,keep_prob= 1.0-dropout_rate,name='dropout')
 
@@ -188,7 +196,7 @@ def inference(dataset,tf_cnn_hyperparameters,training):
                     x = tf.matmul(x, w)+ b
 
                 else:
-                    x = tf.nn.relu(tf.matmul(x, w)+ b,name = scope.name+'/top')
+                    x = lrelu(tf.matmul(x, w)+ b,name = scope.name+'/top')
                     if training and use_dropout:
                         x = tf.nn.dropout(x,keep_prob= 1.0-dropout_rate,name='dropout')
 
@@ -196,13 +204,25 @@ def inference(dataset,tf_cnn_hyperparameters,training):
 
 
 def tower_loss(dataset,labels,weighted,tf_data_weights, tf_cnn_hyperparameters):
-
+    global cnn_ops
     logits,_ = inference(dataset,tf_cnn_hyperparameters,True)
     # use weighted loss
     if weighted:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels) * tf_data_weights)
     else:
         loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels))
+
+    if include_l2_loss:
+        fulcons = []
+        for op in cnn_ops:
+            if 'fulcon' in op and op != 'fulcon_out':
+                fulcons.append(op)
+        fc_weights = []
+        for op in fulcons:
+            with tf.variable_scope(op):
+                fc_weights.append(tf.get_variable(TF_WEIGHTS))
+
+        loss = tf.reduce_sum([loss,beta*tf.reduce_sum([tf.nn.l2_loss(w) for w in fc_weights])])
 
     total_loss = loss
 
@@ -258,7 +278,7 @@ def apply_gradient_with_momentum(optimizer,learning_rate,global_step):
     grads_and_vars = []
     # for each trainable variable
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
     for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
         with tf.variable_scope(v.name.split(':')[0],reuse=True):
             vel = tf.get_variable(TF_TRAIN_MOMENTUM)
@@ -270,7 +290,7 @@ def apply_gradient_with_pool_momentum(optimizer,learning_rate,global_step):
     grads_and_vars = []
     # for each trainable variable
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
     for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
         with tf.variable_scope(v.name.split(':')[0],reuse=True):
             vel = tf.get_variable(TF_POOL_MOMENTUM)
@@ -282,7 +302,7 @@ def optimize_with_momentum(optimizer, loss, global_step, learning_rate):
     vel_update_ops, grad_update_ops = [],[]
 
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
 
     for op in cnn_ops:
         if 'conv' in op and 'fulcon' in op:
@@ -323,7 +343,7 @@ def optimize_masked_momentum_gradient(optimizer, filter_indices_to_replace, op, 
     global cnn_ops,cnn_hyperparameters
 
     if decay_learning_rate:
-        learning_rate = tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
     else:
         learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
 
@@ -936,6 +956,7 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
 
     num_labels = dataset_info['num_labels']
     col_count = (dataset_info['image_w'],dataset_info['image_w'],dataset_info['num_channels'])
+    print(col_count)
     logger.info('Processing files %s,%s'%(dataset_filename,label_filename))
     fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
                     offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*start_idx,shape=(size,col_count[0],col_count[1],col_count[2]))
@@ -946,28 +967,29 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
     train_dataset = fp1[:,:,:,:]
     rand_train_dataset = None
     if randomize:
-        #try:
-            #pool = MPPool(processes=10)
-            #distorted_imgs = pool.map(distort_img_with_tf,[tf.constant(item,dtype=tf.float32) for item in train_dataset])
-            #train_dataset = np.asarray(session.run(distorted_imgs))
-            #pool.close()
-            #pool.join()
-        #except Exception:
-        #   raise AssertionError
-        if tf_distort_data_batch is None:
-            tf_distort_data_batch = tf.placeholder(shape=[batch_size,image_size,image_size,num_channels],dtype=tf.float32)
-        with tf.device('/gpu:0'):
-            if distorted_imgs is None:
-                distorted_imgs = distort_img_with_tf(tf_distort_data_batch)
-            for dist_i in range((size//batch_size)):
-                dist_databatch = session.run(distorted_imgs,feed_dict={tf_distort_data_batch:train_dataset[dist_i*batch_size:(dist_i+1)*batch_size,:,:,:]})
-                if rand_train_dataset is None:
-                    rand_train_dataset = dist_databatch
-                else:
-                    rand_train_dataset = np.append(rand_train_dataset,dist_databatch,axis=0)
+        try:
+            pool = MPPool(processes=10)
+            distorted_imgs = pool.map(distort_img,train_dataset)
+            train_dataset = np.asarray(distorted_imgs)
+            pool.close()
+            pool.join()
+        except Exception:
+           raise AssertionError
 
-        assert train_dataset.shape[0]==rand_train_dataset.shape[0]
-        train_dataset = rand_train_dataset
+        #if tf_distort_data_batch is None:
+        #    tf_distort_data_batch = tf.placeholder(shape=[batch_size,image_size,image_size,num_channels],dtype=tf.float32)
+        #with tf.device('/gpu:0'):
+        #    if distorted_imgs is None:
+        #        distorted_imgs = distort_img_with_tf(tf_distort_data_batch)
+        #    for dist_i in range((size//batch_size)):
+        #        dist_databatch = session.run(distorted_imgs,feed_dict={tf_distort_data_batch:train_dataset[dist_i*batch_size:(dist_i+1)*batch_size,:,:,:]})
+        #        if rand_train_dataset is None:
+        #            rand_train_dataset = dist_databatch
+        #        else:
+        #            rand_train_dataset = np.append(rand_train_dataset,dist_databatch,axis=0)
+
+        #assert train_dataset.shape[0]==rand_train_dataset.shape[0]
+        #train_dataset = rand_train_dataset
 
     # labels is nx1 shape
     train_labels = fp2[:]
@@ -979,28 +1001,27 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
     return train_dataset,train_ohe_labels
 
 def distort_img(img):
-
     if np.random.random()<0.4:
-        return np.fliplr(img)
-    elif np.random.random()<0.8:
-        return np.flipud(img)
-    else:
-        return img
+        img = np.fliplr(img)
+    if np.random.random()<0.4:
+        brightness = np.random.random()*1.5 - 0.6
+        img += brightness
+
+    return img
 
 def distort_img_with_tf(distort_img_batch):
     dist_img_list = []
     img_list = tf.unpack(distort_img_batch,axis=0)
     for img in img_list:
+
         if np.random.random()<0.2:
-            dist_img_list.append(tf.image.flip_left_right(img))
-        elif np.random.random()<0.4:
-            dist_img_list.append(tf.image.flip_up_down(img))
-        elif np.random.random()<0.6:
-            dist_img_list.append(tf.image.random_brightness(img,0.7))
-        elif np.random.random()<0.8:
-            dist_img_list.append(tf.image.random_contrast(img,0.2,0.7))
-        else:
-            dist_img_list.append(img)
+            img = tf.image.flip_left_right(img)
+        if np.random.random()<0.6:
+            img = tf.image.random_brightness(img,0.6)
+        if np.random.random()<0.8:
+            img = tf.image.random_contrast(img,0.2,1.2)
+
+        dist_img_list.append(img)
     return tf.pack(dist_img_list,axis=0)
 
 def init_tf_hyperparameters():
@@ -1099,7 +1120,7 @@ def get_activation_dictionary(activation_list,cnn_ops,conv_op_ids):
 research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
-    'adapt_structure' : False,
+    'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,
@@ -1117,7 +1138,7 @@ research_parameters = {
 
 interval_parameters = {
     'history_dump_interval':500,
-    'policy_interval' : 25, #number of batches to process for each policy iteration
+    'policy_interval' : 20, #number of batches to process for each policy iteration
     'test_interval' : 100
 }
 
@@ -1149,14 +1170,20 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
-    behavior = 'stationary'
+    behavior = 'non-stationary'
+
+    if behavior=='non-stationary':
+        start_lr = 0.01
+    if research_parameters['adapt_structure']:
+        decay_rate = 0.95
+        use_dropout = False
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
     test_dataset,test_labels = None,None
 
     if datatype=='cifar-10':
-        image_size = 32
+        image_size = 24
         num_labels = 10
         num_channels = 3 # rgb
         dataset_size = 50000
@@ -1177,7 +1204,7 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-test-labels.pkl'
 
     elif datatype=='cifar-100':
-        image_size = 32
+        image_size = 24
         num_labels = 100
         num_channels = 3 # rgb
         dataset_size = 50000
@@ -1308,9 +1335,9 @@ if __name__=='__main__':
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
     if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#FC,512,0,0#FC,256,0,0#Terminate,0,0,0"
+        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
     else:
-        cnn_string = "C,5,1,48#P,3,2,0#C,5,1,48#P,3,2,0#C,3,1,48#FC,1024,0,0#Terminate,0,0,0"
+        cnn_string = "C,5,1,32#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,128#Terminate,0,0,0"
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1383,8 +1410,8 @@ if __name__=='__main__':
             state_history_length = 4
             adapter = qlearner.AdaCNNAdaptingQLearner(
                 discount_rate=0.7, fit_interval=1,
-                exploratory_tries=20, exploratory_interval=250,
-                filter_upper_bound=512, filter_min_bound=256,
+                exploratory_tries=50, exploratory_interval=250,
+                filter_upper_bound=256, filter_min_bound=64,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
                 epsilon=1.0, target_update_rate=25,
@@ -1435,6 +1462,7 @@ if __name__=='__main__':
                         tower_activation_update_ops.append(tower_tf_activation_ops)
 
                         tf_tower_loss = tower_loss(tf_train_data_batch[-1],tf_train_label_batch[-1],True,tf_data_weights[-1],tf_cnn_hyperparameters)
+                        print(session.run(tf_cnn_hyperparameters))
                         tower_losses.append(tf_tower_loss)
                         tf_tower_loss_vec = calc_loss_vector(scope,tf_train_data_batch[-1],tf_train_label_batch[-1],tf_cnn_hyperparameters)
                         tower_loss_vectors.append(tf_tower_loss_vec)
@@ -1541,7 +1569,7 @@ if __name__=='__main__':
                             tf_rm_filters_ops[tmp_op] = remove_with_action(tmp_op,tf_action_info,tf_running_activations,tf_cnn_hyperparameters)
                             #tf_replace_ind_ops[tmp_op] = get_rm_indices_with_distance(tmp_op,tf_action_info)
                             tf_slice_optimize[tmp_op],tf_slice_vel_update[tmp_op] = optimize_masked_momentum_gradient(
-                                optimizer,tower_pool_losses[0], tf_indices,
+                                optimizer,tf_indices,
                                 tmp_op, tf_pool_avg_gradvars, tf_cnn_hyperparameters,tf.constant(start_lr,dtype=tf.float32),global_step
                             )
 
@@ -1636,7 +1664,7 @@ if __name__=='__main__':
                         batch_labels_int = np.argmax(batch_labels[-1], axis=1)
 
                         for li in range(num_labels):
-                            batch_w[np.where(batch_labels_int==li)[0]] = 1.0 - (cnt[li]*1.0/batch_size)
+                            batch_w[np.where(batch_labels_int==li)[0]] = max(1.0 - (cnt[li]*1.0/batch_size),1.0/num_labels)
                         batch_weights.append(batch_w)
 
                     elif behavior=='stationary':
@@ -1660,9 +1688,7 @@ if __name__=='__main__':
 
                 t1_train = time.clock()
 
-                current_activations = {}
-                for act_i,layer_act in enumerate(current_activations_list):
-                    current_activations[cnn_ops[convolution_op_ids[act_i]]] = layer_act
+                current_activations = get_activation_dictionary(current_activations_list,cnn_ops,convolution_op_ids)
 
                 # this snippet logs the normalized class distribution every specified interval
                 for bl in batch_labels:
@@ -1809,8 +1835,7 @@ if __name__=='__main__':
                             p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
                             pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
-                        prev_pool_accuracy = np.mean(pool_accuracy)
-
+                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0
                         # update distance measure for class distirbution
                         distMSE = 0.0
                         for li in range(num_labels):
@@ -2062,7 +2087,44 @@ if __name__=='__main__':
                                 _ = session.run([tower_logits, tower_activation_update_ops], feed_dict=train_feed_dict)
 
                             elif 'conv' in current_op and (ai[0]=='replace'):
-                                raise NotImplementedError
+
+                                min_indices = np.argsort(current_activations[current_op]).flatten()[:16] \
+                                    if current_activations[current_op].size >= 16 else current_activations[current_op].flatten()
+
+                                # Train only with half of the batch
+                                for pool_id in range((hard_pool.get_size() // batch_size) // 2,
+                                                     (hard_pool.get_size() // batch_size) - 1, num_gpus):
+                                    if np.random.random() < research_parameters['replace_op_train_rate']:
+                                        pbatch_data, pbatch_labels = [], []
+                                        pool_feed_dict = {
+                                            tf_indices: min_indices}
+
+                                        for gpu_id in range(num_gpus):
+                                            pbatch_data.append(pool_dataset[(pool_id + gpu_id) * batch_size:(
+                                                                                                            pool_id + gpu_id + 1) * batch_size,
+                                                               :, :, :])
+                                            pbatch_labels.append(pool_labels[(pool_id + gpu_id) * batch_size:(
+                                                                                                             pool_id + gpu_id + 1) * batch_size,
+                                                                 :])
+                                            pool_feed_dict.update({tf_pool_data_batch[gpu_id]: pbatch_data[-1],
+                                                                   tf_pool_label_batch[gpu_id]: pbatch_labels[-1]})
+
+                                        pbatch_train_count += 1
+
+                                        current_activations_list, _, _ = session.run(
+                                            [tf_mean_pool_activations, tf_slice_optimize[current_op],
+                                             tf_slice_vel_update[current_op]],
+                                            feed_dict=pool_feed_dict
+                                        )
+
+                                        current_activations = get_activation_dictionary(current_activations_list,
+                                                                                        cnn_ops, convolution_op_ids)
+
+                                        # update rolling activation means
+                                        for op, op_activations in current_activations.items():
+                                            assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
+                                            rolling_ativation_means[op] = (1 - act_decay) * rolling_ativation_means[
+                                                op] + decay * current_activations[op]
 
                             elif 'conv' in current_op and ai[0]=='finetune':
                                 # pooling takes place here
@@ -2118,13 +2180,14 @@ if __name__=='__main__':
                         logger.info('\tState (prev): %s', str(current_state))
                         logger.info('\tAction (prev): %s', str(current_action))
                         logger.info('\tState (next): %s\n', str(next_state))
-                        logger.info('\tPool Accuracy: %.3f\n',np.mean(pool_accuracy))
-
+                        p_accuracy = np.mean(pool_accuracy) if len(pool_accuracy) > 2 else 0
+                        logger.info('\tPool Accuracy: %.3f\n',p_accuracy)
+                        assert not np.isnan(p_accuracy)
                         adapter.update_policy({'prev_state': current_state, 'prev_action': current_action,
                                                'curr_state': next_state,
                                                'next_accuracy': None,
                                                'prev_accuracy': None,
-                                               'pool_accuracy': np.mean(pool_accuracy),
+                                               'pool_accuracy': p_accuracy,
                                                'prev_pool_accuracy': prev_pool_accuracy,
                                                'invalid_actions':curr_invalid_actions})
 
@@ -2166,5 +2229,6 @@ if __name__=='__main__':
                 op_count = len(graph.get_operations())
                 var_count = len(tf.global_variables()) + len(tf.local_variables()) + len(tf.model_variables())
                 perf_logger.info('%d,%.5f,%.5f,%d,%d',(batch_id_multiplier*epoch)+batch_id,t1-t0,(t1_train-t0_train)/num_gpus,op_count,var_count)
+
 
             session.run(increment_global_step_op)

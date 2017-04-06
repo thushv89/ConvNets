@@ -90,6 +90,7 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
                     #k_size = ceil(output_size // final_2d_width) + floor(ceil(output_size // final_2d_width) // 2)
                     #s_size = k_size - floor(output_size // final_2d_width)
                     k_size,s_size = output_size // final_2d_width,output_size // final_2d_width
+                    assert output_size % final_2d_width == 0
                     pg_hyps = {'type': 'avg',
                                'kernel': [1, k_size, k_size, 1],
                                'stride': [1, s_size, s_size, 1],
@@ -123,6 +124,7 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
                     #k_size = ceil(output_size//final_2d_width)+floor(ceil(output_size//final_2d_width)//2)
                     #s_size = k_size - floor(output_size//final_2d_width)
                     k_size, s_size = output_size // final_2d_width, output_size // final_2d_width
+                    assert output_size%final_2d_width==0
                     pg_hyps = {'type': 'avg',
                                'kernel': [1, k_size,k_size, 1],
                                'stride': [1, s_size,s_size, 1],

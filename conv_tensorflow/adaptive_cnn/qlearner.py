@@ -351,7 +351,7 @@ class AdaCNNAdaptingQLearner(object):
         self.same_action_count = [0 for _ in range(self.net_depth)]
         self.epsilon = params['epsilon']
 
-        self.same_action_threshold = 10
+        self.same_action_threshold = 25
 
         # Of format {s1,a1,s2,a2,s3,a3} NOTE that this doesnt hold the current state
         self.state_history_length = params['state_history_length']
@@ -393,7 +393,7 @@ class AdaCNNAdaptingQLearner(object):
 
         self.state_history_collector = []
         self.state_history_dumped = False
-        self.experience_per_action = 25
+        self.experience_per_action = 50
         self.exp_clean_interval = 50
 
     def calculate_output_size(self):
@@ -511,9 +511,14 @@ class AdaCNNAdaptingQLearner(object):
         layer_actions=[None for _ in range(self.net_depth)]
 
         if action_idx < self.output_size-self.global_actions:
-            primary_action = action_idx//self.n_conv
-            secondary_action = action_idx%self.n_conv
-            tmp_a = self.actions[2] if primary_action==1 else self.actions[3]
+            primary_action = action_idx//self.n_conv # action
+            secondary_action = action_idx%self.n_conv # the layer the action will be executed
+            if primary_action == 0:
+                tmp_a = self.actions[3]
+            elif primary_action==1:
+                tmp_a = self.actions[2]
+            #elif primary_action==2:
+            #    tmp_a = self.actions[4]
 
             for ci, c_id in enumerate(self.conv_ids):
                 if ci == secondary_action:
@@ -553,6 +558,9 @@ class AdaCNNAdaptingQLearner(object):
                 elif la==self.actions[3]:
                     secondary_idx = conv_id
                     primary_idx = 0
+                #elif la==self.actions[4]:
+                #    secondary_idx = conv_id
+                #    primary_idx= 2
                 conv_id += 1
 
             action_idx = primary_idx*self.n_conv + secondary_idx
@@ -579,7 +587,7 @@ class AdaCNNAdaptingQLearner(object):
 
         # we try actions evenly otherwise cannot have the approximator
         if self.random_mode or (
-                    (self.global_time_stamp%self.explore_interval)<self.explore_tries and
+                    (self.global_time_stamp%self.explore_interval)<self.explore_tries//2 and
                         self.global_time_stamp<1000):
             self.rl_logger.info('(Exploratory Mode) Choosing action exploratory...')
             action_idx = np.random.randint(0,self.output_size)
@@ -730,7 +738,7 @@ class AdaCNNAdaptingQLearner(object):
             # TODO: same action taking repeatedly
             # this is to reduce taking the same action over and over again
             if self.same_action_count >= self.same_action_threshold:
-                self.epsilon = min(self.epsilon*2,1.0)
+                self.epsilon = min(self.epsilon*1.2,1.0)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
@@ -982,8 +990,10 @@ class AdaCNNAdaptingQLearner(object):
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
                     self.experience.append([history_t, invalid_a, -1, history_t_plus_1])
+                    self.experience.append([history_t, invalid_a, 0.5, history_t_plus_1])
                 else:
                     self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1])
+                    self.experience.append([history_t, invalid_a, 0.005, history_t_plus_1])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
