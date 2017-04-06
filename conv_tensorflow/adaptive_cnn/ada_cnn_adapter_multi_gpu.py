@@ -270,7 +270,7 @@ def update_pool_momentum_velocity(grads_and_vars):
 
             vel_update_ops.append(
                 tf.assign(vel,
-                          research_parameters['momentum']*vel + g)
+                          research_parameters['pool_momentum']*vel + g)
             )
     return vel_update_ops
 
@@ -394,9 +394,9 @@ def optimize_masked_momentum_gradient(optimizer, filter_indices_to_replace, op, 
                 b_vel = tf.get_variable(TF_POOL_MOMENTUM)
 
             vel_update_ops.append(
-                tf.assign(w_vel, research_parameters['momentum'] * w_vel + grads_w))
+                tf.assign(w_vel, research_parameters['pool_momentum'] * w_vel + grads_w))
             vel_update_ops.append(
-                tf.assign(b_vel, research_parameters['momentum'] * b_vel + grads_b))
+                tf.assign(b_vel, research_parameters['pool_momentum'] * b_vel + grads_b))
 
             grad_ops.append(optimizer.apply_gradients([(w_vel*learning_rate,w),(b_vel*learning_rate,b)]))
 
@@ -434,7 +434,7 @@ def optimize_masked_momentum_gradient(optimizer, filter_indices_to_replace, op, 
             with tf.variable_scope(TF_WEIGHTS) as child_scope:
                 pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
             vel_update_ops.append(
-                tf.assign(pool_w_vel, research_parameters['momentum'] * pool_w_vel + grads_w))
+                tf.assign(pool_w_vel, research_parameters['pool_momentum'] * pool_w_vel + grads_w))
 
             grad_ops.append(optimizer.apply_gradients([(pool_w_vel*learning_rate, w)]))
 
@@ -462,7 +462,7 @@ def optimize_masked_momentum_gradient(optimizer, filter_indices_to_replace, op, 
 
             vel_update_ops.append(
                 tf.assign(pool_w_vel,
-                          research_parameters['momentum'] * pool_w_vel + grads_w))
+                          research_parameters['pool_momentum'] * pool_w_vel + grads_w))
 
             grad_ops.append(optimizer.apply_gradients([(pool_w_vel*learning_rate, w)]))
 
@@ -527,9 +527,9 @@ def momentum_gradient_with_indices(optimizer,loss, filter_indices_to_replace, op
                 b_vel = tf.get_variable(TF_POOL_MOMENTUM)
 
             vel_update_ops.append(
-                tf.assign(w_vel, research_parameters['momentum'] * w_vel + grads_w[op]))
+                tf.assign(w_vel, research_parameters['pool_momentum'] * w_vel + grads_w[op]))
             vel_update_ops.append(
-                tf.assign(b_vel, research_parameters['momentum'] * b_vel + grads_b[op]))
+                tf.assign(b_vel, research_parameters['pool_momentum'] * b_vel + grads_b[op]))
 
             grad_ops.append(optimizer.apply_gradients([(w_vel*learning_rate,w),(b_vel*learning_rate,b)]))
 
@@ -563,7 +563,7 @@ def momentum_gradient_with_indices(optimizer,loss, filter_indices_to_replace, op
             with tf.variable_scope(TF_WEIGHTS) as child_scope:
                 pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
             vel_update_ops.append(
-                tf.assign(pool_w_vel, research_parameters['momentum'] * pool_w_vel + grads_w[next_op]))
+                tf.assign(pool_w_vel, research_parameters['pool_momentum'] * pool_w_vel + grads_w[next_op]))
 
             grad_ops.append(optimizer.apply_gradients([(pool_w_vel*learning_rate, w)]))
 
@@ -588,7 +588,7 @@ def momentum_gradient_with_indices(optimizer,loss, filter_indices_to_replace, op
 
             vel_update_ops.append(
                 tf.assign(pool_w_vel,
-                          research_parameters['momentum'] * pool_w_vel + grads_w[next_op]))
+                          research_parameters['pool_momentum'] * pool_w_vel + grads_w[next_op]))
 
             grad_ops.append(optimizer.apply_gradients([(pool_w_vel*learning_rate, w)]))
 
@@ -1123,7 +1123,7 @@ research_parameters = {
     'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
-    'optimizer':'Momentum','momentum':0.1,
+    'optimizer':'Momentum','momentum':0.9,'pool_momentum':0.0,
     'use_custom_momentum_opt':True,
     'remove_filters_by':'Activation',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)

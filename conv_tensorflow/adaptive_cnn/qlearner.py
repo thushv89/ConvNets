@@ -338,7 +338,7 @@ class AdaCNNAdaptingQLearner(object):
         self.global_time_stamp = 0
 
         self.actions = [
-            ('do_nothing', 0),('do_nothing', 0),
+            ('do_nothing', 0),('finetune', 0),
             ('add',16),('remove',8)
         ]
         self.q_logger.info('#%s',self.actions)
