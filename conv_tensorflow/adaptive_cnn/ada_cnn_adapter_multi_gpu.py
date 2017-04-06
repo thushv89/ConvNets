@@ -1123,7 +1123,7 @@ research_parameters = {
     'adapt_structure' : True,
     'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
-    'optimizer':'Momentum','momentum':0.9,
+    'optimizer':'Momentum','momentum':0.1,
     'use_custom_momentum_opt':True,
     'remove_filters_by':'Activation',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)

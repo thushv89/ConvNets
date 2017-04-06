@@ -338,7 +338,7 @@ class AdaCNNAdaptingQLearner(object):
         self.global_time_stamp = 0
 
         self.actions = [
-            ('do_nothing', 0),('finetune', 0),
+            ('do_nothing', 0),('do_nothing', 0),
             ('add',16),('remove',8)
         ]
         self.q_logger.info('#%s',self.actions)
@@ -817,7 +817,7 @@ class AdaCNNAdaptingQLearner(object):
             else:
                 exp_action_count[a_idx].append(e_i)
 
-        np.random.shuffle(self.experience) # decorrelation
+        #np.random.shuffle(self.experience) # decorrelation
 
         self.rl_logger.debug('Action count after removal')
         self.rl_logger.debug(exp_action_count)
@@ -948,7 +948,7 @@ class AdaCNNAdaptingQLearner(object):
 
         reward = mean_accuracy
         if complete_do_nothing:
-            reward = -1e-3 * max(self.same_action_count+1,5)
+            reward = -1e-3# * max(self.same_action_count+1,5)
 
 
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
