@@ -97,8 +97,12 @@ class Pool(object):
     def get_size(self):
         return self.filled_size
 
-    def get_pool_data(self):
-        return {'pool_dataset':self.dataset,'pool_labels':self.labels}
+    def get_pool_data(self,shuffle):
+        if shuffle:
+            perm_indices = np.random.permutation(np.arange(self.filled_size))
+            return (self.dataset[perm_indices,:,:,:],self.labels[perm_indices,:])
+        else:
+            return (self.dataset, self.labels)
 
     def get_class_distribution(self):
         class_count = Counter(np.argmax(self.labels[:self.filled_size,:],axis=1).flatten())

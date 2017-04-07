@@ -18,6 +18,8 @@ import time
 import utils
 import queue
 from multiprocessing import Pool as MPPool
+
+
 ##################################################################
 # AdaCNN Adapter
 # ===============================================================
@@ -156,7 +158,7 @@ def inference(dataset,tf_cnn_hyperparameters,training):
                                  padding=cnn_hyperparameters[op]['padding'])
                 x = lrelu(x + b, name=scope.name+'/top')
 
-                activation_ops.append(tf.assign(tf.get_variable(TF_ACTIVAIONS_STR),tf.reduce_mean(x,[0,1,2]),validate_shape=False))
+                activation_ops.append(tf.assign(tf.get_variable(TF_ACTIVAIONS_STR),tf.reduce_max(x,[0,1,2]),validate_shape=False))
 
                 if use_loc_res_norm and op==last_conv_id:
                     x = tf.nn.local_response_normalization(x,depth_radius=4,alpha=0.001/9.0, beta=0.75) # hyperparameters from tensorflow cifar10 tutorial
@@ -764,8 +766,10 @@ def add_with_action(
 def get_rm_indices_with_distance(op,tf_action_info):
 
     amount_to_rmv = tf_action_info[2]
-    reshaped_weight = tf.transpose(weights[op], [3, 0, 1, 2])
-    reshaped_weight = tf.reshape(weights[op], [tf_cnn_hyperparameters[op]['weights'][3],
+    with tf.variable_scope(op) as scope:
+        w = tf.get_variable(TF_WEIGHTS) # hxwxinxout
+        reshaped_weight = tf.transpose(w, [3, 0, 1, 2])
+        reshaped_weight = tf.reshape(w, [tf_cnn_hyperparameters[op]['weights'][3],
                                                tf_cnn_hyperparameters[op]['weights'][0] *
                                                tf_cnn_hyperparameters[op]['weights'][1] *
                                                tf_cnn_hyperparameters[op]['weights'][2]]
@@ -1142,7 +1146,7 @@ interval_parameters = {
     'test_interval' : 100
 }
 
-state_action_history = {}
+state_action_history = []
 
 cnn_ops, cnn_hyperparameters = None,None
 num_gpus = -1
@@ -1283,7 +1287,7 @@ if __name__=='__main__':
     errHandler = logging.FileHandler(output_dir + os.sep + 'Error.log', mode='w')
     errHandler.setFormatter(logging.Formatter('%(message)s'))
     error_logger.addHandler(errHandler)
-    error_logger.info('#Batch_ID,Loss(Train),Loss(Valid Seen),Loss(Valid Unseen),Valid(Seen),Valid(Unseen),Test')
+    error_logger.info('#Batch_ID,Loss(Train),Valid(Unseen),Test Accuracy')
 
     perf_logger = logging.getLogger('time_logger')
     perf_logger.setLevel(logging.INFO)
@@ -1293,6 +1297,13 @@ if __name__=='__main__':
     perf_logger.info('#Batch_ID,Time(Full),Time(Train),Op count, Var count')
 
     if research_parameters['adapt_structure']:
+        accuracy_drop_logger = logging.getLogger('accuracy_drop_logger')
+        accuracy_drop_logger.setLevel(logging.INFO)
+        dropHandler = logging.FileHandler(output_dir + os.sep + 'test_accuracy_drop.log', mode='w')
+        dropHandler.setFormatter(logging.Formatter('%(message)s'))
+        accuracy_drop_logger.addHandler(dropHandler)
+        accuracy_drop_logger.info('#Accuracy Drop Logger\n#last 10 (states,actions,current_pool_accuracy,prev_pool_accuracy) and accuracy drop\n')
+
         cnn_structure_logger = logging.getLogger('cnn_structure_logger')
         cnn_structure_logger.setLevel(logging.INFO)
         structHandler = logging.FileHandler(output_dir + os.sep + 'cnn_structure.log', mode='w')
@@ -1410,7 +1421,7 @@ if __name__=='__main__':
             state_history_length = 4
             adapter = qlearner.AdaCNNAdaptingQLearner(
                 discount_rate=0.7, fit_interval=1,
-                exploratory_tries=50, exploratory_interval=250,
+                exploratory_tries=50, exploratory_interval=250, stop_exploring_after=499,
                 filter_upper_bound=256, filter_min_bound=64,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
@@ -1586,15 +1597,15 @@ if __name__=='__main__':
 
         train_losses = []
         mean_train_loss = 0
+        prev_test_accuracy = 0 # used to calculate test accuracy drop
 
         rolling_ativation_means = {}
         for op in cnn_ops:
             if 'conv' in op:
                 logger.debug('\tDefining rolling activation mean for %s',op)
                 rolling_ativation_means[op]=np.zeros([cnn_hyperparameters[op]['weights'][3]])
-
-        decay = 0.9
-        act_decay = 0.5
+        dist_decay = 0.5
+        act_decay = 0.9
         current_state,current_action = None,None
         next_valid_accuracy = 0,0
 
@@ -1710,7 +1721,7 @@ if __name__=='__main__':
                     logger.debug('\tCurrent size (%s): %s', op, op_activations.shape)
                 for op, op_activations in current_activations.items():
                     assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
-                    rolling_ativation_means[op]=(1-act_decay)*rolling_ativation_means[op] + decay*current_activations[op]
+                    rolling_ativation_means[op]=act_decay * rolling_ativation_means[op] + current_activations[op]
 
                 train_losses.append(l)
 
@@ -1769,10 +1780,15 @@ if __name__=='__main__':
                             logger.debug('Test: %d, %.3f',test_batch_id,accuracy(test_predictions, batch_test_labels))
                             logger.debug('=' * 80)
 
-                    logger.info('\tTest Accuracy: %.3f'%np.mean(test_accuracies))
+                    current_test_accuracy = np.mean(test_accuracies)
+                    logger.info('\tTest Accuracy: %.3f'%current_test_accuracy)
                     logger.info('='*60)
                     logger.info('')
 
+                    if abs(current_test_accuracy-prev_test_accuracy)>20:
+                        accuracy_drop_logger.info('%s,%d',state_action_history,current_test_accuracy-prev_test_accuracy)
+
+                    prev_test_accuracy = current_test_accuracy
                     error_logger.info('%d,%.3f,%.3f,%.3f',
                                       batch_id_multiplier*epoch + batch_id,mean_train_loss,
                                       next_valid_accuracy,np.mean(test_accuracies)
@@ -1817,7 +1833,7 @@ if __name__=='__main__':
 
                     # calculate rolling mean of data distribution (amounts of different classes)
                     for li in range(num_labels):
-                        rolling_data_distribution[li]=(1-decay)*rolling_data_distribution[li] + decay*float(cnt[li])/float(batch_size)
+                        rolling_data_distribution[li]=(1-dist_decay)*rolling_data_distribution[li] + dist_decay*float(cnt[li])/float(batch_size)
                         mean_data_distribution[li] += float(cnt[li])/(float(batch_size)*float(interval_parameters['policy_interval']))
 
                     # ====================== Policy update and output ======================
@@ -1825,8 +1841,7 @@ if __name__=='__main__':
                     if batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
 
                         pool_accuracy = []
-                        pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
-                                                    hard_pool.get_pool_data()['pool_labels']
+                        pool_dataset, pool_labels = hard_pool.get_pool_data(False)
                         for pool_id in range((hard_pool.get_size()//batch_size)//2):
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                             pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
@@ -1859,7 +1874,6 @@ if __name__=='__main__':
                                 continue
 
                             logger.info('Got state: %s, action: %s',str(current_state),str(la))
-                            state_action_history[batch_id_multiplier*epoch + batch_id]={'states':current_state,'actions':current_action}
 
                             # where all magic happens (adding and removing filters)
                             si,ai = current_state,la
@@ -1959,8 +1973,7 @@ if __name__=='__main__':
                                     })
 
                                 # optimize the newly added fiterls only
-                                pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
-                                                            hard_pool.get_pool_data()['pool_labels']
+                                pool_dataset, pool_labels = hard_pool.get_pool_data(True)
 
                                 # this was done to increase performance and reduce overfitting
                                 # instead of optimizing with every single batch in the pool
@@ -2003,8 +2016,7 @@ if __name__=='__main__':
                                         # update rolling activation means
                                         for op, op_activations in current_activations.items():
                                             assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
-                                            rolling_ativation_means[op] = (1 - act_decay) * rolling_ativation_means[
-                                                op] + decay * current_activations[op]
+                                            rolling_ativation_means[op] = act_decay * rolling_ativation_means[op] + current_activations[op]
 
                             elif 'conv' in current_op and ai[0]=='remove' :
 
@@ -2123,14 +2135,14 @@ if __name__=='__main__':
                                         # update rolling activation means
                                         for op, op_activations in current_activations.items():
                                             assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
-                                            rolling_ativation_means[op] = (1 - act_decay) * rolling_ativation_means[
-                                                op] + decay * current_activations[op]
+                                            rolling_ativation_means[op] = act_decay * rolling_ativation_means[
+                                                op] + current_activations[op]
 
                             elif 'conv' in current_op and ai[0]=='finetune':
                                 # pooling takes place here
 
                                 op = cnn_ops[li]
-                                pool_dataset,pool_labels = hard_pool.get_pool_data()['pool_dataset'],hard_pool.get_pool_data()['pool_labels']
+                                pool_dataset,pool_labels = hard_pool.get_pool_data(True)
 
                                 # without if can give problems in exploratory stage because of no data in the pool
                                 pbatch_train_count = 0
@@ -2152,8 +2164,8 @@ if __name__=='__main__':
                         assert hard_pool.get_size()>0
                         # updating the policy
                         pool_accuracy = []
-                        pool_dataset, pool_labels = hard_pool.get_pool_data()['pool_dataset'], \
-                                                    hard_pool.get_pool_data()['pool_labels']
+                        pool_dataset, pool_labels = hard_pool.get_pool_data(False)
+
                         for pool_id in range((hard_pool.get_size()//batch_size)//2):
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
                             pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
@@ -2189,7 +2201,7 @@ if __name__=='__main__':
                                                'prev_accuracy': None,
                                                'pool_accuracy': p_accuracy,
                                                'prev_pool_accuracy': prev_pool_accuracy,
-                                               'invalid_actions':curr_invalid_actions})
+                                               'invalid_actions':curr_invalid_actions},True)
 
                             #if not reward_queue.full():
                                 #reward_queue.put(np.mean(pool_accuracy))
@@ -2197,6 +2209,10 @@ if __name__=='__main__':
                             #else:
                                 #prev_pool_accuracy = reward_queue.get()
                                 #reward_queue.put(np.mean(pool_accuracy))
+                        if len(state_action_history)>10:
+                            del state_action_history[0]
+
+                        state_action_history.append([current_state, current_action,p_accuracy,prev_pool_accuracy])
 
                         cnn_structure_logger.info(
                             '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
@@ -2211,10 +2227,8 @@ if __name__=='__main__':
                             rolling_data_distribution[li]=0.0
                             mean_data_distribution[li]=0.0
 
+
                     if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
-                        with open(output_dir + os.sep + 'state_actions_' + str(epoch) + "_" + str(batch_id)+'.pickle', 'wb') as f:
-                            pickle.dump(state_action_history, f, pickle.HIGHEST_PROTOCOL)
-                            state_action_history = {}
 
                         #with open(output_dir + os.sep + 'Q_' + str(epoch) + "_" + str(batch_id)+'.pickle', 'wb') as f:
                         #    pickle.dump(adapter.get_Q(), f, pickle.HIGHEST_PROTOCOL)

@@ -314,8 +314,15 @@ class AdaCNNAdaptingQLearner(object):
         rewarddistHandler.setFormatter(logging.Formatter('%(message)s'))
         self.reward_logger.addHandler(rewarddistHandler)
 
+        self.action_logger = logging.getLogger('action_logger')
+        self.action_logger.setLevel(logging.INFO)
+        actionHandler = logging.FileHandler(self.persit_dir + os.sep + 'actions.log', mode='w')
+        actionHandler.setFormatter(logging.Formatter('%(message)s'))
+        self.action_logger.addHandler(actionHandler)
+
         self.explore_tries = params['exploratory_tries']
         self.explore_interval = params['exploratory_interval']
+        self.stop_exploring_after = params['stop_exploring_after']
 
         self.batch_size = params['batch_size']
 
@@ -339,7 +346,7 @@ class AdaCNNAdaptingQLearner(object):
 
         self.actions = [
             ('do_nothing', 0),('finetune', 0),
-            ('add',16),('remove',8)
+            ('add',8),('remove',4)
         ]
         self.q_logger.info('#%s',self.actions)
 
@@ -372,7 +379,7 @@ class AdaCNNAdaptingQLearner(object):
         self.tf_target_weights,self.tf_target_biase = [],[]
 
         self.momentum = 0.9
-        self.learning_rate = 0.001
+        self.learning_rate = 0.005
 
         self.tf_init_mlp()
         self.tf_state_input = tf.placeholder(tf.float32, shape=(None, self.input_size),name='InputDataset')
@@ -395,6 +402,9 @@ class AdaCNNAdaptingQLearner(object):
         self.state_history_dumped = False
         self.experience_per_action = 50
         self.exp_clean_interval = 50
+
+        self.min_epsilon = 0.1
+        self.previous_reward = 0
 
     def calculate_output_size(self):
         total = 0
@@ -574,6 +584,7 @@ class AdaCNNAdaptingQLearner(object):
         # ['filter_counts'] => depth_index : filter_count
         # State => Layer_Depth (w.r.t net), dist_MSE, number of filters in layer
 
+        action_type = None # for logging purpose
         state = [data['distMSE']]
         state.extend(data['filter_counts_list'])
 
@@ -588,7 +599,8 @@ class AdaCNNAdaptingQLearner(object):
         # we try actions evenly otherwise cannot have the approximator
         if self.random_mode or (
                     (self.global_time_stamp%self.explore_interval)<self.explore_tries//2 and
-                        self.global_time_stamp<1000):
+                        self.global_time_stamp<self.stop_exploring_after):
+            action_type = 'Exploratory'
             self.rl_logger.info('(Exploratory Mode) Choosing action exploratory...')
             action_idx = np.random.randint(0,self.output_size)
 
@@ -626,6 +638,7 @@ class AdaCNNAdaptingQLearner(object):
             self.rl_logger.debug('\tActions (length): %d',self.output_size)
             self.rl_logger.debug('\tPredicted Q: %s',q_for_actions[:10])
 
+            action_type = 'Deterministic'
             action_idx = np.asscalar(np.argmax(q_for_actions))
 
             layer_actions_list = self.action_list_with_index(action_idx)
@@ -684,7 +697,18 @@ class AdaCNNAdaptingQLearner(object):
         # random selection
         else:
             self.rl_logger.info('Choosing action stochastic...')
-            action_idx = np.random.randint(0,self.output_size)
+            action_type = 'Stochastic'
+
+            curr_x = np.asarray(self.phi(history_t_plus_1)).reshape(1, -1)
+            q_for_actions = self.session.run(self.tf_out_target_op, feed_dict={self.tf_state_input: curr_x})
+
+            # not to restrict from the beginning
+            if self.global_time_stamp>self.stop_exploring_after:
+                rand_indices = np.argsort(q_for_actions).flatten()[int(1.0*self.output_size/4.0):] #Only get a random index from the highest q values
+                self.rl_logger.info('Allowed action indices: %s',rand_indices)
+                action_idx = np.random.choice(rand_indices)
+            else:
+                action_idx = np.random.randint(0,self.output_size)
             layer_actions_list = self.action_list_with_index(action_idx)
             self.rl_logger.debug('\tChose: %s'%str(layer_actions_list))
 
@@ -733,12 +757,12 @@ class AdaCNNAdaptingQLearner(object):
 
         # decay epsilon
         if self.global_time_stamp>self.explore_tries:
-            self.epsilon = max(self.epsilon * 0.9, 0.1)
+            self.epsilon = max(self.epsilon * 0.9, self.min_epsilon)
 
             # TODO: same action taking repeatedly
             # this is to reduce taking the same action over and over again
             if self.same_action_count >= self.same_action_threshold:
-                self.epsilon = min(self.epsilon*1.2,1.0)
+                self.epsilon = min(self.epsilon*1.01,1.0)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
@@ -753,10 +777,13 @@ class AdaCNNAdaptingQLearner(object):
         else:
             self.same_action_count = 0
 
+        self.action_logger.info('%s,%s,%s,%.3f', action_type, state, layer_actions_list,self.epsilon)
+
         self.prev_action = layer_actions_list
         self.prev_state = state
 
         self.rl_logger.info('\tSelected action: %s\n',layer_actions_list)
+
         return state,layer_actions_list,invalid_actions
 
     def get_action_string(self,layer_action_list):
@@ -787,29 +814,30 @@ class AdaCNNAdaptingQLearner(object):
 
     def clean_experience(self):
         exp_action_count = {}
-        for e_i,[_,ai,_,_] in enumerate(self.experience):
+        for e_i,[_,ai,_,_,time_stamp] in enumerate(self.experience):
             # phi_t, a_idx, reward, phi_t_plus_1
             a_idx = ai
             if a_idx not in exp_action_count:
-                exp_action_count[a_idx] = [e_i]
+                exp_action_count[a_idx] = [(time_stamp,e_i)]
             else:
-                exp_action_count[a_idx].append(e_i)
+                exp_action_count[a_idx].append((time_stamp,e_i))
 
         indices_to_remove = []
         for k,v in exp_action_count.items():
+            sorted_v = sorted(v,key=lambda item:item[0])
             if len(v)>self.experience_per_action:
-                indices_to_remove.extend(v[:len(v)-self.experience_per_action])
+                indices_to_remove.extend(sorted_v[:len(sorted_v)-self.experience_per_action])
 
         indices_to_remove = sorted(indices_to_remove,reverse=True)
 
         self.rl_logger.info('Indices of experience that will be removed')
         self.rl_logger.info('\t%s',indices_to_remove)
 
-        for r_i in indices_to_remove:
+        for _,r_i in indices_to_remove: # each element in indices to remove are tuples (time_stamp,exp_index)
             self.experience.pop(r_i)
 
         exp_action_count = {}
-        for e_i,[_,ai,_,_] in enumerate(self.experience):
+        for e_i,[_,ai,_,_,_] in enumerate(self.experience):
             # phi_t, a_idx, reward, phi_t_plus_1
             a_idx = ai
             if a_idx not in exp_action_count:
@@ -826,7 +854,7 @@ class AdaCNNAdaptingQLearner(object):
 
         x,y,rewards,sj = None,None,None,None
 
-        for [hist_t,ai,reward,hist_t_plus_1] in experience_slice:
+        for [hist_t,ai,reward,hist_t_plus_1,time_stamp] in experience_slice:
             # phi_t, a_idx, reward, phi_t_plus_1
             if x is None:
                 x = np.asarray(self.phi(hist_t)).reshape((1,-1))
@@ -851,7 +879,7 @@ class AdaCNNAdaptingQLearner(object):
 
         return x,y,rewards,sj
 
-    def update_policy(self, data):
+    def update_policy(self, data, add_future_reward):
         # data['prev_state']
         # data['prev_action']
         # data['curr_state']
@@ -882,7 +910,6 @@ class AdaCNNAdaptingQLearner(object):
                 pred_q = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:x})
                 self.rl_logger.debug('\tPredicted %s:',pred_q.shape)
                 target_q = r.flatten() + self.discount_rate * np.max(pred_q,axis=1).flatten()
-
 
                 self.rl_logger.debug('\tTarget Q %s:', target_q.shape)
                 self.rl_logger.debug('\tTarget Q Values %s:', target_q[:5])
@@ -950,7 +977,6 @@ class AdaCNNAdaptingQLearner(object):
         if complete_do_nothing:
             reward = -1e-3# * max(self.same_action_count+1,5)
 
-
         self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
         # how the update on state_history looks like
         # t=5 (s2,a2),(s3,a3),(s4,a4)
@@ -985,15 +1011,22 @@ class AdaCNNAdaptingQLearner(object):
 
         # update experience
         if len(history_t)>=self.state_history_length:
-            self.experience.append([history_t,action_idx,reward,history_t_plus_1])
+            self.experience.append([history_t,action_idx,reward,history_t_plus_1,self.global_time_stamp])
+
+            if add_future_reward and len(self.experience)>2:
+                prev_action_string = self.get_action_string(self.action_list_with_index(self.experience[-2][1]))
+                # this is because the reward can be delayed
+                if 'add' in prev_action_string or 'remove' in prev_action_string:
+                    self.experience[-2][2] += 0.25*self.previous_reward
+
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
-                    self.experience.append([history_t, invalid_a, -1, history_t_plus_1])
-                    self.experience.append([history_t, invalid_a, 0.5, history_t_plus_1])
+                    self.experience.append([history_t, invalid_a, -0.5, history_t_plus_1,self.global_time_stamp])
+                    self.experience.append([history_t, invalid_a, 0.25, history_t_plus_1,self.global_time_stamp])
                 else:
-                    self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1])
-                    self.experience.append([history_t, invalid_a, 0.005, history_t_plus_1])
+                    self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1,self.global_time_stamp])
+                    self.experience.append([history_t, invalid_a, 0.005, history_t_plus_1,self.global_time_stamp])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
@@ -1005,8 +1038,8 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.info('\tReward: %.3f',reward)
         self.rl_logger.info('\t\tReward (Mean Acc) (Penalty): %.4f,%.4f',mean_accuracy,np.mean(aux_penalty))
 
+        self.previous_reward = reward
         self.local_time_stamp += 1
-        #if self.local_time_stamp%self.n_conv == 0:
         self.global_time_stamp += 1
 
         self.rl_logger.info('Global/Local time step: %d/%d\n',self.global_time_stamp,self.local_time_stamp)
