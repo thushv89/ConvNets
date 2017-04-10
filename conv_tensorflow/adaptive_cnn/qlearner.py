@@ -369,7 +369,11 @@ class AdaCNNAdaptingQLearner(object):
         self.output_size = self.calculate_output_size()
         self.input_size = self.calculate_input_size()
 
-        self.layer_info = [self.input_size,128, 64, 32,self.output_size]
+        self.layer_info = [self.input_size]
+        for hidden in params['hidden_layers']:
+            self.layer_info.append(hidden) # 128,64,32
+        self.layer_info.append(self.output_size)
+
         print(self.layer_info)
         self.current_state_history = []
         # Format of {phi(s_t),a_t,r_t,phi(s_t+1)}
@@ -378,8 +382,8 @@ class AdaCNNAdaptingQLearner(object):
         self.tf_weights,self.tf_bias = [],[]
         self.tf_target_weights,self.tf_target_biase = [],[]
 
-        self.momentum = 0.9
-        self.learning_rate = 0.005
+        self.momentum = params['momentum'] #0.9
+        self.learning_rate = params['learning_rate'] #0.005
 
         self.tf_init_mlp()
         self.tf_state_input = tf.placeholder(tf.float32, shape=(None, self.input_size),name='InputDataset')

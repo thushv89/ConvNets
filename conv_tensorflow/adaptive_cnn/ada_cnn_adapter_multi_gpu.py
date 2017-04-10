@@ -1128,7 +1128,7 @@ research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
     'adapt_structure' : True,
-    'hard_pool_acceptance_rate':0.1, 'accuracy_threshold_hard_pool':50,
+    'hard_pool_acceptance_rate':0.1,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,'pool_momentum':0.0,
     'use_custom_momentum_opt':True,
@@ -1142,9 +1142,8 @@ research_parameters = {
     'whiten_images':True,
     'finetune_rate': 0.5,
     'pool_randomize':True,
-    'pool_randomize_rate':0.5,
+    'pool_randomize_rate':0.25,
 }
-
 
 interval_parameters = {
     'history_dump_interval':500,
@@ -1455,7 +1454,8 @@ if __name__=='__main__':
                 epsilon=1.0, target_update_rate=25,
                 batch_size=32, persist_dir=output_dir,
                 session=session, random_mode=False,
-                state_history_length=state_history_length
+                state_history_length=state_history_length,
+                hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.005
             )
             reward_queue = queue.Queue(maxsize=state_history_length - 1)
 
