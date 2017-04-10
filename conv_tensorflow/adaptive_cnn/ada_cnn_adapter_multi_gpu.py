@@ -34,7 +34,7 @@ logging_format = '[%(funcName)s] %(message)s'
 
 batch_size = 128 # number of datapoints in a single batch
 # stationary 0.1 non-stationary 0.01
-start_lr = 0.1
+start_lr = 0.01
 min_learning_rate = 0.0001
 decay_learning_rate = True
 decay_rate = 0.5
@@ -1010,6 +1010,9 @@ def distort_img(img):
     if np.random.random()<0.4:
         brightness = np.random.random()*1.5 - 0.6
         img += brightness
+    if np.random.random()<0.4:
+        contrast = np.random.random()*0.8 + 0.4
+        img *= contrast
 
     return img
 
@@ -1137,6 +1140,9 @@ research_parameters = {
     'train_min_activation':False,
     'use_weighted_loss':True,
     'whiten_images':True,
+    'finetune_rate': 0.5,
+    'pool_randomize':True,
+    'pool_randomize_rate':0.5,
 }
 
 
@@ -1173,12 +1179,13 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-10'
+    datatype = 'cifar-100'
     behavior = 'non-stationary'
 
     if behavior=='non-stationary':
         start_lr = 0.01
     if research_parameters['adapt_structure']:
+
         decay_rate = 0.95
         use_dropout = False
 
@@ -1203,9 +1210,16 @@ if __name__=='__main__':
             dataset_size = 1280000
             chunk_size = 51200
 
+        pool_size = batch_size * 10 * num_labels
         test_size=10000
         test_dataset_filename='data_non_station'+os.sep+'cifar-10-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-test-labels.pkl'
+
+        if not research_parameters['adapt_structure']:
+            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
+        else:
+            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
+            filter_upper_bound, filter_lower_bound = 256, 64
 
     elif datatype=='cifar-100':
         image_size = 24
@@ -1223,9 +1237,17 @@ if __name__=='__main__':
             dataset_size = 1280000
             chunk_size = 51200
 
+        pool_size = batch_size * 2 * num_labels
         test_size=10000
-        test_dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-test-dataset.pkl'
-        test_label_filename = 'data_non_station'+os.sep+'cifar-100-nonstation-test-labels.pkl'
+        test_dataset_filename='data_non_station'+os.sep+'cifar-100-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
+
+        if not research_parameters['adapt_structure']:
+            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,256#C,3,1,512#Terminate,0,0,0"
+        else:
+            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
+            filter_upper_bound, filter_lower_bound = 512, 64
+
     elif datatype=='imagenet-100':
         image_size = 64
         num_labels = 100
@@ -1244,6 +1266,7 @@ if __name__=='__main__':
             dataset_size = 1280000
             chunk_size = 12800
 
+        pool_size = batch_size * 2 * num_labels
         test_size=5000
         test_dataset_filename='data_non_station'+os.sep+'imagenet-100-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'imagenet-100-test-labels.pkl'
@@ -1264,9 +1287,16 @@ if __name__=='__main__':
             dataset_size = 1280000
             chunk_size = 25600
 
+        pool_size = batch_size * 10 * num_labels
         test_size = 26032
         test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-dataset.pkl'
         test_label_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-labels.pkl'
+
+        if not research_parameters['adapt_structure']:
+            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#Terminate,0,0,0"
+        else:
+            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#Terminate,0,0,0"
+            filter_upper_bound, filter_lower_bound = 128, 64
 
     dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
@@ -1345,10 +1375,7 @@ if __name__=='__main__':
     logger.info('='*80)
 
     #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
-    if not research_parameters['adapt_structure']:
-        cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
-    else:
-        cnn_string = "C,5,1,32#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,128#Terminate,0,0,0"
+
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
@@ -1388,7 +1415,7 @@ if __name__=='__main__':
     with tf.Graph().as_default(), tf.device('/cpu:0'):
 
         hardness = 0.5
-        hard_pool = Pool(size=12800,batch_size=batch_size,image_size=image_size,num_channels=num_channels,num_labels=num_labels,assert_test=False)
+        hard_pool = Pool(size=pool_size,batch_size=batch_size,image_size=image_size,num_channels=num_channels,num_labels=num_labels,assert_test=False)
 
         first_fc = 'fulcon_out' if 'fulcon_0' not in cnn_ops else 'fulcon_0'
         # -1 is because we don't want to count pool_global
@@ -1422,7 +1449,7 @@ if __name__=='__main__':
             adapter = qlearner.AdaCNNAdaptingQLearner(
                 discount_rate=0.7, fit_interval=1,
                 exploratory_tries=50, exploratory_interval=250, stop_exploring_after=499,
-                filter_upper_bound=256, filter_min_bound=64,
+                filter_upper_bound=filter_upper_bound, filter_min_bound=filter_lower_bound,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
                 epsilon=1.0, target_update_rate=25,
@@ -1785,7 +1812,7 @@ if __name__=='__main__':
                     logger.info('='*60)
                     logger.info('')
 
-                    if abs(current_test_accuracy-prev_test_accuracy)>20:
+                    if research_parameters['adapt_structure'] and abs(current_test_accuracy-prev_test_accuracy)>20:
                         accuracy_drop_logger.info('%s,%d',state_action_history,current_test_accuracy-prev_test_accuracy)
 
                     prev_test_accuracy = current_test_accuracy
@@ -1974,6 +2001,15 @@ if __name__=='__main__':
 
                                 # optimize the newly added fiterls only
                                 pool_dataset, pool_labels = hard_pool.get_pool_data(True)
+                                if research_parameters['pool_randomize'] and np.random.random()<research_parameters['pool_randomize_rate']:
+                                    try:
+                                        pool = MPPool(processes=10)
+                                        distorted_imgs = pool.map(distort_img, pool_dataset)
+                                        pool_dataset = np.asarray(distorted_imgs)
+                                        pool.close()
+                                        pool.join()
+                                    except Exception:
+                                        raise AssertionError
 
                                 # this was done to increase performance and reduce overfitting
                                 # instead of optimizing with every single batch in the pool
@@ -2144,6 +2180,16 @@ if __name__=='__main__':
                                 op = cnn_ops[li]
                                 pool_dataset,pool_labels = hard_pool.get_pool_data(True)
 
+                                if research_parameters['pool_randomize'] and np.random.random()<research_parameters['pool_randomize_rate']:
+                                    try:
+                                        pool = MPPool(processes=10)
+                                        distorted_imgs = pool.map(distort_img, pool_dataset)
+                                        pool_dataset = np.asarray(distorted_imgs)
+                                        pool.close()
+                                        pool.join()
+                                    except Exception:
+                                        raise AssertionError
+
                                 # without if can give problems in exploratory stage because of no data in the pool
                                 pbatch_train_count = 0
                                 if hard_pool.get_size()>batch_size:
@@ -2151,18 +2197,22 @@ if __name__=='__main__':
                                     # Train with latter half of the data
 
                                     for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1,num_gpus):
-                                        pool_feed_dict = {}
-                                        for gpu_id in range(num_gpus):
-                                            pbatch_data = pool_dataset[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :, :, :]
-                                            pbatch_labels = pool_labels[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :]
-                                            pool_feed_dict.update({tf_pool_data_batch[gpu_id]:pbatch_data,tf_pool_label_batch[gpu_id]:pbatch_labels})
+                                        if np.random.random()<research_parameters['finetune_rate']:
+                                            pool_feed_dict = {}
+                                            for gpu_id in range(num_gpus):
+                                                pbatch_data = pool_dataset[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :, :, :]
+                                                pbatch_labels = pool_labels[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :]
+                                                pool_feed_dict.update({tf_pool_data_batch[gpu_id]:pbatch_data,tf_pool_label_batch[gpu_id]:pbatch_labels})
 
-                                        pbatch_train_count += 1
-                                        _, _ = session.run([apply_pool_grads_op,update_pool_velocity_ops], feed_dict=pool_feed_dict)
+                                            pbatch_train_count += 1
+                                            _, _ = session.run([apply_pool_grads_op,update_pool_velocity_ops], feed_dict=pool_feed_dict)
 
                                 break # action include finetune actions for number of conv layers there are
+
                         assert hard_pool.get_size()>0
-                        # updating the policy
+                        # ======================================
+                        # Policy Update
+                        # ======================================
                         pool_accuracy = []
                         pool_dataset, pool_labels = hard_pool.get_pool_data(False)
 
@@ -2218,7 +2268,8 @@ if __name__=='__main__':
                             '%d:%s:%s:%.5f:%s', (batch_id_multiplier*epoch)+batch_id, current_state, current_action,np.mean(pool_accuracy),
                             utils.get_cnn_string_from_ops(cnn_ops, cnn_hyperparameters)
                         )
-                        #q_logger.info('%d,%.5f',epoch*batch_id_multiplier + batch_id,adapter.get_average_Q())
+
+                        q_logger.info('%d,%.5f',epoch*batch_id_multiplier + batch_id,adapter.get_average_Q())
 
                         logger.debug('Resetting both data distribution means')
 

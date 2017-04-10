@@ -406,6 +406,10 @@ class AdaCNNAdaptingQLearner(object):
         self.min_epsilon = 0.1
         self.previous_reward = 0
 
+        self.rand_state_accum_rate = 0.25
+        self.rand_state_length = 50
+        self.rand_state_list = []
+
     def calculate_output_size(self):
         total = 0
         for _ in range(self.local_actions): # add and remove actions
@@ -596,6 +600,37 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('history_t+1:%s\n',history_t_plus_1)
         self.rl_logger.debug('Epsilons: %.3f\n',self.epsilon)
 
+        if len(history_t_plus_1)==self.state_history_length and self.global_time_stamp<250 and np.random.random()<self.rand_state_accum_rate:
+            if len(self.rand_state_list)<self.rand_state_length:
+                copy_state_history_plus_new_state = list(history_t_plus_1)
+                self.rand_state_list.append(self.phi(copy_state_history_plus_new_state))
+                #self.rl_logger.info('Original state: %s', self.rand_state_list[-1])
+
+                # add a mutated state once in a while
+                if np.random.random()<0.5:
+                    # for each layer,
+                    # if layer is a convolutional layer
+                    # for all the history items in state history
+                    # change the value of the item to create a new state
+                    for l_i in range(self.net_depth):
+                        if l_i in self.conv_ids:
+                            change_amount = np.random.randint(-self.filter_bound_vec[l_i] // 2,
+                                                              self.filter_bound_vec[l_i] // 2)
+                            for s_i in range(self.state_history_length):
+                                #print('%d,%d,%d',s_i,0,l_i+1)
+                                copy_state_history_plus_new_state[s_i][0][l_i+1] += change_amount
+                                if copy_state_history_plus_new_state[s_i][0][l_i+1] <= 0:
+                                    # because the amount of action remove is the minimum a layer can fall it's
+                                    # number of filters to
+                                    assert self.actions[-1][0]=='remove'
+                                    copy_state_history_plus_new_state[s_i][0][l_i + 1] = self.actions[-1][1]
+
+                                elif copy_state_history_plus_new_state[s_i][0][l_i+1] > self.filter_bound_vec[l_i]:
+                                    copy_state_history_plus_new_state[s_i][0][l_i + 1] = self.filter_bound_vec[l_i]
+
+                    self.rand_state_list.append(self.phi(copy_state_history_plus_new_state))
+                    #self.rl_logger.info('Mutated state: %s',self.rand_state_list[-1])
+
         # we try actions evenly otherwise cannot have the approximator
         if self.random_mode or (
                     (self.global_time_stamp%self.explore_interval)<self.explore_tries//2 and
@@ -720,8 +755,12 @@ class AdaCNNAdaptingQLearner(object):
 
             # Check if the next filter count is invalid for any layer
             found_valid_action = False
-            allowed_actions = [tmp for tmp in range(self.output_size)]
-
+            if self.global_time_stamp>self.stop_exploring_after:
+                allowed_actions = np.argsort(q_for_actions).flatten()[int(1.0*self.output_size/4.0):] #Only get a random index from the highest q values
+                allowed_actions = allowed_actions.tolist()
+            else:
+                allowed_actions = [tmp for tmp in range(self.output_size)]
+                
             while not found_valid_action and action_idx<self.output_size-2:
                 self.rl_logger.debug('Checking action validity')
                 if action_idx>=self.output_size-2:
@@ -1045,17 +1084,18 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.info('Global/Local time step: %d/%d\n',self.global_time_stamp,self.local_time_stamp)
 
     def get_average_Q(self):
-        state_collection = None
-        with open('QMetricStates.pickle', 'rb') as f:
-            state_collection = pickle.load(f)
-
         x = None
-        for phi_t in state_collection:
-            if x is None:
-                x = np.asarray(get_ohe_state_history(phi_t)).reshape((1, -1))
-            else:
-                x = np.append(x, np.asarray(get_ohe_state_history(phi_t)).reshape((1, -1)), axis=0)
+        if len(self.rand_state_list)==self.rand_state_length:
+            for s_t in self.rand_state_list:
+                s_t = np.asarray(s_t).reshape(1,-1)
+                if x is None:
+                    x = s_t
+                else:
+                    x = np.append(x, s_t, axis=0)
 
-        q_pred = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:x})
-        self.rl_logger.debug('Shape of q_pred: %s',q_pred.shape)
-        return np.mean(np.max(q_pred,axis=0))
+            self.rl_logger.debug('Shape of x: %s', x.shape)
+            q_pred = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:x})
+            self.rl_logger.debug('Shape of q_pred: %s',q_pred.shape)
+            return np.mean(np.max(q_pred,axis=1))
+        else:
+            return 0.0
