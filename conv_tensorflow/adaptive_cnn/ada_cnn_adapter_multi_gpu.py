@@ -1455,7 +1455,8 @@ if __name__=='__main__':
                 batch_size=32, persist_dir=output_dir,
                 session=session, random_mode=False,
                 state_history_length=state_history_length,
-                hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.005
+                hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.005,
+                rand_state_length=32
             )
             reward_queue = queue.Queue(maxsize=state_history_length - 1)
 

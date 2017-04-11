@@ -313,6 +313,7 @@ class AdaCNNAdaptingQLearner(object):
         rewarddistHandler = logging.FileHandler(self.persit_dir + os.sep + 'reward.log', mode='w')
         rewarddistHandler.setFormatter(logging.Formatter('%(message)s'))
         self.reward_logger.addHandler(rewarddistHandler)
+        self.reward_logger.info('#batch_id,reward')
 
         self.action_logger = logging.getLogger('action_logger')
         self.action_logger.setLevel(logging.INFO)
@@ -374,7 +375,8 @@ class AdaCNNAdaptingQLearner(object):
             self.layer_info.append(hidden) # 128,64,32
         self.layer_info.append(self.output_size)
 
-        print(self.layer_info)
+        self.rl_logger.info('Target Network Layer sizes: %s',self.layer_info)
+
         self.current_state_history = []
         # Format of {phi(s_t),a_t,r_t,phi(s_t+1)}
         self.experience = []
@@ -411,7 +413,7 @@ class AdaCNNAdaptingQLearner(object):
         self.previous_reward = 0
 
         self.rand_state_accum_rate = 0.25
-        self.rand_state_length = 50
+        self.rand_state_length = params['rand_state_length']
         self.rand_state_list = []
 
     def calculate_output_size(self):
@@ -604,7 +606,7 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('history_t+1:%s\n',history_t_plus_1)
         self.rl_logger.debug('Epsilons: %.3f\n',self.epsilon)
 
-        if len(history_t_plus_1)==self.state_history_length and self.global_time_stamp<250 and np.random.random()<self.rand_state_accum_rate:
+        if len(history_t_plus_1)==self.state_history_length and self.global_time_stamp<300 and np.random.random()<self.rand_state_accum_rate:
             if len(self.rand_state_list)<self.rand_state_length:
                 copy_state_history_plus_new_state = list(history_t_plus_1)
                 self.rand_state_list.append(self.phi(copy_state_history_plus_new_state))
@@ -1103,3 +1105,9 @@ class AdaCNNAdaptingQLearner(object):
             return np.mean(np.max(q_pred,axis=1))
         else:
             return 0.0
+
+    def reset_loggers(self):
+        self.rl_logger.handlers = []
+        self.action_logger.handlers = []
+        self.reward_logger.handlers = []
+        self.q_logger.handlers = []
