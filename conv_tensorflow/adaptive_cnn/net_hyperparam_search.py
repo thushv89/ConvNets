@@ -1348,6 +1348,14 @@ if __name__=='__main__':
 
     best_lr,best_l2beta,best_lrn_rad,best_lrn_alpha,best_lrn_beta = learning_rates[0],l2_betas[0],lrn_rads[0],lrn_alphas[0],lrn_betas[0]
 
+    besthyp_logger = logging.getLogger('best_hyp_logger')
+    besthyp_logger.setLevel(logging.INFO)
+    bestHandler = logging.FileHandler(output_dir + os.sep + 'best_hyps.log', mode='w')
+    bestHandler.setFormatter(logging.Formatter('%(message)s'))
+    besthyp_logger.handlers = []
+    besthyp_logger.addHandler(bestHandler)
+    besthyp_logger.info('#BEST HYPERPARAMETERS')
+
     for hp_i,tuning_set in enumerate([learning_rates,l2_betas,lrn_rads,lrn_alphas,lrn_betas]):
         if hp_i==0:
             hyparam='learning_rate'
@@ -1363,6 +1371,8 @@ if __name__=='__main__':
         prim_sub_output_dir = os.path.join(output_dir, 'testing_' + hyparam)
         if not os.path.exists(prim_sub_output_dir):
             os.makedirs(prim_sub_output_dir)
+
+        max_test_accuracy_for_tuningset = 0
 
         for value in tuning_set:
 
@@ -1741,6 +1751,7 @@ if __name__=='__main__':
                 assert batches_in_chunk%num_gpus ==0
                 assert num_gpus>0
 
+                max_test_accuracy = 0
                 for epoch in range(epochs):
                     memmap_idx = 0
 
@@ -1824,7 +1835,8 @@ if __name__=='__main__':
 
                         if np.isnan(l):
                             logger.critical('Diverged (NaN detected) (batchID) %d (last Cost) %.3f',chunk_batch_id,train_losses[-1])
-                        assert not np.isnan(l)
+                            error_logger.info('NaN detected')
+                            continue
 
                         # rolling activation mean update
                         for op,op_activations in current_activations.items():
@@ -1893,6 +1905,9 @@ if __name__=='__main__':
                                     logger.debug('=' * 80)
 
                             current_test_accuracy = np.mean(test_accuracies)
+                            if current_test_accuracy > max_test_accuracy:
+                                max_test_accuracy = current_test_accuracy
+
                             logger.info('\tTest Accuracy: %.3f'%current_test_accuracy)
                             logger.info('='*60)
                             logger.info('')
@@ -2385,3 +2400,26 @@ if __name__=='__main__':
                     if research_parameters['adapt_structure']:
                         adapter.reset_loggers() # otherwise logger starts printing multiples of the same thing
 
+            if max_test_accuracy>max_test_accuracy_for_tuningset:
+                max_test_accuracy_for_tuningset = max_test_accuracy
+                if hyparam == 'learning_rate':
+                    best_lr = value
+                    besthyp_logger.info('Best learning rate: %.6f',value)
+                elif hyparam == 'l2_beta':
+                    best_l2beta = value
+                    if value is not None:
+                        besthyp_logger.info('Best L2Beta: %.6f', value)
+                    else:
+                        besthyp_logger.info('Best L2Beta: None')
+                elif hyparam == 'lrn_rads':
+                    best_lrn_rad = value
+                    if value is not None:
+                        besthyp_logger.info('Best LRN radius: %.6f', value)
+                    else:
+                        besthyp_logger.info('Best LRN Radius: None')
+                elif hyparam == 'lrn_alpha':
+                    best_lrn_alpha = value
+                    besthyp_logger.info('Best LRN alpha: %.6f', value)
+                elif hyparam == 'lrn_beta':
+                    best_lrn_beta = value
+                    besthyp_logger.info('Best LRN Beta: %.6f', value)
