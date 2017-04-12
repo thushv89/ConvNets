@@ -50,6 +50,10 @@ iterations_per_batch = 1
 epochs = 5
 final_2d_width = 3
 
+lrn_radius = 5
+lrn_alpha = 0.0001
+lrn_beta = 0.75
+
 TOWER_NAME = 'tower'
 
 TF_LOSS_VEC_STR = 'loss_vector'
@@ -161,7 +165,7 @@ def inference(dataset,tf_cnn_hyperparameters,training):
                 activation_ops.append(tf.assign(tf.get_variable(TF_ACTIVAIONS_STR),tf.reduce_max(x,[0,1,2]),validate_shape=False))
 
                 if use_loc_res_norm and op==last_conv_id:
-                    x = tf.nn.local_response_normalization(x,depth_radius=4,alpha=0.001/9.0, beta=0.75) # hyperparameters from tensorflow cifar10 tutorial
+                    x = tf.nn.local_response_normalization(x,depth_radius=lrn_radius,alpha=lrn_alpha, beta=lrn_beta) # hyperparameters from tensorflow cifar10 tutorial
 
         if 'pool' in op:
             logger.debug('\tPooling (%s) with Kernel:%s Stride:%s'%(op,cnn_hyperparameters[op]['kernel'],cnn_hyperparameters[op]['stride']))
@@ -174,7 +178,7 @@ def inference(dataset,tf_cnn_hyperparameters,training):
                                    strides=cnn_hyperparameters[op]['stride'],
                                    padding=cnn_hyperparameters[op]['padding'])
             if use_loc_res_norm and 'pool_global'!= op:
-                x = tf.nn.local_response_normalization(x,depth_radius=4,alpha=0.001/9.0, beta=0.75)
+                x = tf.nn.local_response_normalization(x,depth_radius=lrn_radius,alpha=lrn_alpha, beta=lrn_beta)
 
         if 'fulcon' in op:
             with tf.variable_scope(op,reuse=True) as scope:
@@ -1178,14 +1182,28 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-100'
-    behavior = 'non-stationary'
+    datatype = 'cifar-10'
+    behavior = 'stationary'
+    research_parameters['adapt_structure'] = True
 
     if behavior=='non-stationary':
+        include_l2_loss = False
+        use_loc_res_norm = True
+        lrn_radius = 5
+        lrn_alpha = 0.0001
+        lrn_beta = 0.75
         start_lr = 0.01
-    if research_parameters['adapt_structure']:
+        decay_rate = 0.8
+    elif behavior =='stationary':
+        start_lr = 0.01
+        include_l2_loss = True
+        beta = 0.0001
+        use_loc_res_norm = False
+        decay_rate = 0.5
+    else:
+        raise NotImplementedError
 
-        decay_rate = 0.95
+    if research_parameters['adapt_structure']:
         use_dropout = False
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
@@ -1446,7 +1464,7 @@ if __name__=='__main__':
             # Adapting Policy Learner
             state_history_length = 4
             adapter = qlearner.AdaCNNAdaptingQLearner(
-                discount_rate=0.7, fit_interval=1,
+                discount_rate=0.9, fit_interval=1,
                 exploratory_tries=50, exploratory_interval=250, stop_exploring_after=499,
                 filter_upper_bound=filter_upper_bound, filter_min_bound=filter_lower_bound,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
@@ -1455,7 +1473,7 @@ if __name__=='__main__':
                 batch_size=32, persist_dir=output_dir,
                 session=session, random_mode=False,
                 state_history_length=state_history_length,
-                hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.005,
+                hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.01,
                 rand_state_length=32
             )
             reward_queue = queue.Queue(maxsize=state_history_length - 1)
