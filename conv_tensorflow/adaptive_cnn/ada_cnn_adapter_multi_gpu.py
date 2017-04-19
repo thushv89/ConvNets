@@ -1890,7 +1890,7 @@ if __name__=='__main__':
 
                     if batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
 
-                        pool_accuracy = []
+                        '''pool_accuracy = []
                         pool_dataset, pool_labels = hard_pool.get_pool_data(False)
                         for pool_id in range((hard_pool.get_size()//batch_size)//2):
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
@@ -1900,7 +1900,7 @@ if __name__=='__main__':
                             p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
                             pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
-                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0
+                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0'''
                         # update distance measure for class distirbution
                         distMSE = 0.0
                         for li in range(num_labels):
@@ -2267,6 +2267,7 @@ if __name__=='__main__':
                         logger.info('\tState (next): %s\n', str(next_state))
                         p_accuracy = np.mean(pool_accuracy) if len(pool_accuracy) > 2 else 0
                         logger.info('\tPool Accuracy: %.3f\n',p_accuracy)
+                        logger.info('\tPrev pool Accuracy: %.3f\n',prev_pool_accuracy)
                         assert not np.isnan(p_accuracy)
                         adapter.update_policy({'prev_state': current_state, 'prev_action': current_action,
                                                'curr_state': next_state,
@@ -2276,12 +2277,6 @@ if __name__=='__main__':
                                                'prev_pool_accuracy': prev_pool_accuracy,
                                                'invalid_actions':curr_invalid_actions},True)
 
-                            #if not reward_queue.full():
-                                #reward_queue.put(np.mean(pool_accuracy))
-                                #prev_pool_accuracy = 0
-                            #else:
-                                #prev_pool_accuracy = reward_queue.get()
-                                #reward_queue.put(np.mean(pool_accuracy))
                         if len(state_action_history)>10:
                             del state_action_history[0]
 
@@ -2301,6 +2296,7 @@ if __name__=='__main__':
                             rolling_data_distribution[li]=0.0
                             mean_data_distribution[li]=0.0
 
+                        prev_pool_accuracy = p_accuracy
 
                     if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
 
