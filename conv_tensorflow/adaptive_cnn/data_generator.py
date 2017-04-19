@@ -100,13 +100,7 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,use_counter):
 
     num_channels = dataset_info['num_channels']
 
-    if dataset_type=='imagenet-100':
-        resize_to = dataset_info['resize_to']
-    elif dataset_type=='cifar-10' or dataset_type=='cifar-100':
-        resize_to = dataset_info['resize_to']
-    elif dataset_type=='svhn-10':
-        ops = ['original', 'rotate', 'brightness', 'contrast', 'flip']
-        choice_probs = [0.2, 0.1, 0.25, 0.25, 0.2]
+    resize_to = dataset_info['resize_to']
 
     image_index = np.random.choice(list(np.where(dataset['labels']==label)[0].flatten()))
     # don't use single image too much. It seems lot of data is going unused
@@ -144,9 +138,7 @@ def get_augmented_sample_for_label(dataset_info,dataset,label,use_counter):
         cont_enhancer = ImageEnhance.Contrast(im)
         im = cont_enhancer.enhance(cont_amount)
 
-
-
-    if np.random.random()<0.4:
+    if dataset_type!= 'svhn-10' and np.random.random()<0.4:
         im = im.transpose(Image.FLIP_LEFT_RIGHT)
 
     if save_gen_data and np.random.random() < 0.1:
@@ -467,7 +459,9 @@ def load_slice_from_svhn_10(dataset_info,data_filename,start_idx,end_idx):
         data_dict = scipy.io.loadmat(data_filename)
         X,y = data_dict['X'],data_dict['y']
 
-        train_dataset = np.asarray(X.transpose(3,0,1,2),dtype=np.float32)
+        train_dataset = np.asarray(X.transpose(3,0,1,2),dtype=np.uint8)
+
+        assert np.max(train_dataset[:10, :, :, :]) <= 255 and np.max(train_dataset[:10, :, :, :]) > 80
         train_labels = np.asarray(y,dtype=np.int32).reshape(-1,)
         train_labels = train_labels - 1 # labels go from 1 to 10
 
@@ -583,12 +577,14 @@ def generate_svhn_test_data(dataset_info, data_filename,save_directory):
     data_dict = scipy.io.loadmat(data_filename)
     X, y = data_dict['X'], data_dict['y']
 
-    test_dataset = np.asarray(X.transpose(3, 0, 1, 2), dtype=np.float32)
+    test_dataset = np.asarray(X.transpose(3, 0, 1, 2), dtype=np.uint8)
+    assert np.max(test_dataset[:10,:,:,:])<=255 and np.max(test_dataset[:10,:,:,:])>80
+
     test_labels = np.asarray(y, dtype=np.int32).reshape(-1,)
     test_labels = test_labels - 1
 
-    fp1 = np.memmap(filename=save_directory+os.sep+'svhn-10-nonstation-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
-    fp2 = np.memmap(filename=save_directory+os.sep+'svhn-10-nonstation-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
+    fp1 = np.memmap(filename=save_directory+os.sep+'svhn-10-test-dataset.pkl', dtype='float32', mode='w+', shape=(test_size,image_size,image_size,num_channels))
+    fp2 = np.memmap(filename=save_directory+os.sep+'svhn-10-test-labels.pkl', dtype='int32', mode='w+', shape=(test_size,1))
 
     idx = 0
     for img,lbl in zip(test_dataset,test_labels[:]):
@@ -655,7 +651,7 @@ if __name__ == '__main__':
 
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
-    dataset_type = 'cifar-10'  # 'cifar-10 imagenet-100
+    dataset_type = 'svhn-10'  # 'cifar-10 imagenet-100
     distribution_type = 'non-stationary'
     distribution_type2 = 'gauss'  # gauss or step
     data_save_directory = 'data_non_station'
@@ -702,13 +698,14 @@ if __name__ == '__main__':
 
     elif dataset_type == 'svhn-10':
         image_size = 32
+        resize_to = 32
         num_labels = 10
         num_channels = 3
         dataset_size = 73257
         test_size = 26032
         image_use_counter = {}
         dataset_info = {'dataset_type': dataset_type, 'elements': elements, 'chunk_size': chunk_size,
-                        'image_size': image_size,
+                        'image_size': image_size,'resize_to':resize_to,
                         'num_channels': num_channels, 'num_labels': num_labels, 'dataset_size': dataset_size,
                         'test_size': test_size}
 
@@ -776,7 +773,7 @@ if __name__ == '__main__':
 
         print(new_dataset_filename)
         sample_svhn_10_with_distribution(dataset_info, train_data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
-        #generate_svhn_test_data(dataset_info,test_data_filename,data_save_directory)
+        generate_svhn_test_data(dataset_info,test_data_filename,data_save_directory)
 
     elif dataset_type == 'cifar-10':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-10.pickle'

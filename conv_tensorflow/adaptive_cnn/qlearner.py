@@ -8,7 +8,7 @@ import json
 import random
 import logging
 import sys
-from math import ceil
+from math import ceil,floor
 from six.moves import cPickle as pickle
 import os
 from sklearn.neural_network import MLPRegressor
@@ -321,10 +321,6 @@ class AdaCNNAdaptingQLearner(object):
         actionHandler.setFormatter(logging.Formatter('%(message)s'))
         self.action_logger.addHandler(actionHandler)
 
-        self.explore_tries = params['exploratory_tries']
-        self.explore_interval = params['exploratory_interval']
-        self.stop_exploring_after = params['stop_exploring_after']
-
         self.batch_size = params['batch_size']
 
         self.net_depth = params['net_depth']
@@ -332,7 +328,7 @@ class AdaCNNAdaptingQLearner(object):
         self.conv_ids = params['conv_ids']
         self.random_mode = params['random_mode']
 
-        self.filter_bound_vec = self.make_filter_bound_vector(self.filter_upper_bound, self.net_depth,self.conv_ids)
+        self.filter_bound_vec = self.make_filter_bound_vector(self.filter_upper_bound, self.net_depth,self.conv_ids,params['impose_pyramid_structure'])
 
         self.rl_logger = logging.getLogger('Adapting Policy Logger')
         self.rl_logger.setLevel(logging_level)
@@ -347,7 +343,7 @@ class AdaCNNAdaptingQLearner(object):
 
         self.actions = [
             ('do_nothing', 0),('finetune', 0),
-            ('add',8),('remove',4)
+            ('add',params['add_amount']),('remove',params['remove_amount'])
         ]
         self.q_logger.info('#%s',self.actions)
 
@@ -359,7 +355,7 @@ class AdaCNNAdaptingQLearner(object):
         self.same_action_count = [0 for _ in range(self.net_depth)]
         self.epsilon = params['epsilon']
 
-        self.same_action_threshold = 25
+        self.same_action_threshold = 50
 
         # Of format {s1,a1,s2,a2,s3,a3} NOTE that this doesnt hold the current state
         self.state_history_length = params['state_history_length']
@@ -369,6 +365,10 @@ class AdaCNNAdaptingQLearner(object):
         self.local_actions, self.global_actions = 2,2
         self.output_size = self.calculate_output_size()
         self.input_size = self.calculate_input_size()
+
+        self.explore_tries = self.output_size * params['exploratory_tries_factor']
+        self.explore_interval = params['exploratory_interval']
+        self.stop_exploring_after = params['stop_exploring_after']
 
         self.layer_info = [self.input_size]
         for hidden in params['hidden_layers']:
@@ -411,6 +411,7 @@ class AdaCNNAdaptingQLearner(object):
 
         self.min_epsilon = 0.1
         self.previous_reward = 0
+        self.prev_prev_pool_accuracy = 0
 
         self.rand_state_accum_rate = 0.25
         self.rand_state_length = params['rand_state_length']
@@ -495,17 +496,26 @@ class AdaCNNAdaptingQLearner(object):
         return update_ops
 
 
-    def make_filter_bound_vector(self, n_fil,n_layer,conv_ids):
+    def make_filter_bound_vector(self, n_fil,n_layer,conv_ids,pyramid):
         fil_vec = []
-        curr_fil = n_fil/2**(len(conv_ids)-1)
-        for li in range(n_layer):
-            if li in conv_ids:
-                fil_vec.append(max(self.filter_min_bound,int(curr_fil)))
-                curr_fil *= 2
-            else:
-                fil_vec.append(0)
+        if pyramid:
+            curr_fil = n_fil/2**(len(conv_ids)-1)
+            for li in range(n_layer):
+                if li in conv_ids:
+                    fil_vec.append(max(self.filter_min_bound,int(curr_fil)))
+                    curr_fil *= 2
+                else:
+                    fil_vec.append(0)
 
-        assert len(fil_vec)==n_layer
+            assert len(fil_vec)==n_layer
+        else:
+            for li in range(n_layer):
+                if li in conv_ids:
+                    fil_vec.append(int(n_fil))
+                else:
+                    fil_vec.append(0)
+
+            assert len(fil_vec) == n_layer
         return fil_vec
 
     def restore_policy(self,**restore_data):
@@ -639,7 +649,7 @@ class AdaCNNAdaptingQLearner(object):
 
         # we try actions evenly otherwise cannot have the approximator
         if self.random_mode or (
-                    (self.global_time_stamp%self.explore_interval)<self.explore_tries//2 and
+                    (self.global_time_stamp%self.explore_interval)<ceil(self.explore_tries/2.0) and
                         self.global_time_stamp<self.stop_exploring_after):
             action_type = 'Exploratory'
             self.rl_logger.info('(Exploratory Mode) Choosing action exploratory...')
@@ -745,7 +755,7 @@ class AdaCNNAdaptingQLearner(object):
 
             # not to restrict from the beginning
             if self.global_time_stamp>self.stop_exploring_after:
-                rand_indices = np.argsort(q_for_actions).flatten()[int(1.0*self.output_size/4.0):] #Only get a random index from the highest q values
+                rand_indices = np.argsort(q_for_actions).flatten()[floor(1.0*self.output_size/4.0):] #Only get a random index from the highest q values
                 self.rl_logger.info('Allowed action indices: %s',rand_indices)
                 action_idx = np.random.choice(rand_indices)
             else:
@@ -762,7 +772,7 @@ class AdaCNNAdaptingQLearner(object):
             # Check if the next filter count is invalid for any layer
             found_valid_action = False
             if self.global_time_stamp>self.stop_exploring_after:
-                allowed_actions = np.argsort(q_for_actions).flatten()[int(1.0*self.output_size/4.0):] #Only get a random index from the highest q values
+                allowed_actions = np.argsort(q_for_actions).flatten()[floor(1.0*self.output_size/4.0):] #Only get a random index from the highest q values
                 allowed_actions = allowed_actions.tolist()
             else:
                 allowed_actions = [tmp for tmp in range(self.output_size)]
@@ -818,7 +828,8 @@ class AdaCNNAdaptingQLearner(object):
 
         if self.prev_action is not None and \
                         self.get_action_string(layer_actions_list) == self.get_action_string(self.prev_action):
-            self.same_action_count += 1
+            #self.same_action_count += 1
+            self.same_action_count = 0
         else:
             self.same_action_count = 0
 
@@ -1060,9 +1071,13 @@ class AdaCNNAdaptingQLearner(object):
 
             if add_future_reward and len(self.experience)>2:
                 prev_action_string = self.get_action_string(self.action_list_with_index(self.experience[-2][1]))
+                curr_action_string = self.get_action_string(ai_list)
                 # this is because the reward can be delayed
-                if 'add' in prev_action_string or 'remove' in prev_action_string:
-                    self.experience[-2][2] += 0.25*self.previous_reward
+                if 'finetune' in curr_action_string and ('add' in prev_action_string or 'remove' in prev_action_string):
+                    self.rl_logger.info('Updating reward for %s', prev_action_string)
+                    self.rl_logger.info('\tFrom: %.3f',self.experience[-2][2])
+                    self.experience[-2][2] += (data['pool_accuracy'] - self.prev_prev_pool_accuracy)/100.0
+                    self.rl_logger.info('\tTo: %.3f\n', self.experience[-2][2])
 
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
@@ -1084,6 +1099,8 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.info('\t\tReward (Mean Acc) (Penalty): %.4f,%.4f',mean_accuracy,np.mean(aux_penalty))
 
         self.previous_reward = reward
+        self.prev_prev_pool_accuracy = data['prev_pool_accuracy']
+
         self.local_time_stamp += 1
         self.global_time_stamp += 1
 

@@ -1502,7 +1502,7 @@ if __name__=='__main__':
                         session=session, random_mode=False,
                         state_history_length=state_history_length,
                         hidden_layers = best_hidden, momentum=0.9, learning_rate = best_learning_rate,
-                        rand_state_length=32
+                        rand_state_length=32,add_amount=8,remove_amount=4,impose_pyramid_structure=False
                     )
                 elif hyparam == 'learning_rate':
                     adapter = qlearner.AdaCNNAdaptingQLearner(
@@ -1516,7 +1516,7 @@ if __name__=='__main__':
                         session=session, random_mode=False,
                         state_history_length=state_history_length,
                         hidden_layers=best_hidden, momentum=0.9, learning_rate=value,
-                        rand_state_length=32
+                        rand_state_length=32,add_amount=8,remove_amount=4,impose_pyramid_structure=False
                     )
                 elif hyparam=='hidden_layers':
                     adapter = qlearner.AdaCNNAdaptingQLearner(
@@ -1530,7 +1530,7 @@ if __name__=='__main__':
                         session=session, random_mode=False,
                         state_history_length=state_history_length,
                         hidden_layers=value, momentum=0.9, learning_rate=best_learning_rate,
-                        rand_state_length=32
+                        rand_state_length=32,add_amount=8,remove_amount=4,impose_pyramid_structure=False
                     )
                 else:
                     raise NotImplementedError
@@ -1848,7 +1848,7 @@ if __name__=='__main__':
 
                     if np.random.random()<research_parameters['hard_pool_acceptance_rate']:
                         train_accuracy = np.mean([accuracy(train_predictions[gid],batch_labels[gid]) for gid in range(num_gpus)])/100.0
-                        hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,1.0-train_accuracy)
+                        hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,max(0.1,(1.0-train_accuracy)))
                         logger.debug('Pooling data summary')
                         logger.debug('\tData batch size %d',single_iteration_batch_data.shape[0])
                         logger.debug('\tAccuracy %.3f', train_accuracy)

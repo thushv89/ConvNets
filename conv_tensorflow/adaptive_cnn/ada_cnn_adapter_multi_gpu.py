@@ -1151,7 +1151,7 @@ research_parameters = {
 
 interval_parameters = {
     'history_dump_interval':500,
-    'policy_interval' : 20, #number of batches to process for each policy iteration
+    'policy_interval' : 25, #number of batches to process for each policy iteration
     'test_interval' : 100
 }
 
@@ -1182,8 +1182,8 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-10'
-    behavior = 'stationary'
+    datatype = 'svhn-10'
+    behavior = 'non-stationary'
     research_parameters['adapt_structure'] = True
 
     if behavior=='non-stationary':
@@ -1193,7 +1193,7 @@ if __name__=='__main__':
         lrn_alpha = 0.0001
         lrn_beta = 0.75
         start_lr = 0.01
-        decay_rate = 0.8
+        decay_rate = 0.6
     elif behavior =='stationary':
         start_lr = 0.01
         include_l2_loss = True
@@ -1215,7 +1215,7 @@ if __name__=='__main__':
         num_labels = 10
         num_channels = 3 # rgb
         dataset_size = 50000
-
+        final_2d_width = 3
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
@@ -1243,6 +1243,7 @@ if __name__=='__main__':
         num_labels = 100
         num_channels = 3 # rgb
         dataset_size = 50000
+        final_2d_width = 3
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
@@ -1264,7 +1265,7 @@ if __name__=='__main__':
         else:
             cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
             filter_upper_bound, filter_lower_bound = 512, 64
-
+            add_amount, remove_amount = 8, 4
     elif datatype=='imagenet-100':
         image_size = 64
         num_labels = 100
@@ -1287,12 +1288,13 @@ if __name__=='__main__':
         test_size=5000
         test_dataset_filename='data_non_station'+os.sep+'imagenet-100-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'imagenet-100-test-labels.pkl'
-
+        add_amount, remove_amount = 8, 4
     elif datatype=='svhn-10':
         image_size = 32
         num_labels = 10
         num_channels = 3
         dataset_size = 128000
+        final_2d_width = 2
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'svhn-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'svhn-10-nonstation-labels.pkl'
@@ -1306,14 +1308,15 @@ if __name__=='__main__':
 
         pool_size = batch_size * 10 * num_labels
         test_size = 26032
-        test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-dataset.pkl'
-        test_label_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-labels.pkl'
+        test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-test-dataset.pkl'
+        test_label_filename = 'data_non_station' + os.sep + 'svhn-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#Terminate,0,0,0"
+            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#Terminate,0,0,0"
+            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
             filter_upper_bound, filter_lower_bound = 128, 64
+            add_amount, remove_amount = 4,2
 
     dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
@@ -1465,7 +1468,7 @@ if __name__=='__main__':
             state_history_length = 4
             adapter = qlearner.AdaCNNAdaptingQLearner(
                 discount_rate=0.9, fit_interval=1,
-                exploratory_tries=50, exploratory_interval=250, stop_exploring_after=499,
+                exploratory_tries_factor=5, exploratory_interval=100, stop_exploring_after=150,
                 filter_upper_bound=filter_upper_bound, filter_min_bound=filter_lower_bound,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
@@ -1474,7 +1477,8 @@ if __name__=='__main__':
                 session=session, random_mode=False,
                 state_history_length=state_history_length,
                 hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.01,
-                rand_state_length=32
+                rand_state_length=32,add_amount=add_amount,remove_amount = remove_amount,
+                impose_pyramid_structure=False
             )
             reward_queue = queue.Queue(maxsize=state_history_length - 1)
 
@@ -1790,7 +1794,7 @@ if __name__=='__main__':
 
                 if np.random.random()<research_parameters['hard_pool_acceptance_rate']:
                     train_accuracy = np.mean([accuracy(train_predictions[gid],batch_labels[gid]) for gid in range(num_gpus)])/100.0
-                    hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,1.0-train_accuracy)
+                    hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,max(0.1,(1.0-train_accuracy)))
                     logger.debug('Pooling data summary')
                     logger.debug('\tData batch size %d',single_iteration_batch_data.shape[0])
                     logger.debug('\tAccuracy %.3f', train_accuracy)
