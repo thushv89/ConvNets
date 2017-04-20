@@ -1132,13 +1132,14 @@ research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
     'adapt_structure' : True,
-    'hard_pool_acceptance_rate':0.1,
+    'hard_pool_acceptance_rate':0.1*2,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,'pool_momentum':0.0,
     'use_custom_momentum_opt':True,
     'remove_filters_by':'Activation',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
     'loss_diff_threshold':0.02,
+    'start_adapting_after':1000,
     'debugging':True if logging_level==logging.DEBUG else False,
     'stop_training_at':11000,
     'train_min_activation':False,
@@ -1182,7 +1183,7 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'svhn-10'
+    datatype = 'cifar-10'
     behavior = 'non-stationary'
     research_parameters['adapt_structure'] = True
 
@@ -1237,6 +1238,7 @@ if __name__=='__main__':
         else:
             cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
             filter_upper_bound, filter_lower_bound = 256, 64
+            add_amount, remove_amount = 4, 2
 
     elif datatype=='cifar-100':
         image_size = 24
@@ -1266,6 +1268,7 @@ if __name__=='__main__':
             cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
             filter_upper_bound, filter_lower_bound = 512, 64
             add_amount, remove_amount = 8, 4
+
     elif datatype=='imagenet-100':
         image_size = 64
         num_labels = 100
@@ -1671,7 +1674,8 @@ if __name__=='__main__':
         logger.info('Batches in Chunk : %d',batches_in_chunk)
 
         previous_loss = 1e5 # used for the check to start adapting
-        prev_pool_accuracy = 0
+        #prev_pool_accuracy = 0
+        max_pool_accuracy =0
         start_adapting = False
 
         batch_id_multiplier = (dataset_size//batch_size) - interval_parameters['test_interval']
@@ -1740,12 +1744,9 @@ if __name__=='__main__':
 
                 t0_train = time.clock()
                 for _ in range(iterations_per_batch):
-                    if research_parameters['optimizer']=='Momentum':
-                        _, _,l, super_loss_vec, current_activations_list,train_predictions = session.run(
-                            [apply_grads_op, update_train_velocity_op,mean_loss_op, concat_loss_vec_op, tf_mean_activation,tower_predictions], feed_dict=train_feed_dict
-                        )
-                    else:
-                        raise NotImplementedError
+                    _, _,l, super_loss_vec, current_activations_list,train_predictions = session.run(
+                        [apply_grads_op, update_train_velocity_op,mean_loss_op, concat_loss_vec_op, tf_mean_activation,tower_predictions], feed_dict=train_feed_dict
+                    )
 
                 t1_train = time.clock()
 
@@ -1844,10 +1845,13 @@ if __name__=='__main__':
                                       next_valid_accuracy,np.mean(test_accuracies)
                                       )
                     if research_parameters['adapt_structure'] and \
-                            not start_adapting and previous_loss - mean_train_loss < research_parameters['loss_diff_threshold']:
+                            not start_adapting and\
+                            (previous_loss - mean_train_loss < research_parameters['loss_diff_threshold'] and batch_id>research_parameters['start_adapting_after']):
                         start_adapting = True
+                        research_parameters['hard_pool_acceptance_rate'] /= 2.0
                         logger.info('=' * 80)
                         logger.info('Loss Stabilized: Starting structural adaptations...')
+                        logger.info('Hardpool acceptance rate: %.2f',research_parameters['hard_pool_acceptance_rate'])
                         logger.info('=' * 80)
                     previous_loss = mean_train_loss
 
@@ -1879,7 +1883,7 @@ if __name__=='__main__':
                     mean_train_loss = 0.0
                     train_losses = []
 
-                if start_adapting and research_parameters['adapt_structure']:
+                if research_parameters['adapt_structure']:
 
                     # calculate rolling mean of data distribution (amounts of different classes)
                     for li in range(num_labels):
@@ -1887,10 +1891,39 @@ if __name__=='__main__':
                         mean_data_distribution[li] += float(cnt[li])/(float(batch_size)*float(interval_parameters['policy_interval']))
 
                     # ====================== Policy update and output ======================
+                    if not start_adapting and batch_id>0 and batch_id%(interval_parameters['policy_interval']*2)==0:
+                        logger.info('Fintuning before starting adaptations. (To gain a reasonable accuracy to start with)')
 
-                    if batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
+                        pool_dataset, pool_labels = hard_pool.get_pool_data(True)
 
-                        '''pool_accuracy = []
+                        # without if can give problems in exploratory stage because of no data in the pool
+                        pbatch_train_count = 0
+                        if hard_pool.get_size() > batch_size:
+                            pbatch_train_count = 0
+                            # Train with latter half of the data
+
+                            for pool_id in range((hard_pool.get_size() // batch_size) // 2,
+                                                 (hard_pool.get_size() // batch_size) - 1, num_gpus):
+                                if np.random.random() < research_parameters['finetune_rate']:
+                                    pool_feed_dict = {}
+                                    for gpu_id in range(num_gpus):
+                                        pbatch_data = pool_dataset[(pool_id + gpu_id) * batch_size:(
+                                                                                                   pool_id + gpu_id + 1) * batch_size,
+                                                      :, :, :]
+                                        pbatch_labels = pool_labels[(pool_id + gpu_id) * batch_size:(
+                                                                                                    pool_id + gpu_id + 1) * batch_size,
+                                                        :]
+                                        pool_feed_dict.update({tf_pool_data_batch[gpu_id]: pbatch_data,
+                                                               tf_pool_label_batch[gpu_id]: pbatch_labels})
+
+                                    pbatch_train_count += 1
+                                    _, _ = session.run([apply_pool_grads_op, update_pool_velocity_ops],
+                                                       feed_dict=pool_feed_dict)
+
+
+                    if start_adapting and batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
+
+                        pool_accuracy = []
                         pool_dataset, pool_labels = hard_pool.get_pool_data(False)
                         for pool_id in range((hard_pool.get_size()//batch_size)//2):
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
@@ -1900,7 +1933,8 @@ if __name__=='__main__':
                             p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
                             pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
-                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0'''
+                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0
+
                         # update distance measure for class distirbution
                         distMSE = 0.0
                         for li in range(num_labels):
@@ -2077,6 +2111,21 @@ if __name__=='__main__':
                                             assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
                                             rolling_ativation_means[op] = act_decay * rolling_ativation_means[op] + current_activations[op]
 
+                                if hard_pool.get_size() > batch_size:
+                                    # Train with latter half of the data
+                                    for pool_id in range((hard_pool.get_size() // batch_size) // 2,
+                                                         (hard_pool.get_size() // batch_size) - 1, num_gpus):
+                                        if np.random.random() < research_parameters['finetune_rate']:
+                                            pool_feed_dict = {}
+                                            for gpu_id in range(num_gpus):
+                                                pbatch_data = pool_dataset[(pool_id + gpu_id) * batch_size:(pool_id + gpu_id + 1) * batch_size,:, :, :]
+                                                pbatch_labels = pool_labels[(pool_id + gpu_id) * batch_size:(pool_id + gpu_id + 1) * batch_size,:]
+                                                pool_feed_dict.update({tf_pool_data_batch[gpu_id]: pbatch_data,
+                                                                       tf_pool_label_batch[gpu_id]: pbatch_labels})
+
+                                            _, _ = session.run([apply_pool_grads_op, update_pool_velocity_ops],
+                                                               feed_dict=pool_feed_dict)
+
                             elif 'conv' in current_op and ai[0]=='remove' :
 
                                 _,rm_indices = session.run(tf_rm_filters_ops[current_op],
@@ -2156,6 +2205,18 @@ if __name__=='__main__':
                                 # This is a pretty important step
                                 # Unless you run this onces, the sizes of weights do not change
                                 _ = session.run([tower_logits, tower_activation_update_ops], feed_dict=train_feed_dict)
+
+                                if hard_pool.get_size()>batch_size:
+                                    # Train with latter half of the data
+                                    for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1,num_gpus):
+                                        if np.random.random()<research_parameters['finetune_rate']:
+                                            pool_feed_dict = {}
+                                            for gpu_id in range(num_gpus):
+                                                pbatch_data = pool_dataset[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :, :, :]
+                                                pbatch_labels = pool_labels[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :]
+                                                pool_feed_dict.update({tf_pool_data_batch[gpu_id]:pbatch_data,tf_pool_label_batch[gpu_id]:pbatch_labels})
+
+                                            _, _ = session.run([apply_pool_grads_op,update_pool_velocity_ops], feed_dict=pool_feed_dict)
 
                             elif 'conv' in current_op and (ai[0]=='replace'):
 
@@ -2275,7 +2336,9 @@ if __name__=='__main__':
                                                'prev_accuracy': None,
                                                'pool_accuracy': p_accuracy,
                                                'prev_pool_accuracy': prev_pool_accuracy,
-                                               'invalid_actions':curr_invalid_actions},True)
+                                               'max_pool_accuracy':max_pool_accuracy,
+                                               'invalid_actions':curr_invalid_actions,
+                                               'batch_id':(batch_id_multiplier*epoch)+batch_id},True)
 
                         if len(state_action_history)>10:
                             del state_action_history[0]
@@ -2296,7 +2359,8 @@ if __name__=='__main__':
                             rolling_data_distribution[li]=0.0
                             mean_data_distribution[li]=0.0
 
-                        prev_pool_accuracy = p_accuracy
+                        max_pool_accuracy = max(max_pool_accuracy,p_accuracy)
+                        #prev_pool_accuracy = p_accuracy
 
                     if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
 
@@ -2314,5 +2378,5 @@ if __name__=='__main__':
                 var_count = len(tf.global_variables()) + len(tf.local_variables()) + len(tf.model_variables())
                 perf_logger.info('%d,%.5f,%.5f,%d,%d',(batch_id_multiplier*epoch)+batch_id,t1-t0,(t1_train-t0_train)/num_gpus,op_count,var_count)
 
-
-            session.run(increment_global_step_op)
+            if epoch != 0: # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
+                session.run(increment_global_step_op)

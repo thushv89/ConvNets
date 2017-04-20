@@ -755,7 +755,7 @@ class AdaCNNAdaptingQLearner(object):
 
             # not to restrict from the beginning
             if self.global_time_stamp>self.stop_exploring_after:
-                rand_indices = np.argsort(q_for_actions).flatten()[floor(1.0*self.output_size/4.0):] #Only get a random index from the highest q values
+                rand_indices = np.argsort(q_for_actions).flatten()[ceil(2.0*self.output_size/4.0):] #Only get a random index from the highest q values
                 self.rl_logger.info('Allowed action indices: %s',rand_indices)
                 action_idx = np.random.choice(rand_indices)
             else:
@@ -941,6 +941,7 @@ class AdaCNNAdaptingQLearner(object):
         # data['curr_state']
         # data['next_accuracy']
         # data['prev_accuracy']
+        # data['batch_id']
         if not self.random_mode:
 
             if self.global_time_stamp>0 and len(self.experience)>0 and self.global_time_stamp%self.fit_interval==0:
@@ -991,6 +992,7 @@ class AdaCNNAdaptingQLearner(object):
                     self.clean_experience()
 
         mean_accuracy = (data['pool_accuracy']-data['prev_pool_accuracy'])/100.0
+        max_accuracy = (data['pool_accuracy'] - data['max_pool_accuracy'])/100.0
 
         si,ai_list,sj = data['prev_state'],data['prev_action'],data['curr_state']
         self.rl_logger.debug('Si,Ai,Sj: %s,%s,%s',si,ai_list,sj)
@@ -1030,10 +1032,10 @@ class AdaCNNAdaptingQLearner(object):
                 break
 
         reward = mean_accuracy
-        if complete_do_nothing:
-            reward = -1e-3# * max(self.same_action_count+1,5)
+        #if complete_do_nothing:
+        #    reward = -1e-3# * max(self.same_action_count+1,5)
 
-        self.reward_logger.info("%d,%.5f",self.local_time_stamp,reward)
+        self.reward_logger.info("%d:%d:%s:%.5f",self.global_time_stamp,data['batch_id'],ai_list,reward)
         # how the update on state_history looks like
         # t=5 (s2,a2),(s3,a3),(s4,a4)
         # t=6 (s3,a3),(s4,a4),(s5,a5)
@@ -1073,20 +1075,20 @@ class AdaCNNAdaptingQLearner(object):
                 prev_action_string = self.get_action_string(self.action_list_with_index(self.experience[-2][1]))
                 curr_action_string = self.get_action_string(ai_list)
                 # this is because the reward can be delayed
-                if 'finetune' in curr_action_string and ('add' in prev_action_string or 'remove' in prev_action_string):
-                    self.rl_logger.info('Updating reward for %s', prev_action_string)
-                    self.rl_logger.info('\tFrom: %.3f',self.experience[-2][2])
-                    self.experience[-2][2] += (data['pool_accuracy'] - self.prev_prev_pool_accuracy)/100.0
-                    self.rl_logger.info('\tTo: %.3f\n', self.experience[-2][2])
+                #if 'finetune' in curr_action_string and ('add' in prev_action_string or 'remove' in prev_action_string):
+                #    self.rl_logger.info('Updating reward for %s', prev_action_string)
+                #    self.rl_logger.info('\tFrom: %.3f',self.experience[-2][2])
+                #    self.experience[-2][2] += max(0,(data['pool_accuracy'] - self.prev_prev_pool_accuracy)/100.0)
+                #    self.rl_logger.info('\tTo: %.3f\n', self.experience[-2][2])
 
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
-                    self.experience.append([history_t, invalid_a, -0.5, history_t_plus_1,self.global_time_stamp])
-                    self.experience.append([history_t, invalid_a, 0.25, history_t_plus_1,self.global_time_stamp])
+                    self.experience.append([history_t, invalid_a, -0.1, history_t_plus_1,self.global_time_stamp])
+                    #self.experience.append([history_t, invalid_a, 0.05, history_t_plus_1,self.global_time_stamp])
                 else:
                     self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1,self.global_time_stamp])
-                    self.experience.append([history_t, invalid_a, 0.005, history_t_plus_1,self.global_time_stamp])
+                    #self.experience.append([history_t, invalid_a, 0.005, history_t_plus_1,self.global_time_stamp])
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
