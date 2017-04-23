@@ -433,7 +433,6 @@ class AdaCNNAdaptingQLearner(object):
 
     def calculate_input_size(self):
         dummy_state = [0 for _ in range(self.n_conv)]
-        dummy_state.append(0)
         dummy_state = tuple(dummy_state)
 
         dummy_action = tuple([0 for _ in range(self.output_size)])
@@ -441,6 +440,8 @@ class AdaCNNAdaptingQLearner(object):
         for _ in range(self.state_history_length-1):
             dummy_history.append([dummy_state,dummy_action])
         dummy_history.append([dummy_state])
+        self.rl_logger.debug('Dummy history')
+        self.rl_logger.debug('\t%s\n',dummy_history)
         self.rl_logger.debug('Input Size: %d',len(self.phi(dummy_history)))
         return len(self.phi(dummy_history))
 
@@ -448,6 +449,7 @@ class AdaCNNAdaptingQLearner(object):
         '''
         Takes a state history [(s_t-2,a_t-2),(s_t-1,a_t-1),(s_t,a_t),s_t+1] and convert it to
         [s_t-2,a_t-2,a_t-1,a_t,s_t+1]
+        a_n is a one-hot-encoded vector
         :param state_history:
         :return:
         '''
@@ -456,10 +458,9 @@ class AdaCNNAdaptingQLearner(object):
         for iindex,item in enumerate(state_history):
             if iindex==0: # first state
                 preproc_input.extend(list(self.normalize_state(item[0])))
+                preproc_input.extend(item[1])
             elif iindex!= len(state_history)-1:
-                a_idx = self.index_from_action_list(item[1])
-                ohe_a = [1 if a_idx==tmpi else 0 for tmpi in range(self.output_size)]
-                preproc_input.extend(ohe_a)
+                preproc_input.extend(item[1])
             else: # last state
                 preproc_input.extend(list(self.normalize_state(item[0])))
 
@@ -612,6 +613,9 @@ class AdaCNNAdaptingQLearner(object):
             self.rl_logger.debug('Return: %d\n', action_idx)
             return action_idx
 
+    def update_trial_phase(self,trial_phase):
+        self.trial_phase = trial_phase
+
     def output_action(self,data):
         invalid_actions = []
         # data => ['distMSE']['filter_counts']
@@ -629,10 +633,9 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('Current state history: %s\n', self.current_state_history)
         self.rl_logger.debug('history_t+1:%s\n',history_t_plus_1)
         self.rl_logger.debug('Epsilons: %.3f\n',self.epsilon)
+        self.rl_logger.debug('Trial Phase: %.2f\n',self.trial_phase)
 
         if self.trial_phase<1.0:
-
-        if len(history_t_plus_1)==self.state_history_length and self.global_time_stamp<300 and np.random.random()<self.rand_state_accum_rate:
 
             if self.trial_phase<0.5:
                 # more add actions
@@ -641,14 +644,13 @@ class AdaCNNAdaptingQLearner(object):
                 trial_action_probs.extend([0.4 / (1.0 * self.n_conv) for ind in range(self.n_conv)]) #add
                 trial_action_probs.extend([0.05,0.25])
 
-            if self.trial_phase > 0.5:
+            else:
                 trial_action_probs = [0.5 / (1.0 * self.n_conv) for ind in range(self.n_conv)]  # remove
                 trial_action_probs.extend([0.2 / (1.0 * self.n_conv) for ind in range(self.n_conv)])  # add
                 trial_action_probs.extend([0.05, 0.25])
 
             action_idx = np.random.choice(self.output_size,p=trial_action_probs)
             layer_actions_list = self.action_list_with_index(action_idx)
-
 
             found_valid_action = False
 
@@ -693,38 +695,19 @@ class AdaCNNAdaptingQLearner(object):
                 found_valid_action = True
             assert found_valid_action
 
-            if len(self.rand_state_list)<self.rand_state_length:
+            #if len(history_t_plus_1)==self.state_history_length:
+            #    for q_val in q_for_actions:
+            #        q_value_strings = ''
+            #        q_value_strings += '%.5f'%q_val+','
+            #    self.q_logger.info("%d,%s",self.local_time_stamp,q_value_strings)
 
-            self.rand_state_list.append(self.phi(mut_state_history_plus_new_state))
-
-
-        # we try actions evenly otherwise cannot have the approximator
-        if self.random_mode or (
-                    (self.global_time_stamp%self.explore_interval)<ceil(self.explore_tries/2.0) and
-                        self.global_time_stamp<self.stop_exploring_after):
-            action_type = 'Exploratory'
-            self.rl_logger.info('(Exploratory Mode) Choosing action exploratory...')
-            action_idx = np.random.randint(0,self.output_size)
-
-            layer_actions_list = self.action_list_with_index(action_idx)
-
-            for li,la in enumerate(layer_actions_list):
-                if la is None:
-                    continue
-                elif la[0]=='add':
-                    next_filter_count = data['filter_counts_list'][li]+la[1]
-                elif la[0]=='remove':
-                    next_filter_count = data['filter_counts_list'][li]-la[1]
-                else:
-                    next_filter_count = data['filter_counts_list'][li]
-
-                if next_filter_count<=0 or next_filter_count>self.filter_bound_vec[li]:
-                    self.rl_logger.debug('Chosen Action invalid: li(%d), next filter: %d',li,next_filter_count)
-                    layer_actions_list = [self.actions[0] if ni in self.conv_ids else None for ni in range(self.net_depth)]
-                    break
+            if len(self.rand_state_list)<self.rand_state_length and \
+                            np.random.random()<self.rand_state_accum_rate and \
+                            len(history_t_plus_1)==self.state_history_length:
+                self.rand_state_list.append(self.phi(history_t_plus_1))
 
         # deterministic selection (if epsilon is not 1 or q is not empty)
-        elif np.random.random()>self.epsilon:
+        elif np.random.random()>self.epsilon and len(history_t_plus_1)==self.state_history_length:
             self.rl_logger.info('Choosing action deterministic...')
             # we create this copy_actions in case we need to change the order the actions processed
             # without changing the original action space (self.actions)
@@ -733,8 +716,8 @@ class AdaCNNAdaptingQLearner(object):
             q_for_actions = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:curr_x})
             q_for_actions = q_for_actions.flatten().tolist()
 
-            q_value_strings = ''
             for q_val in q_for_actions:
+                q_value_strings = ''
                 q_value_strings += '%.5f'%q_val+','
             self.q_logger.info("%d,%s",self.local_time_stamp,q_value_strings)
             self.rl_logger.debug('\tActions (length): %d',self.output_size)
@@ -865,7 +848,7 @@ class AdaCNNAdaptingQLearner(object):
             assert found_valid_action
 
         # decay epsilon
-        if self.global_time_stamp>self.explore_tries:
+        if self.trial_phase>=1.0:
             self.epsilon = max(self.epsilon * 0.9, self.min_epsilon)
 
             # TODO: same action taking repeatedly
@@ -908,10 +891,9 @@ class AdaCNNAdaptingQLearner(object):
 
     def normalize_state(self,s):
         # state looks like [distMSE, filter_count_1, filter_count_2, ...]
-        ohe_state = np.zeros((1, self.net_depth + 1))
-        ohe_state[0, 0] = s[0]
-        self.rl_logger.debug('Filter bounds: %s',self.filter_bound_vec)
-        for ii,item in enumerate(s[1:]):
+        ohe_state = np.zeros((1, self.net_depth))
+        self.rl_logger.debug('Before normalization: %s',s)
+        for ii,item in enumerate(s):
             if self.filter_bound_vec[ii]>0:
                 ohe_state[0,ii] = item * 1.0 / self.filter_bound_vec[ii]
             else:

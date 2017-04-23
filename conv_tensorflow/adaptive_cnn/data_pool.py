@@ -10,6 +10,8 @@ class Pool(object):
     '''
     def __init__(self,**params):
 
+        self.image_size = params['image_size']
+        self.num_channels = params['num_channels']
         self.assert_test = params['assert_test']
         self.size = params['size']
         self.num_labels = params['num_labels']
@@ -113,3 +115,9 @@ class Pool(object):
             else:
                 dist_vector.append(0.0)
         return dist_vector
+
+    def reset_pool(self):
+        self.position = 0
+        self.dataset = np.empty((self.size,self.image_size,self.image_size,self.num_channels),dtype=np.float32)
+        self.labels = np.empty((self.size,self.num_labels),dtype=np.float32)
+        self.filled_size = 0

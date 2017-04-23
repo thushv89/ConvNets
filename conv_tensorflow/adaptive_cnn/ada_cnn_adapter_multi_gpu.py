@@ -18,6 +18,7 @@ import time
 import utils
 import queue
 from multiprocessing import Pool as MPPool
+import copy
 
 
 ##################################################################
@@ -1122,6 +1123,79 @@ def define_velocity_vectors(main_scope):
 
         return vel_var_list
 
+def reset_cnn(cnn_hyps):
+    reset_ops = []
+    logger.info('CNN Hyperparameters')
+    logger.info('%s\n',cnn_hyps)
+
+    logger.info('Initializing the iConvNet (conv_global,pool_global,classifier)...\n')
+    for op in cnn_ops:
+
+        if 'conv' in op:
+            with tf.variable_scope(op) as scope:
+                weights = tf.get_variable(name=TF_WEIGHTS)
+                new_weights = tf.truncated_normal(cnn_hyps[op]['weights'],
+                                                    stddev=2./max(100,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
+                                                    )
+
+                reset_ops.append(tf.assign(weights,new_weights,validate_shape = False))
+
+                with tf.variable_scope(TF_WEIGHTS) as child_scope:
+                    w_vel = tf.get_variable(TF_TRAIN_MOMENTUM)
+                    pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
+
+                    new_w_vel = tf.zeros(shape=cnn_hyps[op]['weights'],dtype=tf.float32)
+                    reset_ops.append(tf.assign(w_vel,new_w_vel,validate_shape=False))
+                    reset_ops.append(tf.assign(pool_w_vel,new_w_vel,validate_shape=False))
+
+                bias = tf.get_variable(name=TF_BIAS)
+                new_bias = tf.constant(np.random.random()*0.001,shape=[cnn_hyps[op]['weights'][3]])
+
+                reset_ops.append(tf.assign(bias,new_bias,validate_shape = False))
+
+                with tf.variable_scope(TF_BIAS) as child_scope:
+                    b_vel = tf.get_variable(TF_TRAIN_MOMENTUM)
+                    pool_b_vel = tf.get_variable(TF_POOL_MOMENTUM)
+
+                    new_b_vel = tf.zeros(shape=[cnn_hyps[op]['weights'][3]],dtype=tf.float32)
+                    reset_ops.append(tf.assign(b_vel,new_b_vel,validate_shape=False))
+                    reset_ops.append(tf.assign(pool_b_vel,new_b_vel,validate_shape=False))
+
+                act_var = tf.get_variable(name=TF_ACTIVAIONS_STR)
+                new_act_var = tf.zeros(shape=[cnn_hyps[op]['weights'][3]],
+                                         dtype=tf.float32)
+                reset_ops.append(tf.assign(act_var,new_act_var,validate_shape=False))
+
+        if 'fulcon' in op:
+            with tf.variable_scope(op) as scope:
+
+                weights = tf.get_variable(name=TF_WEIGHTS)
+                new_weights = tf.truncated_normal([cnn_hyps[op]['in'],cnn_hyps[op]['out']],
+                                                     stddev=2./cnn_hyps[op]['in'])
+                reset_ops.append(tf.assign(weights,new_weights,validate_shape = False))
+
+                with tf.variable_scope(TF_WEIGHTS) as child_scope:
+                    w_vel = tf.get_variable(TF_TRAIN_MOMENTUM)
+                    pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
+
+                    new_w_vel = tf.zeros(shape=[cnn_hyps[op]['in'],cnn_hyps[op]['out']],dtype=tf.float32)
+                    reset_ops.append(tf.assign(w_vel,new_w_vel,validate_shape=False))
+                    reset_ops.append(tf.assign(pool_w_vel,new_w_vel,validate_shape=False))
+
+                bias = tf.get_variable(name=TF_BIAS)
+                new_bias = tf.constant(np.random.random()*0.001,shape=[cnn_hyps[op]['out']])
+                reset_ops.append(tf.assign(bias,new_bias,validate_shape = False))
+
+                with tf.variable_scope(TF_BIAS) as child_scope:
+                    b_vel = tf.get_variable(TF_TRAIN_MOMENTUM)
+                    pool_b_vel = tf.get_variable(TF_POOL_MOMENTUM)
+
+                    new_b_vel = tf.zeros(shape=[cnn_hyps[op]['out']],dtype=tf.float32)
+                    reset_ops.append(tf.assign(b_vel,new_b_vel,validate_shape=False))
+                    reset_ops.append(tf.assign(pool_b_vel,new_b_vel,validate_shape=False))
+
+    return reset_ops
+
 def get_activation_dictionary(activation_list,cnn_ops,conv_op_ids):
     current_activations = {}
     for act_i, layer_act in enumerate(current_activations_list):
@@ -1139,7 +1213,7 @@ research_parameters = {
     'remove_filters_by':'Activation',
     'optimize_end_to_end':True, # if true functions such as add and finetune will optimize the network from starting layer to end (fulcon_out)
     'loss_diff_threshold':0.02,
-    'start_adapting_after':1000,
+    'start_adapting_after':500,
     'debugging':True if logging_level==logging.DEBUG else False,
     'stop_training_at':11000,
     'train_min_activation':False,
@@ -1404,6 +1478,8 @@ if __name__=='__main__':
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
     cnn_ops,cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string,final_2d_width)
+    init_cnn_ops,init_cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string,final_2d_width)
+
 
     hyp_logger = logging.getLogger('hyperparameter_logger')
     hyp_logger.setLevel(logging.INFO)
@@ -1476,7 +1552,7 @@ if __name__=='__main__':
                 filter_upper_bound=filter_upper_bound, filter_min_bound=filter_lower_bound,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
-                epsilon=1.0, target_update_rate=25,
+                epsilon=0.5, target_update_rate=25,
                 batch_size=32, persist_dir=output_dir,
                 session=session, random_mode=False,
                 state_history_length=state_history_length,
@@ -1624,6 +1700,8 @@ if __name__=='__main__':
                     tf_weight_shape = tf.placeholder(shape=[4],dtype=tf.int32,name='weight_shape')
                     tf_in_size = tf.placeholder(dtype=tf.int32,name='input_size')
                     tf_update_hyp_ops={}
+
+                    tf_reset_cnn = reset_cnn(init_cnn_hyperparameters)
 
                     for tmp_op in cnn_ops:
                         if 'conv' in tmp_op:
@@ -1981,6 +2059,8 @@ if __name__=='__main__':
                                 filter_list.append(0)
 
                         current_state,current_action,curr_invalid_actions = adapter.output_action({'filter_counts':filter_dict,'filter_counts_list':filter_list})
+                        if epoch==0:
+                            adapter.update_trial_phase(min(batch_id*1.0/(dataset_size//batch_size),1.0))
 
                         for li,la in enumerate(current_action):
                             # pooling and fulcon layers
@@ -2358,18 +2438,18 @@ if __name__=='__main__':
                             pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
                         # don't use current state as the next state, current state is for a different layer
-                        next_state = [distMSE]
+                        next_state = []
                         for li,la in enumerate(current_action):
                             if la is None:
                                 assert li not in convolution_op_ids
                                 next_state.append(0)
                                 continue
                             elif la[0]=='add':
-                                next_state.append(current_state[li+1] + la[1])
+                                next_state.append(current_state[li] + la[1])
                             elif la[0]=='remove':
-                                next_state.append(current_state[li+1] - la[1])
+                                next_state.append(current_state[li] - la[1])
                             else:
-                                next_state.append(current_state[li + 1])
+                                next_state.append(current_state[li])
 
                         next_state = tuple(next_state)
 
@@ -2427,6 +2507,25 @@ if __name__=='__main__':
                 op_count = len(graph.get_operations())
                 var_count = len(tf.global_variables()) + len(tf.local_variables()) + len(tf.model_variables())
                 perf_logger.info('%d,%.5f,%.5f,%d,%d',(batch_id_multiplier*epoch)+batch_id,t1-t0,(t1_train-t0_train)/num_gpus,op_count,var_count)
+
+            # reset the network
+            if epoch ==0:
+                adapter.update_trial_phase(1.0)
+                hard_pool.reset_pool()
+                session.run(tf_reset_cnn)
+
+                cnn_hyperparameters = copy.deepcopy(init_cnn_hyperparameters)
+
+                for op in cnn_ops:
+                    if 'conv' in op:
+                        session.run(tf_update_hyp_ops[op],feed_dict={tf_weight_shape:init_cnn_hyperparameters[op]['weights']})
+                        rolling_ativation_means[op]=np.zeros([init_cnn_hyperparameters[op]['weights'][3]])
+                    elif 'fulcon' in op:
+                        session.run(tf_update_hyp_ops[op],feed_dict={tf_in_size:init_cnn_hyperparameters[op]['in']})
+                print(session.run(tf_cnn_hyperparameters))
+                _ = session.run(tower_logits, feed_dict=train_feed_dict)
+                prev_pool_accuracy = 0
+                max_pool_accuracy = 0
 
             if epoch != 0: # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
                 session.run(increment_global_step_op)
