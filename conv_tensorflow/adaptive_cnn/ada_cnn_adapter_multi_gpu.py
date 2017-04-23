@@ -1966,10 +1966,10 @@ if __name__=='__main__':
                         prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0'''
 
                         # update distance measure for class distirbution
-                        distMSE = 0.0
-                        for li in range(num_labels):
-                            distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
-                        distMSE = np.sqrt(distMSE)
+                        #distMSE = 0.0
+                        #for li in range(num_labels):
+                        #    distMSE += (prev_mean_distribution[li]-rolling_data_distribution[li])**2
+                        #distMSE = np.sqrt(distMSE)
 
                         filter_dict,filter_list = {},[]
                         for op_i,op in enumerate(cnn_ops):
@@ -1980,7 +1980,7 @@ if __name__=='__main__':
                                 filter_dict[op_i]=0
                                 filter_list.append(0)
 
-                        current_state,current_action,curr_invalid_actions = adapter.output_action({'distMSE':distMSE,'filter_counts':filter_dict,'filter_counts_list':filter_list})
+                        current_state,current_action,curr_invalid_actions = adapter.output_action({'filter_counts':filter_dict,'filter_counts_list':filter_list})
 
                         for li,la in enumerate(current_action):
                             # pooling and fulcon layers
