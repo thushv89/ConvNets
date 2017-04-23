@@ -313,7 +313,7 @@ class AdaCNNAdaptingQLearner(object):
         rewarddistHandler = logging.FileHandler(self.persit_dir + os.sep + 'reward.log', mode='w')
         rewarddistHandler.setFormatter(logging.Formatter('%(message)s'))
         self.reward_logger.addHandler(rewarddistHandler)
-        self.reward_logger.info('#batch_id,reward')
+        self.reward_logger.info('#global_time_stamp:batch_id:action_list:prev_pool_acc:pool_acc:reward')
 
         self.action_logger = logging.getLogger('action_logger')
         self.action_logger.setLevel(logging.INFO)
@@ -345,6 +345,8 @@ class AdaCNNAdaptingQLearner(object):
             ('do_nothing', 0),('finetune', 0),
             ('add',params['add_amount']),('remove',params['remove_amount'])
         ]
+        self.add_amount = params['add_amount']
+
         self.q_logger.info('#%s',self.actions)
 
         self.q_length = 25 * len(self.actions)
@@ -406,8 +408,10 @@ class AdaCNNAdaptingQLearner(object):
 
         self.state_history_collector = []
         self.state_history_dumped = False
-        self.experience_per_action = 50
-        self.exp_clean_interval = 50
+        self.experience_per_action = 25
+        self.exp_clean_interval = 25
+
+        self.min_filter_threshold = 16
 
         self.min_epsilon = 0.1
         self.previous_reward = 0
@@ -618,8 +622,8 @@ class AdaCNNAdaptingQLearner(object):
 
         if len(history_t_plus_1)==self.state_history_length and self.global_time_stamp<300 and np.random.random()<self.rand_state_accum_rate:
             if len(self.rand_state_list)<self.rand_state_length:
-                copy_state_history_plus_new_state = list(history_t_plus_1)
-                self.rand_state_list.append(self.phi(copy_state_history_plus_new_state))
+                mut_state_history_plus_new_state = list(history_t_plus_1)
+                self.rand_state_list.append(self.phi(mut_state_history_plus_new_state))
                 #self.rl_logger.info('Original state: %s', self.rand_state_list[-1])
 
                 # add a mutated state once in a while
@@ -630,21 +634,21 @@ class AdaCNNAdaptingQLearner(object):
                     # change the value of the item to create a new state
                     for l_i in range(self.net_depth):
                         if l_i in self.conv_ids:
-                            change_amount = np.random.randint(-self.filter_bound_vec[l_i] // 2,
+                            mut_amount = np.random.randint(-self.filter_bound_vec[l_i] // 2,
                                                               self.filter_bound_vec[l_i] // 2)
                             for s_i in range(self.state_history_length):
                                 #print('%d,%d,%d',s_i,0,l_i+1)
-                                copy_state_history_plus_new_state[s_i][0][l_i+1] += change_amount
-                                if copy_state_history_plus_new_state[s_i][0][l_i+1] <= 0:
+                                mut_state_history_plus_new_state[s_i][0][l_i+1] += mut_amount
+                                if mut_state_history_plus_new_state[s_i][0][l_i+1] <= 0:
                                     # because the amount of action remove is the minimum a layer can fall it's
                                     # number of filters to
                                     assert self.actions[-1][0]=='remove'
-                                    copy_state_history_plus_new_state[s_i][0][l_i + 1] = self.actions[-1][1]
+                                    mut_state_history_plus_new_state[s_i][0][l_i + 1] = self.actions[-1][1]
 
-                                elif copy_state_history_plus_new_state[s_i][0][l_i+1] > self.filter_bound_vec[l_i]:
-                                    copy_state_history_plus_new_state[s_i][0][l_i + 1] = self.filter_bound_vec[l_i]
+                                elif mut_state_history_plus_new_state[s_i][0][l_i+1] > self.filter_bound_vec[l_i]:
+                                    mut_state_history_plus_new_state[s_i][0][l_i + 1] = self.filter_bound_vec[l_i]
 
-                    self.rand_state_list.append(self.phi(copy_state_history_plus_new_state))
+                    self.rand_state_list.append(self.phi(mut_state_history_plus_new_state))
                     #self.rl_logger.info('Mutated state: %s',self.rand_state_list[-1])
 
         # we try actions evenly otherwise cannot have the approximator
@@ -692,6 +696,9 @@ class AdaCNNAdaptingQLearner(object):
             action_type = 'Deterministic'
             action_idx = np.asscalar(np.argmax(q_for_actions))
 
+            if np.random.random()<0.25:
+                action_idx = np.asscalar(np.argsort(q_for_actions).flatten()[-2])
+
             layer_actions_list = self.action_list_with_index(action_idx)
             self.rl_logger.debug('\tChose: %s'%str(layer_actions_list))
 
@@ -724,7 +731,7 @@ class AdaCNNAdaptingQLearner(object):
                         next_filter_count = data['filter_counts_list'][li]
 
                     # if action is invalid, remove that from the allowed actions
-                    if next_filter_count<=0 or next_filter_count>self.filter_bound_vec[li]:
+                    if next_filter_count<=self.min_filter_threshold or next_filter_count>self.filter_bound_vec[li]:
                         self.rl_logger.debug('\tAction %s is not valid li(%d), (Next Filter Count: %d). '%(str(la),li,next_filter_count))
 
                         del q_for_actions[action_idx]
@@ -793,7 +800,7 @@ class AdaCNNAdaptingQLearner(object):
                     else:
                         next_filter_count=data['filter_counts_list'][li]
 
-                    if next_filter_count<=0 or next_filter_count>self.filter_bound_vec[li]:
+                    if next_filter_count<=self.min_filter_threshold or next_filter_count>self.filter_bound_vec[li]:
                         self.rl_logger.debug('\tAction %s is not valid li(%d), (Next Filter Count: %d). ',str(la),li, next_filter_count)
                         allowed_actions.remove(action_idx)
                         invalid_actions.append(action_idx)
@@ -1032,10 +1039,16 @@ class AdaCNNAdaptingQLearner(object):
                 break
 
         reward = mean_accuracy
+
+        for li,la in enumerate(ai_list):
+            if la is not None and la[0]=='finetune':
+                reward = mean_accuracy
+                break
+
         #if complete_do_nothing:
         #    reward = -1e-3# * max(self.same_action_count+1,5)
 
-        self.reward_logger.info("%d:%d:%s:%.5f",self.global_time_stamp,data['batch_id'],ai_list,reward)
+        self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f",self.global_time_stamp,data['batch_id'],ai_list,data['prev_pool_accuracy'],data['pool_accuracy'],reward)
         # how the update on state_history looks like
         # t=5 (s2,a2),(s3,a3),(s4,a4)
         # t=6 (s3,a3),(s4,a4),(s5,a5)
@@ -1075,20 +1088,36 @@ class AdaCNNAdaptingQLearner(object):
                 prev_action_string = self.get_action_string(self.action_list_with_index(self.experience[-2][1]))
                 curr_action_string = self.get_action_string(ai_list)
                 # this is because the reward can be delayed
-                #if 'finetune' in curr_action_string and ('add' in prev_action_string or 'remove' in prev_action_string):
-                #    self.rl_logger.info('Updating reward for %s', prev_action_string)
-                #    self.rl_logger.info('\tFrom: %.3f',self.experience[-2][2])
-                #    self.experience[-2][2] += max(0,(data['pool_accuracy'] - self.prev_prev_pool_accuracy)/100.0)
-                #    self.rl_logger.info('\tTo: %.3f\n', self.experience[-2][2])
+                if 'finetune' in curr_action_string and ('add' in prev_action_string or 'remove' in prev_action_string):
+                    self.rl_logger.info('Updating reward for %s', prev_action_string)
+                    self.rl_logger.info('\tFrom: %.3f',self.experience[-2][2])
+                    self.experience[-2][2] += 0.5*max(0,(data['pool_accuracy'] - self.prev_prev_pool_accuracy)/100.0)
+                    self.rl_logger.info('\tTo: %.3f\n', self.experience[-2][2])
 
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
-                    self.experience.append([history_t, invalid_a, -0.1, history_t_plus_1,self.global_time_stamp])
-                    #self.experience.append([history_t, invalid_a, 0.05, history_t_plus_1,self.global_time_stamp])
+                    for _ in range(3):
+                        self.experience.append([history_t, invalid_a, -0.1, history_t_plus_1,self.global_time_stamp])
+                    self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f", self.global_time_stamp, data['batch_id'],
+                                            self.action_list_with_index(invalid_a), -1, -1, -0.1)
+
+                    opp_action = []
+                    for la in self.action_list_with_index(invalid_a):
+                        if la is None or la[0]=='do_nothing':
+                            opp_action.append(la)
+                        if la is not None and la[0]=='remove':
+                            opp_action.append(('add',self.add_amount))
+                    for _ in range(3):
+                        self.experience.append([history_t, self.index_from_action_list(opp_action), 0.01, history_t_plus_1,self.global_time_stamp])
+                    self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f", self.global_time_stamp, data['batch_id'],
+                                            opp_action, -1,-1, 0.01)
+
                 else:
-                    self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1,self.global_time_stamp])
-                    #self.experience.append([history_t, invalid_a, 0.005, history_t_plus_1,self.global_time_stamp])
+                    for _ in range(3):
+                        self.experience.append([history_t,invalid_a,-0.05,history_t_plus_1,self.global_time_stamp])
+                    self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f", self.global_time_stamp, data['batch_id'],
+                                            self.action_list_with_index(invalid_a), -1, -1, -0.05)
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')

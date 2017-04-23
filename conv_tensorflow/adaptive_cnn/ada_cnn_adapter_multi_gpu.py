@@ -1148,6 +1148,7 @@ research_parameters = {
     'finetune_rate': 0.5,
     'pool_randomize':True,
     'pool_randomize_rate':0.25,
+    'pooling_for_nonadapt':True,
 }
 
 interval_parameters = {
@@ -1234,11 +1235,11 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
+            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
             filter_upper_bound, filter_lower_bound = 256, 64
-            add_amount, remove_amount = 4, 2
+            add_amount, remove_amount = 8, 4
 
     elif datatype=='cifar-100':
         image_size = 24
@@ -1674,7 +1675,7 @@ if __name__=='__main__':
         logger.info('Batches in Chunk : %d',batches_in_chunk)
 
         previous_loss = 1e5 # used for the check to start adapting
-        #prev_pool_accuracy = 0
+        prev_pool_accuracy = 0
         max_pool_accuracy =0
         start_adapting = False
 
@@ -1792,6 +1793,35 @@ if __name__=='__main__':
                     else:
                         single_iteration_batch_data = np.append(single_iteration_batch_data,batch_data[gpu_id],axis=0)
                         single_iteration_batch_labels = np.append(single_iteration_batch_labels,batch_labels[gpu_id],axis=0)
+
+                if research_parameters['pooling_for_nonadapt'] and (not research_parameters['adapt_structure']) and\
+                        (batch_id>0 and batch_id%interval_parameters['policy_interval']==0):
+                    logger.info('Pooling for non-adaptive CNN')
+                    if hard_pool.get_size() > batch_size:
+                        pool_dataset, pool_labels = hard_pool.get_pool_data(True)
+                        if research_parameters['pool_randomize'] and np.random.random() < \
+                                research_parameters['pool_randomize_rate']:
+                            try:
+                                pool = MPPool(processes=10)
+                                distorted_imgs = pool.map(distort_img, pool_dataset)
+                                pool_dataset = np.asarray(distorted_imgs)
+                                pool.close()
+                                pool.join()
+                            except Exception:
+                                raise AssertionError
+                        # Train with latter half of the data
+                        for pool_id in range((hard_pool.get_size() // batch_size) // 2,
+                                             (hard_pool.get_size() // batch_size) - 1, num_gpus):
+                            if np.random.random() < research_parameters['finetune_rate']:
+                                pool_feed_dict = {}
+                                for gpu_id in range(num_gpus):
+                                    pbatch_data = pool_dataset[(pool_id + gpu_id) * batch_size:(pool_id + gpu_id + 1) * batch_size,:, :, :]
+                                    pbatch_labels = pool_labels[(pool_id + gpu_id) * batch_size:(pool_id + gpu_id + 1) * batch_size,:]
+                                    pool_feed_dict.update({tf_pool_data_batch[gpu_id]: pbatch_data,
+                                                           tf_pool_label_batch[gpu_id]: pbatch_labels})
+
+                                _, _ = session.run([apply_pool_grads_op, update_pool_velocity_ops],
+                                                   feed_dict=pool_feed_dict)
 
                 if np.random.random()<research_parameters['hard_pool_acceptance_rate']:
                     train_accuracy = np.mean([accuracy(train_predictions[gid],batch_labels[gid]) for gid in range(num_gpus)])/100.0
@@ -1923,7 +1953,7 @@ if __name__=='__main__':
 
                     if start_adapting and batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
 
-                        pool_accuracy = []
+                        '''pool_accuracy = []
                         pool_dataset, pool_labels = hard_pool.get_pool_data(False)
                         for pool_id in range((hard_pool.get_size()//batch_size)//2):
                             pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
@@ -1933,7 +1963,7 @@ if __name__=='__main__':
                             p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
                             pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
 
-                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0
+                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0'''
 
                         # update distance measure for class distirbution
                         distMSE = 0.0
@@ -2112,6 +2142,17 @@ if __name__=='__main__':
                                             rolling_ativation_means[op] = act_decay * rolling_ativation_means[op] + current_activations[op]
 
                                 if hard_pool.get_size() > batch_size:
+                                    pool_dataset, pool_labels = hard_pool.get_pool_data(True)
+                                    if research_parameters['pool_randomize'] and np.random.random() < \
+                                            research_parameters['pool_randomize_rate']:
+                                        try:
+                                            pool = MPPool(processes=10)
+                                            distorted_imgs = pool.map(distort_img, pool_dataset)
+                                            pool_dataset = np.asarray(distorted_imgs)
+                                            pool.close()
+                                            pool.join()
+                                        except Exception:
+                                            raise AssertionError
                                     # Train with latter half of the data
                                     for pool_id in range((hard_pool.get_size() // batch_size) // 2,
                                                          (hard_pool.get_size() // batch_size) - 1, num_gpus):
@@ -2207,6 +2248,18 @@ if __name__=='__main__':
                                 _ = session.run([tower_logits, tower_activation_update_ops], feed_dict=train_feed_dict)
 
                                 if hard_pool.get_size()>batch_size:
+                                    pool_dataset, pool_labels = hard_pool.get_pool_data(True)
+                                    if research_parameters['pool_randomize'] and np.random.random() < \
+                                            research_parameters['pool_randomize_rate']:
+                                        try:
+                                            pool = MPPool(processes=10)
+                                            distorted_imgs = pool.map(distort_img, pool_dataset)
+                                            pool_dataset = np.asarray(distorted_imgs)
+                                            pool.close()
+                                            pool.join()
+                                        except Exception:
+                                            raise AssertionError
+
                                     # Train with latter half of the data
                                     for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1,num_gpus):
                                         if np.random.random()<research_parameters['finetune_rate']:
@@ -2275,9 +2328,7 @@ if __name__=='__main__':
                                         raise AssertionError
 
                                 # without if can give problems in exploratory stage because of no data in the pool
-                                pbatch_train_count = 0
                                 if hard_pool.get_size()>batch_size:
-                                    pbatch_train_count = 0
                                     # Train with latter half of the data
 
                                     for pool_id in range((hard_pool.get_size() // batch_size)//2,(hard_pool.get_size() // batch_size)-1,num_gpus):
@@ -2288,7 +2339,6 @@ if __name__=='__main__':
                                                 pbatch_labels = pool_labels[(pool_id+gpu_id)*batch_size:(pool_id+gpu_id+1)*batch_size, :]
                                                 pool_feed_dict.update({tf_pool_data_batch[gpu_id]:pbatch_data,tf_pool_label_batch[gpu_id]:pbatch_labels})
 
-                                            pbatch_train_count += 1
                                             _, _ = session.run([apply_pool_grads_op,update_pool_velocity_ops], feed_dict=pool_feed_dict)
 
                                 break # action include finetune actions for number of conv layers there are
@@ -2360,7 +2410,7 @@ if __name__=='__main__':
                             mean_data_distribution[li]=0.0
 
                         max_pool_accuracy = max(max_pool_accuracy,p_accuracy)
-                        #prev_pool_accuracy = p_accuracy
+                        prev_pool_accuracy = p_accuracy
 
                     if batch_id>0 and batch_id%interval_parameters['history_dump_interval']==0:
 
