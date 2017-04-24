@@ -1262,6 +1262,9 @@ if __name__=='__main__':
     behavior = 'non-stationary'
     research_parameters['adapt_structure'] = True
 
+    if research_parameters['adapt_structure']:
+        epochs += 1 # for the trial one
+
     if behavior=='non-stationary':
         include_l2_loss = False
         use_loc_res_norm = True
@@ -1756,7 +1759,7 @@ if __name__=='__main__':
         prev_pool_accuracy = 0
         max_pool_accuracy =0
         start_adapting = False
-
+        stop_adapting = False
         batch_id_multiplier = (dataset_size//batch_size) - interval_parameters['test_interval']
 
         assert batches_in_chunk%num_gpus ==0
@@ -1872,9 +1875,12 @@ if __name__=='__main__':
                         single_iteration_batch_data = np.append(single_iteration_batch_data,batch_data[gpu_id],axis=0)
                         single_iteration_batch_labels = np.append(single_iteration_batch_labels,batch_labels[gpu_id],axis=0)
 
-                if research_parameters['pooling_for_nonadapt'] and (not research_parameters['adapt_structure']) and\
+                if ((research_parameters['pooling_for_nonadapt'] and (not research_parameters['adapt_structure'])) or stop_adapting) and\
                         (batch_id>0 and batch_id%interval_parameters['policy_interval']==0):
                     logger.info('Pooling for non-adaptive CNN')
+                    if research_parameters['adapt_structure']:
+                        logger.info('Adaptations stopped. Finetune is at its maximum utility (Batch: %d)'%(batch_id_multiplier*epoch+batch_id))
+
                     if hard_pool.get_size() > batch_size:
                         pool_dataset, pool_labels = hard_pool.get_pool_data(True)
                         if research_parameters['pool_randomize'] and np.random.random() < \
@@ -2029,7 +2035,7 @@ if __name__=='__main__':
                                                        feed_dict=pool_feed_dict)
 
 
-                    if start_adapting and batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
+                    if (start_adapting and not stop_adapting) and batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
 
                         '''pool_accuracy = []
                         pool_dataset, pool_labels = hard_pool.get_pool_data(False)
@@ -2059,6 +2065,8 @@ if __name__=='__main__':
                                 filter_list.append(0)
 
                         current_state,current_action,curr_invalid_actions = adapter.output_action({'filter_counts':filter_dict,'filter_counts_list':filter_list})
+                        stop_adapting = adapter.get_stop_adapting_boolean()
+
                         if epoch==0:
                             adapter.update_trial_phase(min(batch_id*1.0/(dataset_size//batch_size),1.0))
 
@@ -2526,6 +2534,9 @@ if __name__=='__main__':
                 _ = session.run(tower_logits, feed_dict=train_feed_dict)
                 prev_pool_accuracy = 0
                 max_pool_accuracy = 0
+
+                start_adapting = False
+                research_parameters['hard_pool_acceptance_rate'] = 0.2
 
             if epoch != 0: # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
                 session.run(increment_global_step_op)

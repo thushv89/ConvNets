@@ -423,6 +423,11 @@ class AdaCNNAdaptingQLearner(object):
 
         self.trial_phase = 0
 
+        self.threshold_stop_adapting = 25
+        self.ft_saturated_count = 0
+        self.max_q_ft = -1000
+        self.stop_adapting = False
+
     def calculate_output_size(self):
         total = 0
         for _ in range(self.local_actions): # add and remove actions
@@ -635,19 +640,20 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('Epsilons: %.3f\n',self.epsilon)
         self.rl_logger.debug('Trial Phase: %.2f\n',self.trial_phase)
 
+
         if self.trial_phase<1.0:
 
             if self.trial_phase<0.5:
                 # more add actions
                 # actions are indexed as [{remove actions},{add actions},{do_nothing,finetune}]
-                trial_action_probs = [0.3/(1.0*self.n_conv) for ind in range(self.n_conv)] # remove
+                trial_action_probs = [0.4/(1.0*self.n_conv) for ind in range(self.n_conv)] # remove
                 trial_action_probs.extend([0.4 / (1.0 * self.n_conv) for ind in range(self.n_conv)]) #add
-                trial_action_probs.extend([0.05,0.25])
+                trial_action_probs.extend([0.05,0.15])
 
             else:
-                trial_action_probs = [0.5 / (1.0 * self.n_conv) for ind in range(self.n_conv)]  # remove
+                trial_action_probs = [0.6 / (1.0 * self.n_conv) for ind in range(self.n_conv)]  # remove
                 trial_action_probs.extend([0.2 / (1.0 * self.n_conv) for ind in range(self.n_conv)])  # add
-                trial_action_probs.extend([0.05, 0.25])
+                trial_action_probs.extend([0.05, 0.15])
 
             action_idx = np.random.choice(self.output_size,p=trial_action_probs)
             layer_actions_list = self.action_list_with_index(action_idx)
@@ -695,11 +701,17 @@ class AdaCNNAdaptingQLearner(object):
                 found_valid_action = True
             assert found_valid_action
 
-            #if len(history_t_plus_1)==self.state_history_length:
-            #    for q_val in q_for_actions:
-            #        q_value_strings = ''
-            #        q_value_strings += '%.5f'%q_val+','
-            #    self.q_logger.info("%d,%s",self.local_time_stamp,q_value_strings)
+            if len(history_t_plus_1)==self.state_history_length:
+                curr_x = np.asarray(self.phi(history_t_plus_1)).reshape(1, -1)
+                q_for_actions = self.session.run(self.tf_out_target_op, feed_dict={self.tf_state_input: curr_x})
+                q_for_actions = q_for_actions.flatten().tolist()
+
+                q_value_strings = ''
+                for q_val in q_for_actions:
+                    q_value_strings += '%.5f' % q_val + ','
+                self.q_logger.info("%d,%s", self.local_time_stamp, q_value_strings)
+                self.rl_logger.debug('\tPredicted Q: %s', q_for_actions[:10])
+
 
             if len(self.rand_state_list)<self.rand_state_length and \
                             np.random.random()<self.rand_state_accum_rate and \
@@ -716,12 +728,25 @@ class AdaCNNAdaptingQLearner(object):
             q_for_actions = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:curr_x})
             q_for_actions = q_for_actions.flatten().tolist()
 
+            q_value_strings = ''
             for q_val in q_for_actions:
-                q_value_strings = ''
                 q_value_strings += '%.5f'%q_val+','
             self.q_logger.info("%d,%s",self.local_time_stamp,q_value_strings)
-            self.rl_logger.debug('\tActions (length): %d',self.output_size)
             self.rl_logger.debug('\tPredicted Q: %s',q_for_actions[:10])
+
+            # Finding when to stop adapting
+            # for this we choose the point the finetune operation has the
+            # maximum utility compared to other actions and itself previously
+            if np.argmax(q_for_actions) == self.output_size - 1:
+                if q_for_actions[-1]>self.max_q_ft:
+                    assert self.trial_phase>=1.0
+                    self.max_q_ft = q_for_actions[-1]
+                    self.ft_saturated_count = 0
+                else:
+                    self.ft_saturated_count += 1
+
+                if self.ft_saturated_count > self.threshold_stop_adapting:
+                    self.stop_adapting = True
 
             action_type = 'Deterministic'
             action_idx = np.asscalar(np.argmax(q_for_actions))
@@ -853,8 +878,8 @@ class AdaCNNAdaptingQLearner(object):
 
             # TODO: same action taking repeatedly
             # this is to reduce taking the same action over and over again
-            if self.same_action_count >= self.same_action_threshold:
-                self.epsilon = min(self.epsilon*1.01,1.0)
+            #if self.same_action_count >= self.same_action_threshold:
+            #    self.epsilon = min(self.epsilon*1.01,1.0)
 
         self.rl_logger.debug('='*60)
         self.rl_logger.debug('State')
@@ -865,8 +890,8 @@ class AdaCNNAdaptingQLearner(object):
 
         if self.prev_action is not None and \
                         self.get_action_string(layer_actions_list) == self.get_action_string(self.prev_action):
-            #self.same_action_count += 1
-            self.same_action_count = 0
+            self.same_action_count += 1
+
         else:
             self.same_action_count = 0
 
@@ -1037,47 +1062,52 @@ class AdaCNNAdaptingQLearner(object):
         for li,la in enumerate(ai_list):
             if la is None:
                 continue
-
             if la[0]=='add':
                 assert sj[li] == si[li]+la[1]
-                aux_penalty=-0.001*(self.filter_bound_vec[li]-sj[li]) / self.filter_bound_vec[li]
                 break
             elif la[0]=='remove':
                 assert sj[li] == si[li]-la[1]
-                aux_penalty = 0.005*(self.filter_bound_vec[li]-sj[li]) / self.filter_bound_vec[li]
                 break
             elif la[0]=='replace':
-                aux_penalty=(0.001*(self.filter_bound_vec[li]-sj[li]) / self.filter_bound_vec[li])
                 break
-            elif la[0]=='finetune':
-                if aux_penalty>prev_aux_penalty:
-                    aux_penalty = 0.001*(self.filter_bound_vec[li]-sj[li]) / self.filter_bound_vec[li]
-                prev_aux_penalty = aux_penalty
             else:
                 continue
 
         # if all actions are do_nothing randomly apply a penalty
-        complete_do_nothing = False
-        for li,la in enumerate(ai_list):
-            if la is None:
-                continue
-            if la[0]=='do_nothing':
-                complete_do_nothing = True
-            else:
-                complete_do_nothing = False
-                break
+        #complete_do_nothing = False
+        #for li,la in enumerate(ai_list):
+        #    if la is None:
+        #        continue
+        #    if la[0]=='do_nothing':
+        #        complete_do_nothing = True
+        #    else:
+        #        complete_do_nothing = False
+        #        break
 
         reward = mean_accuracy
+        curr_action_string = self.get_action_string(ai_list)
 
-        for li,la in enumerate(ai_list):
-            if la is not None and la[0]=='finetune':
-                reward = mean_accuracy
-                break
+        # exponential magnifier to prevent from being taken consecutively
+        if ('add' in curr_action_string or 'remove' in curr_action_string) and self.same_action_count>=1:
+            self.rl_logger.info('Reward before magnification: %.5f', reward)
+            if reward>0:
+                reward /= (self.same_action_count + 1)
+            else:
+                reward *= (self.same_action_count + 1)
+            self.rl_logger.info('Reward after magnification: %.5f',reward)
+
+        # encourage taking finetune action consecutively
+        if 'finetune' in curr_action_string and self.same_action_count >= 1:
+            self.rl_logger.info('Reward before magnification: %.5f', reward)
+            if reward > 0:
+                reward *= (self.same_action_count + 1)
+            self.rl_logger.info('Reward after magnification: %.5f', reward)
+
 
         #if complete_do_nothing:
         #    reward = -1e-3# * max(self.same_action_count+1,5)
 
-        self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f",self.global_time_stamp,data['batch_id'],ai_list,data['prev_pool_accuracy'],data['pool_accuracy'],reward)
+        self.reward_logger.info("%d:%d:%s:%.3f:%.3f:%.5f",self.global_time_stamp,data['batch_id'],ai_list,data['prev_pool_accuracy'],data['pool_accuracy'],reward)
         # how the update on state_history looks like
         # t=5 (s2,a2),(s3,a3),(s4,a4)
         # t=6 (s3,a3),(s4,a4),(s5,a5)
@@ -1117,18 +1147,18 @@ class AdaCNNAdaptingQLearner(object):
                 prev_action_string = self.get_action_string(self.action_list_with_index(self.experience[-2][1]))
                 curr_action_string = self.get_action_string(ai_list)
                 # this is because the reward can be delayed
-                if 'finetune' in curr_action_string and ('add' in prev_action_string or 'remove' in prev_action_string):
-                    self.rl_logger.info('Updating reward for %s', prev_action_string)
-                    self.rl_logger.info('\tFrom: %.3f',self.experience[-2][2])
-                    self.experience[-2][2] += 0.5*max(0,(data['pool_accuracy'] - self.prev_prev_pool_accuracy)/100.0)
-                    self.rl_logger.info('\tTo: %.3f\n', self.experience[-2][2])
+                #if 'finetune' in curr_action_string and ('add' in prev_action_string or 'remove' in prev_action_string):
+                #    self.rl_logger.info('Updating reward for %s', prev_action_string)
+                #    self.rl_logger.info('\tFrom: %.3f',self.experience[-2][2])
+                #    self.experience[-2][2] += 0.5*max(0,(data['pool_accuracy'] - self.prev_prev_pool_accuracy)/100.0)
+                #    self.rl_logger.info('\tTo: %.3f\n', self.experience[-2][2])
 
             for invalid_a in data['invalid_actions']:
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
                     for _ in range(3):
-                        self.experience.append([history_t, invalid_a, -0.1, history_t_plus_1,self.global_time_stamp])
-                    self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f", self.global_time_stamp, data['batch_id'],
+                        self.experience.append([history_t, invalid_a, -0.01, history_t_plus_1,self.global_time_stamp])
+                    self.reward_logger.info("%d:%d:%s:%.3f:%.3f:%.5f", self.global_time_stamp, data['batch_id'],
                                             self.action_list_with_index(invalid_a), -1, -1, -0.1)
 
                     opp_action = []
@@ -1138,14 +1168,14 @@ class AdaCNNAdaptingQLearner(object):
                         if la is not None and la[0]=='remove':
                             opp_action.append(('add',self.add_amount))
                     for _ in range(3):
-                        self.experience.append([history_t, self.index_from_action_list(opp_action), 0.01, history_t_plus_1,self.global_time_stamp])
-                    self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f", self.global_time_stamp, data['batch_id'],
+                        self.experience.append([history_t, self.index_from_action_list(opp_action), 0.001, history_t_plus_1,self.global_time_stamp])
+                    self.reward_logger.info("%d:%d:%s:%.3f:%.3f:%.5f", self.global_time_stamp, data['batch_id'],
                                             opp_action, -1,-1, 0.01)
 
                 else:
                     for _ in range(3):
-                        self.experience.append([history_t,invalid_a,-0.05,history_t_plus_1,self.global_time_stamp])
-                    self.reward_logger.info("%d:%d:%s:%.3f,%.3f,%.5f", self.global_time_stamp, data['batch_id'],
+                        self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1,self.global_time_stamp])
+                    self.reward_logger.info("%d:%d:%s:%.3f:%.3f:%.5f", self.global_time_stamp, data['batch_id'],
                                             self.action_list_with_index(invalid_a), -1, -1, -0.05)
 
             if self.global_time_stamp<3:
@@ -1156,7 +1186,7 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.info('\tState: %s',si)
         self.rl_logger.info('\tAction: %d,%s',action_idx,ai_list)
         self.rl_logger.info('\tReward: %.3f',reward)
-        self.rl_logger.info('\t\tReward (Mean Acc) (Penalty): %.4f,%.4f',mean_accuracy,np.mean(aux_penalty))
+        self.rl_logger.info('\t\tReward (Mean Acc): %.4f',mean_accuracy)
 
         self.previous_reward = reward
         self.prev_prev_pool_accuracy = data['prev_pool_accuracy']
@@ -1188,3 +1218,6 @@ class AdaCNNAdaptingQLearner(object):
         self.action_logger.handlers = []
         self.reward_logger.handlers = []
         self.q_logger.handlers = []
+
+    def get_stop_adapting_boolean(self):
+        return self.stop_adapting
