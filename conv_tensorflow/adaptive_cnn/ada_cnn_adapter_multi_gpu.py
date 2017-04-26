@@ -1206,7 +1206,7 @@ research_parameters = {
     'save_train_test_images':False,
     'log_class_distribution':True,'log_distribution_every':128,
     'adapt_structure' : True,
-    'hard_pool_acceptance_rate':0.1*2,
+    'hard_pool_acceptance_rate':0.1,
     'replace_op_train_rate':0.8, # amount of batches from hard_pool selected to train
     'optimizer':'Momentum','momentum':0.9,'pool_momentum':0.0,
     'use_custom_momentum_opt':True,
@@ -1258,12 +1258,13 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-10'
+    datatype = 'cifar-100'
     behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = True
+    research_parameters['adapt_structure'] = False
 
     if research_parameters['adapt_structure']:
         epochs += 1 # for the trial one
+        research_parameters['hard_pool_acceptance_rate'] *= 2.0
 
     if behavior=='non-stationary':
         include_l2_loss = False
@@ -1341,10 +1342,10 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,256#C,3,1,512#Terminate,0,0,0"
+            cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
         else:
             cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
-            filter_upper_bound, filter_lower_bound = 512, 64
+            filter_upper_bound, filter_lower_bound = 256, 64
             add_amount, remove_amount = 8, 4
 
     elif datatype=='imagenet-100':
@@ -2517,7 +2518,7 @@ if __name__=='__main__':
                 perf_logger.info('%d,%.5f,%.5f,%d,%d',(batch_id_multiplier*epoch)+batch_id,t1-t0,(t1_train-t0_train)/num_gpus,op_count,var_count)
 
             # reset the network
-            if epoch ==0:
+            if research_parameters['adapt_structure'] and epoch ==0:
                 adapter.update_trial_phase(1.0)
                 hard_pool.reset_pool()
                 session.run(tf_reset_cnn)
