@@ -1260,7 +1260,7 @@ if __name__=='__main__':
     #type of data training
     datatype = 'cifar-100'
     behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = False
+    research_parameters['adapt_structure'] = True
 
     if research_parameters['adapt_structure']:
         epochs += 1 # for the trial one
@@ -1346,7 +1346,7 @@ if __name__=='__main__':
         else:
             cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
             filter_upper_bound, filter_lower_bound = 256, 64
-            add_amount, remove_amount = 8, 4
+            add_amount, remove_amount = 16, 8
 
     elif datatype=='imagenet-100':
         image_size = 64
@@ -1562,7 +1562,7 @@ if __name__=='__main__':
                 state_history_length=state_history_length,
                 hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.01,
                 rand_state_length=32,add_amount=add_amount,remove_amount = remove_amount,
-                impose_pyramid_structure=False
+                impose_pyramid_structure=False,num_classes=num_labels
             )
             reward_queue = queue.Queue(maxsize=state_history_length - 1)
 

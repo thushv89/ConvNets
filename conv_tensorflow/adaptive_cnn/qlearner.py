@@ -297,6 +297,7 @@ class AdaCNNAdaptingQLearner(object):
         self.discount_rate = params['discount_rate']
         self.filter_upper_bound = params['filter_upper_bound']
         self.filter_min_bound = params['filter_min_bound']
+        self.num_classes = params['num_classes']
 
         self.fit_interval = params['fit_interval'] #GP calculating interval (10)
         self.target_update_rate = params['target_update_rate']
@@ -643,16 +644,16 @@ class AdaCNNAdaptingQLearner(object):
 
         if self.trial_phase<1.0:
 
-            if self.trial_phase<0.5:
+            if self.trial_phase<=0.5:
                 # more add actions
                 # actions are indexed as [{remove actions},{add actions},{do_nothing,finetune}]
-                trial_action_probs = [0.4/(1.0*self.n_conv) for ind in range(self.n_conv)] # remove
-                trial_action_probs.extend([0.4 / (1.0 * self.n_conv) for ind in range(self.n_conv)]) #add
+                trial_action_probs = [0.3/(1.0*self.n_conv) for ind in range(self.n_conv)] # remove
+                trial_action_probs.extend([0.5 / (1.0 * self.n_conv) for ind in range(self.n_conv)]) #add
                 trial_action_probs.extend([0.05,0.15])
 
             else:
-                trial_action_probs = [0.6 / (1.0 * self.n_conv) for ind in range(self.n_conv)]  # remove
-                trial_action_probs.extend([0.2 / (1.0 * self.n_conv) for ind in range(self.n_conv)])  # add
+                trial_action_probs = [0.7 / (1.0 * self.n_conv) for ind in range(self.n_conv)]  # remove
+                trial_action_probs.extend([0.1 / (1.0 * self.n_conv) for ind in range(self.n_conv)])  # add
                 trial_action_probs.extend([0.05, 0.15])
 
             action_idx = np.random.choice(self.output_size,p=trial_action_probs)
@@ -1157,9 +1158,9 @@ class AdaCNNAdaptingQLearner(object):
                 self.rl_logger.debug('Adding the invalid action %s to experience',invalid_a)
                 if 'remove' in self.get_action_string(self.action_list_with_index(invalid_a)):
                     for _ in range(3):
-                        self.experience.append([history_t, invalid_a, -0.01, history_t_plus_1,self.global_time_stamp])
+                        self.experience.append([history_t, invalid_a, -1.0/(self.num_classes*10.0), history_t_plus_1,self.global_time_stamp])
                     self.reward_logger.info("%d:%d:%s:%.3f:%.3f:%.5f", self.global_time_stamp, data['batch_id'],
-                                            self.action_list_with_index(invalid_a), -1, -1, -0.1)
+                                            self.action_list_with_index(invalid_a), -1, -1, -1.0/(self.num_classes*10.0))
 
                     opp_action = []
                     for la in self.action_list_with_index(invalid_a):
@@ -1168,15 +1169,15 @@ class AdaCNNAdaptingQLearner(object):
                         if la is not None and la[0]=='remove':
                             opp_action.append(('add',self.add_amount))
                     for _ in range(3):
-                        self.experience.append([history_t, self.index_from_action_list(opp_action), 0.001, history_t_plus_1,self.global_time_stamp])
+                        self.experience.append([history_t, self.index_from_action_list(opp_action), 1.0/(self.num_classes*100.0), history_t_plus_1,self.global_time_stamp])
                     self.reward_logger.info("%d:%d:%s:%.3f:%.3f:%.5f", self.global_time_stamp, data['batch_id'],
-                                            opp_action, -1,-1, 0.01)
+                                            opp_action, -1,-1, 1.0/(self.num_classes*100.0))
 
                 else:
                     for _ in range(3):
-                        self.experience.append([history_t,invalid_a,-0.01,history_t_plus_1,self.global_time_stamp])
+                        self.experience.append([history_t,invalid_a,-1.0/(self.num_classes*10.0),history_t_plus_1,self.global_time_stamp])
                     self.reward_logger.info("%d:%d:%s:%.3f:%.3f:%.5f", self.global_time_stamp, data['batch_id'],
-                                            self.action_list_with_index(invalid_a), -1, -1, -0.05)
+                                            self.action_list_with_index(invalid_a), -1, -1, -1.0/(self.num_classes*10.0))
 
             if self.global_time_stamp<3:
                 self.rl_logger.debug('Latest Experience: ')
