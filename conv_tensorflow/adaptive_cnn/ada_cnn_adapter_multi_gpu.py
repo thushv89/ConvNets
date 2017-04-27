@@ -1223,6 +1223,7 @@ research_parameters = {
     'pool_randomize':True,
     'pool_randomize_rate':0.25,
     'pooling_for_nonadapt':True,
+    'hard_pool_max_threshold':0.5,
 }
 
 interval_parameters = {
@@ -1260,7 +1261,7 @@ if __name__=='__main__':
     #type of data training
     datatype = 'cifar-100'
     behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = True
+    research_parameters['adapt_structure'] = False
 
     if research_parameters['adapt_structure']:
         epochs += 1 # for the trial one
@@ -1273,7 +1274,7 @@ if __name__=='__main__':
         lrn_alpha = 0.0001
         lrn_beta = 0.75
         start_lr = 0.01
-        decay_rate = 0.6
+        decay_rate = 0.8
     elif behavior =='stationary':
         start_lr = 0.01
         include_l2_loss = True
@@ -1336,17 +1337,19 @@ if __name__=='__main__':
             dataset_size = 1280000
             chunk_size = 51200
 
+        research_parameters['start_adapting_after'] = 1000
+        research_parameters['hard_pool_max_threshold'] = 0.25
         pool_size = batch_size * 2 * num_labels
         test_size=10000
         test_dataset_filename='data_non_station'+os.sep+'cifar-100-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#C,3,1,128#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
+            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
             filter_upper_bound, filter_lower_bound = 256, 64
-            add_amount, remove_amount = 16, 8
+            add_amount, remove_amount = 8, 4
 
     elif datatype=='imagenet-100':
         image_size = 64
@@ -1366,7 +1369,7 @@ if __name__=='__main__':
             dataset_size = 1280000
             chunk_size = 12800
 
-        pool_size = batch_size * 2 * num_labels
+        pool_size = batch_size * 1 * num_labels
         test_size=5000
         test_dataset_filename='data_non_station'+os.sep+'imagenet-100-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'imagenet-100-test-labels.pkl'
@@ -1883,7 +1886,7 @@ if __name__=='__main__':
                         logger.info('Adaptations stopped. Finetune is at its maximum utility (Batch: %d)'%(batch_id_multiplier*epoch+batch_id))
 
                     if hard_pool.get_size() > batch_size:
-                        pool_dataset, pool_labels = hard_pool.get_pool_data(True)
+                        pool_dataset, pool_labels = hard_pool.get_pool_data(False)
                         if research_parameters['pool_randomize'] and np.random.random() < \
                                 research_parameters['pool_randomize_rate']:
                             try:
@@ -1895,6 +1898,7 @@ if __name__=='__main__':
                             except Exception:
                                 raise AssertionError
                         # Train with latter half of the data
+
                         for pool_id in range((hard_pool.get_size() // batch_size) // 2,
                                              (hard_pool.get_size() // batch_size) - 1, num_gpus):
                             if np.random.random() < research_parameters['finetune_rate']:
@@ -1908,9 +1912,21 @@ if __name__=='__main__':
                                 _, _ = session.run([apply_pool_grads_op, update_pool_velocity_ops],
                                                    feed_dict=pool_feed_dict)
 
+                        tmp_pool_accuracy = []
+                        pool_dataset, pool_labels = hard_pool.get_pool_data(False)
+                        for pool_id in range((hard_pool.get_size()//batch_size)//2):
+                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
+                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
+                            pool_feed_dict = {tf_pool_data_batch[0]:pbatch_data,tf_pool_label_batch[0]:pbatch_labels}
+
+                            p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
+                            tmp_pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
+
+                        logger.info('\tPool accuracy non-adapt: %.5f',np.mean(tmp_pool_accuracy))
+
                 if np.random.random()<research_parameters['hard_pool_acceptance_rate']:
                     train_accuracy = np.mean([accuracy(train_predictions[gid],batch_labels[gid]) for gid in range(num_gpus)])/100.0
-                    hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,max(0.1,(1.0-train_accuracy)))
+                    hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,min(research_parameters['hard_pool_max_threshold'],max(0.1,(1.0-train_accuracy))))
                     logger.debug('Pooling data summary')
                     logger.debug('\tData batch size %d',single_iteration_batch_data.shape[0])
                     logger.debug('\tAccuracy %.3f', train_accuracy)
@@ -1928,7 +1944,7 @@ if __name__=='__main__':
 
                     logger.info('\tMinibatch Mean Loss: %.3f'%mean_train_loss)
                     logger.info('\tValidation Accuracy (Unseen): %.3f'%next_valid_accuracy)
-
+                    logger.info('\tHard pool acceptance rate: %.2f',research_parameters['hard_pool_acceptance_rate'])
                     test_accuracies = []
                     for test_batch_id in range(test_size//batch_size):
                         batch_test_data = test_dataset[test_batch_id*batch_size:(test_batch_id+1)*batch_size, :, :, :]
@@ -2007,14 +2023,13 @@ if __name__=='__main__':
 
                     # ====================== Policy update and output ======================
                     if not start_adapting and batch_id>0 and batch_id%(interval_parameters['policy_interval']*2)==0:
-                        logger.info('Fintuning before starting adaptations. (To gain a reasonable accuracy to start with)')
+                        logger.info('Finetuning before starting adaptations. (To gain a reasonable accuracy to start with)')
 
                         pool_dataset, pool_labels = hard_pool.get_pool_data(True)
 
                         # without if can give problems in exploratory stage because of no data in the pool
-                        pbatch_train_count = 0
+
                         if hard_pool.get_size() > batch_size:
-                            pbatch_train_count = 0
                             # Train with latter half of the data
 
                             for pool_id in range((hard_pool.get_size() // batch_size) // 2,
@@ -2031,7 +2046,6 @@ if __name__=='__main__':
                                         pool_feed_dict.update({tf_pool_data_batch[gpu_id]: pbatch_data,
                                                                tf_pool_label_batch[gpu_id]: pbatch_labels})
 
-                                    pbatch_train_count += 1
                                     _, _ = session.run([apply_pool_grads_op, update_pool_velocity_ops],
                                                        feed_dict=pool_feed_dict)
 
@@ -2360,46 +2374,6 @@ if __name__=='__main__':
 
                                             _, _ = session.run([apply_pool_grads_op,update_pool_velocity_ops], feed_dict=pool_feed_dict)
 
-                            elif 'conv' in current_op and (ai[0]=='replace'):
-
-                                min_indices = np.argsort(current_activations[current_op]).flatten()[:16] \
-                                    if current_activations[current_op].size >= 16 else current_activations[current_op].flatten()
-
-                                # Train only with half of the batch
-                                for pool_id in range((hard_pool.get_size() // batch_size) // 2,
-                                                     (hard_pool.get_size() // batch_size) - 1, num_gpus):
-                                    if np.random.random() < research_parameters['replace_op_train_rate']:
-                                        pbatch_data, pbatch_labels = [], []
-                                        pool_feed_dict = {
-                                            tf_indices: min_indices}
-
-                                        for gpu_id in range(num_gpus):
-                                            pbatch_data.append(pool_dataset[(pool_id + gpu_id) * batch_size:(
-                                                                                                            pool_id + gpu_id + 1) * batch_size,
-                                                               :, :, :])
-                                            pbatch_labels.append(pool_labels[(pool_id + gpu_id) * batch_size:(
-                                                                                                             pool_id + gpu_id + 1) * batch_size,
-                                                                 :])
-                                            pool_feed_dict.update({tf_pool_data_batch[gpu_id]: pbatch_data[-1],
-                                                                   tf_pool_label_batch[gpu_id]: pbatch_labels[-1]})
-
-                                        pbatch_train_count += 1
-
-                                        current_activations_list, _, _ = session.run(
-                                            [tf_mean_pool_activations, tf_slice_optimize[current_op],
-                                             tf_slice_vel_update[current_op]],
-                                            feed_dict=pool_feed_dict
-                                        )
-
-                                        current_activations = get_activation_dictionary(current_activations_list,
-                                                                                        cnn_ops, convolution_op_ids)
-
-                                        # update rolling activation means
-                                        for op, op_activations in current_activations.items():
-                                            assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
-                                            rolling_ativation_means[op] = act_decay * rolling_ativation_means[
-                                                op] + current_activations[op]
-
                             elif 'conv' in current_op and ai[0]=='finetune':
                                 # pooling takes place here
 
@@ -2520,7 +2494,7 @@ if __name__=='__main__':
             # reset the network
             if research_parameters['adapt_structure'] and epoch ==0:
                 adapter.update_trial_phase(1.0)
-                hard_pool.reset_pool()
+                #hard_pool.reset_pool()
                 session.run(tf_reset_cnn)
 
                 cnn_hyperparameters = copy.deepcopy(init_cnn_hyperparameters)
@@ -2533,11 +2507,11 @@ if __name__=='__main__':
                         session.run(tf_update_hyp_ops[op],feed_dict={tf_in_size:init_cnn_hyperparameters[op]['in']})
                 print(session.run(tf_cnn_hyperparameters))
                 _ = session.run(tower_logits, feed_dict=train_feed_dict)
-                prev_pool_accuracy = 0
-                max_pool_accuracy = 0
+                #prev_pool_accuracy = 0
+                #max_pool_accuracy = 0
 
                 start_adapting = False
-                research_parameters['hard_pool_acceptance_rate'] = 0.2
+                #research_parameters['hard_pool_acceptance_rate'] = 0.2
 
-            if epoch != 0: # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
+            if research_parameters['adapt_structure'] and epoch != 0: # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
                 session.run(increment_global_step_op)
