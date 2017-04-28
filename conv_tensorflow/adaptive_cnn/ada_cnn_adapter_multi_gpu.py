@@ -1262,6 +1262,9 @@ if __name__=='__main__':
     datatype = 'cifar-100'
     behavior = 'non-stationary'
     research_parameters['adapt_structure'] = False
+    research_parameters['pooling_for_nonadapt'] = False
+    if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
+        iterations_per_batch = 3
 
     if research_parameters['adapt_structure']:
         epochs += 1 # for the trial one
@@ -1314,11 +1317,12 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,256#P,3,2,0#C,5,1,256#P,3,2,0#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
-            filter_upper_bound, filter_lower_bound = 256, 64
+            cnn_string = "C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,0,256]
             add_amount, remove_amount = 8, 4
+            filter_min_threshold = 24
 
     elif datatype=='cifar-100':
         image_size = 24
@@ -1338,42 +1342,19 @@ if __name__=='__main__':
             chunk_size = 51200
 
         research_parameters['start_adapting_after'] = 1000
-        research_parameters['hard_pool_max_threshold'] = 0.25
-        pool_size = batch_size * 2 * num_labels
+        research_parameters['hard_pool_max_threshold'] = 0.2
+        pool_size = batch_size * 1 * num_labels
         test_size=10000
         test_dataset_filename='data_non_station'+os.sep+'cifar-100-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#C,3,1,128#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,64#P,3,2,0#C,3,1,64#Terminate,0,0,0"
-            filter_upper_bound, filter_lower_bound = 256, 64
+            cnn_string = "C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,0,256,256]
+            filter_min_threshold = 24
             add_amount, remove_amount = 8, 4
-
-    elif datatype=='imagenet-100':
-        image_size = 64
-        num_labels = 100
-        num_channels = 3
-        dataset_size = 128000
-        if behavior == 'non-stationary':
-            dataset_filename='data_non_station'+os.sep+'imagenet-100-non-station-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'imagenet-100-non-station-labels.pkl'
-            image_size = 64
-            dataset_size = 1280000
-            chunk_size = 12800
-        elif behavior == 'stationary':
-            dataset_filename='data_non_station'+os.sep+'imagenet-100-station-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'imagenet-100-station-labels.pkl'
-            image_size = 64
-            dataset_size = 1280000
-            chunk_size = 12800
-
-        pool_size = batch_size * 1 * num_labels
-        test_size=5000
-        test_dataset_filename='data_non_station'+os.sep+'imagenet-100-test-dataset.pkl'
-        test_label_filename = 'data_non_station'+os.sep+'imagenet-100-test-labels.pkl'
-        add_amount, remove_amount = 8, 4
     elif datatype=='svhn-10':
         image_size = 32
         num_labels = 10
@@ -1397,11 +1378,12 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station' + os.sep + 'svhn-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
-            filter_upper_bound, filter_lower_bound = 128, 64
+            cnn_string = "C,3,1,32#C,3,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
+            filter_vector = [128,128,0,256]
             add_amount, remove_amount = 4,2
+            min_filter_threshold = 16
 
     dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
@@ -1556,7 +1538,7 @@ if __name__=='__main__':
             adapter = qlearner.AdaCNNAdaptingQLearner(
                 discount_rate=0.9, fit_interval=1,
                 exploratory_tries_factor=5, exploratory_interval=100, stop_exploring_after=150,
-                filter_upper_bound=filter_upper_bound, filter_min_bound=filter_lower_bound,
+                filter_vector = filter_vector,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
                 epsilon=0.5, target_update_rate=25,
@@ -1565,7 +1547,7 @@ if __name__=='__main__':
                 state_history_length=state_history_length,
                 hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.01,
                 rand_state_length=32,add_amount=add_amount,remove_amount = remove_amount,
-                impose_pyramid_structure=False,num_classes=num_labels
+                num_classes=num_labels,filter_min_threshold= filter_min_threshold
             )
             reward_queue = queue.Queue(maxsize=state_history_length - 1)
 
@@ -1886,7 +1868,7 @@ if __name__=='__main__':
                         logger.info('Adaptations stopped. Finetune is at its maximum utility (Batch: %d)'%(batch_id_multiplier*epoch+batch_id))
 
                     if hard_pool.get_size() > batch_size:
-                        pool_dataset, pool_labels = hard_pool.get_pool_data(False)
+                        pool_dataset, pool_labels = hard_pool.get_pool_data(True)
                         if research_parameters['pool_randomize'] and np.random.random() < \
                                 research_parameters['pool_randomize_rate']:
                             try:
@@ -1924,7 +1906,7 @@ if __name__=='__main__':
 
                         logger.info('\tPool accuracy non-adapt: %.5f',np.mean(tmp_pool_accuracy))
 
-                if np.random.random()<research_parameters['hard_pool_acceptance_rate']:
+                if research_parameters['adapt_structure'] and np.random.random()<research_parameters['hard_pool_acceptance_rate']:
                     train_accuracy = np.mean([accuracy(train_predictions[gid],batch_labels[gid]) for gid in range(num_gpus)])/100.0
                     hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,min(research_parameters['hard_pool_max_threshold'],max(0.1,(1.0-train_accuracy))))
                     logger.debug('Pooling data summary')
@@ -1932,6 +1914,11 @@ if __name__=='__main__':
                     logger.debug('\tAccuracy %.3f', train_accuracy)
                     logger.debug('\tPool size (after): %d',hard_pool.get_size())
                     assert hard_pool.get_size()>1
+                if not research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']:
+                    logger.info('Pooling with recent')
+                    hard_pool.add_hard_examples(single_iteration_batch_data, single_iteration_batch_labels,
+                                                super_loss_vec, 1.0)
+                    logger.info('\tPool size (after): %d', hard_pool.get_size())
 
                 if batch_id%interval_parameters['test_interval']==0:
                     mean_train_loss = np.mean(train_losses)
@@ -2051,18 +2038,6 @@ if __name__=='__main__':
 
 
                     if (start_adapting and not stop_adapting) and batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
-
-                        '''pool_accuracy = []
-                        pool_dataset, pool_labels = hard_pool.get_pool_data(False)
-                        for pool_id in range((hard_pool.get_size()//batch_size)//2):
-                            pbatch_data = pool_dataset[pool_id*batch_size:(pool_id+1)*batch_size, :, :, :]
-                            pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
-                            pool_feed_dict = {tf_pool_data_batch[0]:pbatch_data,tf_pool_label_batch[0]:pbatch_labels}
-
-                            p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
-                            pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
-
-                        prev_pool_accuracy = np.mean(pool_accuracy) if len(pool_accuracy)>2 else 0'''
 
                         # update distance measure for class distirbution
                         #distMSE = 0.0
@@ -2513,5 +2488,5 @@ if __name__=='__main__':
                 start_adapting = False
                 #research_parameters['hard_pool_acceptance_rate'] = 0.2
 
-            if research_parameters['adapt_structure'] and epoch != 0: # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
+            if not (research_parameters['adapt_structure'] and epoch > 1): # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
                 session.run(increment_global_step_op)

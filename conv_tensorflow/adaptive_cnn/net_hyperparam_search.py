@@ -594,7 +594,7 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
-    behavior = 'non-stationary'
+    behavior = 'stationary'
 
     if behavior=='non-stationary':
         start_lr = 0.01
@@ -605,12 +605,13 @@ if __name__=='__main__':
     dataset_filename,label_filename = None,None
     test_dataset,test_labels = None,None
 
+
     if datatype=='cifar-10':
         image_size = 24
         num_labels = 10
         num_channels = 3 # rgb
         dataset_size = 50000
-
+        final_2d_width = 3
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
@@ -628,16 +629,50 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
-            filter_upper_bound, filter_lower_bound = 256, 64
+            cnn_string = "C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,0,256]
+            add_amount, remove_amount = 8, 4
+
+    elif datatype=='cifar-100':
+        image_size = 24
+        num_labels = 100
+        num_channels = 3 # rgb
+        dataset_size = 50000
+        final_2d_width = 3
+        if behavior == 'non-stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 51200
+        elif behavior == 'stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-station-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 51200
+
+        research_parameters['start_adapting_after'] = 1000
+        research_parameters['hard_pool_max_threshold'] = 0.2
+        pool_size = batch_size * 1 * num_labels
+        test_size=10000
+        test_dataset_filename='data_non_station'+os.sep+'cifar-100-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
+
+        if not research_parameters['adapt_structure']:
+            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
+        else:
+            cnn_string = "C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,0,256,256]
+            filter_min_threshold = 24
+            add_amount, remove_amount = 8, 4
 
     elif datatype=='svhn-10':
         image_size = 32
         num_labels = 10
         num_channels = 3
         dataset_size = 128000
+        final_2d_width = 2
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'svhn-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'svhn-10-nonstation-labels.pkl'
@@ -651,14 +686,16 @@ if __name__=='__main__':
 
         pool_size = batch_size * 10 * num_labels
         test_size = 26032
-        test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-dataset.pkl'
-        test_label_filename = 'data_non_station' + os.sep + 'svhn-10-nonstation-test-labels.pkl'
+        test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-test-dataset.pkl'
+        test_label_filename = 'data_non_station' + os.sep + 'svhn-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,64#P,3,2,0#C,5,1,128#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,32#P,3,2,0#C,5,1,32#Terminate,0,0,0"
-            filter_upper_bound, filter_lower_bound = 128, 64
+            cnn_string = "C,3,1,32#C,3,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
+            filter_vector = [128,128,0,256]
+            add_amount, remove_amount = 4,2
+            min_filter_threshold = 16
 
     dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
@@ -692,15 +729,6 @@ if __name__=='__main__':
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
     cnn_ops,cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string,final_2d_width)
-
-    # Resetting this every policy interval
-    rolling_data_distribution = {}
-    mean_data_distribution = {}
-    prev_mean_distribution = {}
-    for li in range(num_labels):
-        rolling_data_distribution[li]=0.0
-        mean_data_distribution[li]=1.0/float(num_labels)
-        prev_mean_distribution[li]=1.0/float(num_labels)
 
     graph = tf.Graph()
     config = tf.ConfigProto()
@@ -1207,9 +1235,6 @@ if __name__=='__main__':
                         logger.info('\tTest Accuracy: %.3f'%current_test_accuracy)
                         logger.info('='*60)
                         logger.info('')
-
-                        if research_parameters['adapt_structure'] and abs(current_test_accuracy-prev_test_accuracy)>20:
-                            accuracy_drop_logger.info('%s,%d',state_action_history,current_test_accuracy-prev_test_accuracy)
 
                         prev_test_accuracy = current_test_accuracy
                         error_logger.info('%d,%.3f,%.3f,%.3f',

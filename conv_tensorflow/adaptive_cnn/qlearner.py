@@ -329,7 +329,8 @@ class AdaCNNAdaptingQLearner(object):
         self.conv_ids = params['conv_ids']
         self.random_mode = params['random_mode']
 
-        self.filter_bound_vec = self.make_filter_bound_vector(self.filter_upper_bound, self.net_depth,self.conv_ids,params['impose_pyramid_structure'])
+        #self.filter_bound_vec = self.make_filter_bound_vector(self.filter_upper_bound, self.net_depth,self.conv_ids,params['impose_pyramid_structure'])
+        self.filter_bound_vec = params['filter_vector']
 
         self.rl_logger = logging.getLogger('Adapting Policy Logger')
         self.rl_logger.setLevel(logging_level)
@@ -412,7 +413,7 @@ class AdaCNNAdaptingQLearner(object):
         self.experience_per_action = 25
         self.exp_clean_interval = 25
 
-        self.min_filter_threshold = 16
+        self.min_filter_threshold = params['filter_min_threshold']
 
         self.min_epsilon = 0.1
         self.previous_reward = 0
@@ -640,7 +641,6 @@ class AdaCNNAdaptingQLearner(object):
         self.rl_logger.debug('history_t+1:%s\n',history_t_plus_1)
         self.rl_logger.debug('Epsilons: %.3f\n',self.epsilon)
         self.rl_logger.debug('Trial Phase: %.2f\n',self.trial_phase)
-
 
         if self.trial_phase<1.0:
 
@@ -1087,7 +1087,7 @@ class AdaCNNAdaptingQLearner(object):
         #        complete_do_nothing = False
         #        break
 
-        reward = (1+data['prev_pool_accuracy']/100.0)*mean_accuracy # new
+        reward = mean_accuracy # new
         curr_action_string = self.get_action_string(ai_list)
 
         # exponential magnifier to prevent from being taken consecutively
