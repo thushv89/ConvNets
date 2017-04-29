@@ -1259,12 +1259,12 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-100'
+    datatype = 'cifar-10'
     behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = False
+    research_parameters['adapt_structure'] = True
     research_parameters['pooling_for_nonadapt'] = False
     if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
-        iterations_per_batch = 3
+        epochs *= 2
 
     if research_parameters['adapt_structure']:
         epochs += 1 # for the trial one
@@ -1310,17 +1310,17 @@ if __name__=='__main__':
             label_filename='data_non_station'+os.sep+'cifar-10-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
-
+        research_parameters['start_adapting_after'] = 1000
         pool_size = batch_size * 10 * num_labels
         test_size=10000
         test_dataset_filename='data_non_station'+os.sep+'cifar-10-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'cifar-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
-            filter_vector = [128,128,0,256]
+            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,128,0,256]
             add_amount, remove_amount = 8, 4
             filter_min_threshold = 24
 
@@ -2057,8 +2057,7 @@ if __name__=='__main__':
                         current_state,current_action,curr_invalid_actions = adapter.output_action({'filter_counts':filter_dict,'filter_counts_list':filter_list})
                         stop_adapting = adapter.get_stop_adapting_boolean()
 
-                        if epoch==0:
-                            adapter.update_trial_phase(min(batch_id*1.0/(dataset_size//batch_size),1.0))
+                        adapter.update_trial_phase((batch_id_multiplier*epoch+batch_id)*1.0/(dataset_size//batch_size))
 
                         for li,la in enumerate(current_action):
                             # pooling and fulcon layers
@@ -2469,7 +2468,7 @@ if __name__=='__main__':
             # reset the network
             if research_parameters['adapt_structure'] and epoch ==0:
                 adapter.update_trial_phase(1.0)
-                #hard_pool.reset_pool()
+                hard_pool.reset_pool()
                 session.run(tf_reset_cnn)
 
                 cnn_hyperparameters = copy.deepcopy(init_cnn_hyperparameters)
@@ -2482,11 +2481,21 @@ if __name__=='__main__':
                         session.run(tf_update_hyp_ops[op],feed_dict={tf_in_size:init_cnn_hyperparameters[op]['in']})
                 print(session.run(tf_cnn_hyperparameters))
                 _ = session.run(tower_logits, feed_dict=train_feed_dict)
-                #prev_pool_accuracy = 0
-                #max_pool_accuracy = 0
+                prev_pool_accuracy = 0
+                max_pool_accuracy = 0
 
                 start_adapting = False
-                #research_parameters['hard_pool_acceptance_rate'] = 0.2
+                research_parameters['hard_pool_acceptance_rate'] = 0.2
 
-            if not (research_parameters['adapt_structure'] and epoch > 1): # Epoch 0 is experimental for AdaCNN so to give fair comparison ground
-                session.run(increment_global_step_op)
+            # Inc Algorithm
+            if research_parameters['adapt_structure']:
+                if epoch > 1:
+                    session.run(increment_global_step_op)
+            else:
+                # Noninc pool algorithm
+                if research_parameters['pooling_for_nonadapt']:
+                    session.run(increment_global_step_op)
+                # Noninc algorithm
+                else:
+                    if epoch>0 and epoch%2==0:
+                        session.run(increment_global_step_op)
