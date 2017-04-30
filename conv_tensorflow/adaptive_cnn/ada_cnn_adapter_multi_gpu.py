@@ -1261,13 +1261,13 @@ if __name__=='__main__':
     #type of data training
     datatype = 'cifar-10'
     behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = True
-    research_parameters['pooling_for_nonadapt'] = False
+    research_parameters['adapt_structure'] = False
+    research_parameters['pooling_for_nonadapt'] = True
     if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
-        epochs *= 2
+        iterations_per_batch = 2
 
     if research_parameters['adapt_structure']:
-        epochs += 1 # for the trial one
+        epochs += 2 # for the trial one
         research_parameters['hard_pool_acceptance_rate'] *= 2.0
 
     if behavior=='non-stationary':
@@ -1918,7 +1918,7 @@ if __name__=='__main__':
                     logger.info('Pooling with recent')
                     hard_pool.add_hard_examples(single_iteration_batch_data, single_iteration_batch_labels,
                                                 super_loss_vec, 1.0)
-                    logger.info('\tPool size (after): %d', hard_pool.get_size())
+                    logger.debug('\tPool size (after): %d', hard_pool.get_size())
 
                 if batch_id%interval_parameters['test_interval']==0:
                     mean_train_loss = np.mean(train_losses)
@@ -2489,7 +2489,7 @@ if __name__=='__main__':
 
             # Inc Algorithm
             if research_parameters['adapt_structure']:
-                if epoch > 1:
+                if epoch > 2:
                     session.run(increment_global_step_op)
             else:
                 # Noninc pool algorithm
@@ -2497,5 +2497,4 @@ if __name__=='__main__':
                     session.run(increment_global_step_op)
                 # Noninc algorithm
                 else:
-                    if epoch>0 and epoch%2==0:
-                        session.run(increment_global_step_op)
+                    session.run(increment_global_step_op)
