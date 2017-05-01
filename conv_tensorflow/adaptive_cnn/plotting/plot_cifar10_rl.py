@@ -79,6 +79,7 @@ for i in [0,3,4,7,9]:
     ax1.plot(q_act_x_axis, q_act_y_data[i],label=q_act_labels[i])
 ax1.set_xlabel('Time (t)')
 ax1.set_ylabel('$Q(s_t,a)$')
+ax3.set_ylabel('Accuracy$_{valid}$(%)')
 ax1.set_title('Behavior of Q value for each action w.r.t $S_t$')
 ax1.legend(fontsize=12,loc=3)
 

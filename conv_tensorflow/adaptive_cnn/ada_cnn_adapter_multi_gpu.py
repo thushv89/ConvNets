@@ -1229,6 +1229,7 @@ research_parameters = {
 interval_parameters = {
     'history_dump_interval':500,
     'policy_interval' : 25, #number of batches to process for each policy iteration
+    'finetune_interval': 50,
     'test_interval' : 100
 }
 
@@ -1259,10 +1260,10 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-10'
+    datatype = 'svhn-10'
     behavior = 'non-stationary'
     research_parameters['adapt_structure'] = False
-    research_parameters['pooling_for_nonadapt'] = True
+    research_parameters['pooling_for_nonadapt'] = False
     if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
         iterations_per_batch = 2
 
@@ -1349,12 +1350,15 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#C,3,1,48#Terminate,0,0,0"
-            filter_vector = [128,128,0,256,256]
+            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,128,0,256,256]
             filter_min_threshold = 24
             add_amount, remove_amount = 8, 4
+            interval_parameters['policy_interval'] = 24
+            interval_parameters['finetune_interval'] = 50
+
     elif datatype=='svhn-10':
         image_size = 32
         num_labels = 10
@@ -1378,10 +1382,10 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station' + os.sep + 'svhn-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,32#C,3,1,32#P,3,2,0#C,3,1,32#Terminate,0,0,0"
-            filter_vector = [128,128,0,256]
+            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,128]
             add_amount, remove_amount = 4,2
             min_filter_threshold = 16
 
@@ -1541,7 +1545,7 @@ if __name__=='__main__':
                 filter_vector = filter_vector,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
-                epsilon=0.5, target_update_rate=25,
+                epsilon=0.5, target_update_rate=20,
                 batch_size=32, persist_dir=output_dir,
                 session=session, random_mode=False,
                 state_history_length=state_history_length,
@@ -1862,7 +1866,7 @@ if __name__=='__main__':
                         single_iteration_batch_labels = np.append(single_iteration_batch_labels,batch_labels[gpu_id],axis=0)
 
                 if ((research_parameters['pooling_for_nonadapt'] and (not research_parameters['adapt_structure'])) or stop_adapting) and\
-                        (batch_id>0 and batch_id%interval_parameters['policy_interval']==0):
+                        (batch_id>0 and batch_id%interval_parameters['finetune_interval']==0):
                     logger.info('Pooling for non-adaptive CNN')
                     if research_parameters['adapt_structure']:
                         logger.info('Adaptations stopped. Finetune is at its maximum utility (Batch: %d)'%(batch_id_multiplier*epoch+batch_id))
@@ -1915,7 +1919,7 @@ if __name__=='__main__':
                     logger.debug('\tPool size (after): %d',hard_pool.get_size())
                     assert hard_pool.get_size()>1
                 if not research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']:
-                    logger.info('Pooling with recent')
+
                     hard_pool.add_hard_examples(single_iteration_batch_data, single_iteration_batch_labels,
                                                 super_loss_vec, 1.0)
                     logger.debug('\tPool size (after): %d', hard_pool.get_size())
