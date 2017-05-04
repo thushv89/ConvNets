@@ -1228,7 +1228,7 @@ research_parameters = {
 
 interval_parameters = {
     'history_dump_interval':500,
-    'policy_interval' : 25, #number of batches to process for each policy iteration
+    'policy_interval' : 50, #number of batches to process for each policy iteration
     'finetune_interval': 50,
     'test_interval' : 100
 }
@@ -1261,8 +1261,8 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'svhn-10'
-    behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = False
+    behavior = 'stationary'
+    research_parameters['adapt_structure'] = True
     research_parameters['pooling_for_nonadapt'] = False
     if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
         iterations_per_batch = 2
@@ -1360,6 +1360,7 @@ if __name__=='__main__':
             interval_parameters['finetune_interval'] = 50
 
     elif datatype=='svhn-10':
+
         image_size = 32
         num_labels = 10
         num_channels = 3
@@ -1371,23 +1372,25 @@ if __name__=='__main__':
             dataset_size = 1280000
             chunk_size = 25600
         elif behavior == 'stationary':
+            #research_parameters['hard_pool_max_threshold'] = 0.2
             dataset_filename='data_non_station'+os.sep+'svhn-10-station-dataset.pkl'
             label_filename='data_non_station'+os.sep+'svhn-10-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 25600
 
+        research_parameters['start_adapting_after'] = 1000
         pool_size = batch_size * 10 * num_labels
         test_size = 26032
         test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-test-dataset.pkl'
         test_label_filename = 'data_non_station' + os.sep + 'svhn-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#Terminate,0,0,0"
+            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#Terminate,0,0,0"
-            filter_vector = [128,128,128]
+            cnn_string = "C,5,1,24#P,3,2,0#C,5,1,24#P,3,2,0#C,3,1,24#Terminate,0,0,0"
+            filter_vector = [128,0,128,0,128]
             add_amount, remove_amount = 4,2
-            min_filter_threshold = 16
+            filter_min_threshold = 12
 
     dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
@@ -1503,8 +1506,8 @@ if __name__=='__main__':
     config = tf.ConfigProto()
     config.allow_soft_placement=True
     config.log_device_placement=False
+    config.gpu_options.per_process_gpu_memory_fraction=0.95
 
-    #config.gpu_options.per_process_gpu_memory_fraction=0.65
     with tf.Graph().as_default(), tf.device('/cpu:0'):
 
         hardness = 0.5
@@ -1541,7 +1544,7 @@ if __name__=='__main__':
             state_history_length = 4
             adapter = qlearner.AdaCNNAdaptingQLearner(
                 discount_rate=0.9, fit_interval=1,
-                exploratory_tries_factor=5, exploratory_interval=100, stop_exploring_after=150,
+                exploratory_tries_factor=5, exploratory_interval=10000, stop_exploring_after=10,
                 filter_vector = filter_vector,
                 conv_ids=convolution_op_ids, net_depth=layer_count,
                 n_conv=len([op for op in cnn_ops if 'conv' in op]),
@@ -1913,6 +1916,8 @@ if __name__=='__main__':
                 if research_parameters['adapt_structure'] and np.random.random()<research_parameters['hard_pool_acceptance_rate']:
                     train_accuracy = np.mean([accuracy(train_predictions[gid],batch_labels[gid]) for gid in range(num_gpus)])/100.0
                     hard_pool.add_hard_examples(single_iteration_batch_data,single_iteration_batch_labels,super_loss_vec,min(research_parameters['hard_pool_max_threshold'],max(0.1,(1.0-train_accuracy))))
+                    #logger.debug('Adding %.3f examples',min(research_parameters['hard_pool_max_threshold'],max(0.1,(1.0-train_accuracy)))*2*batch_size)
+                    #logger.debug('Accuracy: %.3f',train_accuracy)
                     logger.debug('Pooling data summary')
                     logger.debug('\tData batch size %d',single_iteration_batch_data.shape[0])
                     logger.debug('\tAccuracy %.3f', train_accuracy)
@@ -2490,6 +2495,9 @@ if __name__=='__main__':
 
                 start_adapting = False
                 research_parameters['hard_pool_acceptance_rate'] = 0.2
+
+            if research_parameters['adapt_structure'] and epoch == 1:
+                stop_adapting = True
 
             # Inc Algorithm
             if research_parameters['adapt_structure']:

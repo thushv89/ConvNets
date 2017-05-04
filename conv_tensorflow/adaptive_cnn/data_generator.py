@@ -652,7 +652,7 @@ if __name__ == '__main__':
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
     dataset_type = 'svhn-10'  # 'cifar-10 imagenet-100
-    distribution_type = 'non-stationary'
+    distribution_type = 'stationary'
     distribution_type2 = 'gauss'  # gauss or step
     data_save_directory = 'data_non_station'
 
@@ -773,7 +773,7 @@ if __name__ == '__main__':
 
         print(new_dataset_filename)
         sample_svhn_10_with_distribution(dataset_info, train_data_filename, priors, data_save_directory, new_dataset_filename, new_labels_filename)
-        generate_svhn_test_data(dataset_info,test_data_filename,data_save_directory)
+        #generate_svhn_test_data(dataset_info,test_data_filename,data_save_directory)
 
     elif dataset_type == 'cifar-10':
         data_filename = '..'+os.sep+'..'+os.sep+'data'+os.sep+'cifar-10.pickle'
