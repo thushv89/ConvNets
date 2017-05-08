@@ -1260,10 +1260,10 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'svhn-10'
-    behavior = 'stationary'
-    research_parameters['adapt_structure'] = True
-    research_parameters['pooling_for_nonadapt'] = False
+    datatype = 'cifar-100'
+    behavior = 'non-stationary'
+    research_parameters['adapt_structure'] = False
+    research_parameters['pooling_for_nonadapt'] = True
     if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
         iterations_per_batch = 2
 
@@ -1306,11 +1306,16 @@ if __name__=='__main__':
             label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
+            interval_parameters['policy_interval'] = 50
+            interval_parameters['finetune_interval'] = 50
         elif behavior == 'stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-station-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
+            interval_parameters['policy_interval'] = 24
+            interval_parameters['finetune_interval'] = 50
+
         research_parameters['start_adapting_after'] = 1000
         pool_size = batch_size * 10 * num_labels
         test_size=10000
@@ -1336,11 +1341,15 @@ if __name__=='__main__':
             label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
+            interval_parameters['policy_interval'] = 50
+            interval_parameters['finetune_interval'] = 50
         elif behavior == 'stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-100-station-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-100-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
+            interval_parameters['policy_interval'] = 24
+            interval_parameters['finetune_interval'] = 50
 
         research_parameters['start_adapting_after'] = 1000
         research_parameters['hard_pool_max_threshold'] = 0.2
@@ -1350,14 +1359,12 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
+            cnn_string = "C,5,1,128#C,5,1,128#C,5,1,128#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#C,3,1,48#Terminate,0,0,0"
+            cnn_string = "C,5,1,48#C,5,1,48#C,5,1,48#P,3,2,0#C,3,1,48#C,3,1,48#Terminate,0,0,0"
             filter_vector = [128,128,128,0,256,256]
             filter_min_threshold = 24
-            add_amount, remove_amount = 8, 4
-            interval_parameters['policy_interval'] = 24
-            interval_parameters['finetune_interval'] = 50
+            add_amount, remove_amount = 16, 8
 
     elif datatype=='svhn-10':
 
@@ -1371,12 +1378,16 @@ if __name__=='__main__':
             label_filename='data_non_station'+os.sep+'svhn-10-nonstation-labels.pkl'
             dataset_size = 1280000
             chunk_size = 25600
+            interval_parameters['policy_interval'] = 50
+            interval_parameters['finetune_interval'] = 50
         elif behavior == 'stationary':
             #research_parameters['hard_pool_max_threshold'] = 0.2
             dataset_filename='data_non_station'+os.sep+'svhn-10-station-dataset.pkl'
             label_filename='data_non_station'+os.sep+'svhn-10-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 25600
+            interval_parameters['policy_interval'] = 24
+            interval_parameters['finetune_interval'] = 50
 
         research_parameters['start_adapting_after'] = 1000
         pool_size = batch_size * 10 * num_labels
@@ -1506,7 +1517,7 @@ if __name__=='__main__':
     config = tf.ConfigProto()
     config.allow_soft_placement=True
     config.log_device_placement=False
-    config.gpu_options.per_process_gpu_memory_fraction=0.95
+    config.gpu_options.per_process_gpu_memory_fraction=0.9
 
     with tf.Graph().as_default(), tf.device('/cpu:0'):
 

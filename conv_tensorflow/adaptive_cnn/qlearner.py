@@ -809,8 +809,12 @@ class AdaCNNAdaptingQLearner(object):
                     # if action is invalid, remove that from the allowed actions
                     if next_filter_count<=self.min_filter_threshold or next_filter_count>self.filter_bound_vec[li]:
                         self.rl_logger.debug('\tAction %s is not valid li(%d), (Next Filter Count: %d). '%(str(la),li,next_filter_count))
-
-                        del q_for_actions[action_idx]
+                        try:
+                            del q_for_actions[action_idx]
+                        except:
+                            self.rl_logger.critical('Error Length Q (%d) Action idx (%d)',len(q_for_actions),action_idx)
+                            self.rl_logger.critical('\tAction %s is not valid li(%d), (Next Filter Count: %d). ',
+                                                    str(la), li, next_filter_count)
                         allowed_actions.remove(action_idx)
                         invalid_actions.append(action_idx)
                         found_valid_action = False

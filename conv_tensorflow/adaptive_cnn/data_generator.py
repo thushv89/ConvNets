@@ -651,7 +651,7 @@ if __name__ == '__main__':
 
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
-    dataset_type = 'svhn-10'  # 'cifar-10 imagenet-100
+    dataset_type = 'cifar-100'  # 'cifar-10 imagenet-100
     distribution_type = 'stationary'
     distribution_type2 = 'gauss'  # gauss or step
     data_save_directory = 'data_non_station'
