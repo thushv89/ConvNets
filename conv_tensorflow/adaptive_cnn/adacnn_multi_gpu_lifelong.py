@@ -9,7 +9,7 @@ from math import ceil,floor
 import load_data
 import logging
 import sys
-import qlearner
+from qlearner_lifelong import AdaCNNAdaptingQLearner
 from data_pool import Pool
 from collections import Counter
 from scipy.misc import imsave
@@ -22,7 +22,7 @@ import copy
 
 
 ##################################################################
-# AdaCNN Adapter
+# AdaCNN Paper (ICML)
 # ===============================================================
 # AdaCNN Adapter will adapt the final model proposed by AdaCNN Constructor
 # Then runs e-greedy Q-Learn for all the layer to decide of more filters required
@@ -41,14 +41,14 @@ decay_learning_rate = True
 decay_rate = 0.5
 dropout_rate = 0.25
 use_dropout = True
-use_loc_res_norm = False
+use_loc_res_norm = True
 #keep beta small (0.2 is too much >0.002 seems to be fine)
 include_l2_loss = True
 beta = 1e-5
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
-epochs = 5
+epochs = 3
 final_2d_width = 3
 
 lrn_radius = 5
@@ -90,8 +90,10 @@ def initialize_cnn_with_ops(cnn_ops, cnn_hyps):
         if 'conv' in op:
             with tf.variable_scope(op) as scope:
                 var_list.append(tf.get_variable(
-                    name=TF_WEIGHTS, shape=cnn_hyps[op]['weights'],
-                    initializer=tf.contrib.layers.xavier_initializer_conv2d(),
+                    name=TF_WEIGHTS,
+                    initializer=tf.truncated_normal(cnn_hyps[op]['weights'],
+                                                    stddev=2./max(100,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
+                                                    ),
                     validate_shape = False, dtype=tf.float32))
                 var_list.append(tf.get_variable(
                     name=TF_BIAS,
@@ -110,8 +112,9 @@ def initialize_cnn_with_ops(cnn_ops, cnn_hyps):
         if 'fulcon' in op:
             with tf.variable_scope(op) as scope:
                 var_list.append(tf.get_variable(
-                    name=TF_WEIGHTS, shape=[cnn_hyps[op]['in'],cnn_hyps[op]['out']],
-                    initializer = tf.contrib.layers.xavier_initializer(),
+                    name=TF_WEIGHTS,
+                    initializer = tf.truncated_normal([cnn_hyps[op]['in'],cnn_hyps[op]['out']],
+                                                     stddev=2./cnn_hyps[op]['in']),
                     validate_shape = False, dtype=tf.float32))
                 var_list.append(tf.get_variable(
                     name=TF_BIAS,
@@ -212,9 +215,9 @@ def tower_loss(dataset,labels,weighted,tf_data_weights, tf_cnn_hyperparameters):
     logits,_ = inference(dataset,tf_cnn_hyperparameters,True)
     # use weighted loss
     if weighted:
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=labels) * tf_data_weights)
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels) * tf_data_weights)
     else:
-        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=labels))
+        loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, labels))
 
     if include_l2_loss:
         fulcons = []
@@ -235,7 +238,7 @@ def tower_loss(dataset,labels,weighted,tf_data_weights, tf_cnn_hyperparameters):
 
 def calc_loss_vector(scope,dataset,labels,tf_cnn_hyperparameters):
     logits,_ = inference(dataset,tf_cnn_hyperparameters,True)
-    return tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=labels,name=TF_LOSS_VEC_STR)
+    return tf.nn.softmax_cross_entropy_with_logits(logits, labels,name=TF_LOSS_VEC_STR)
 
 
 def gradients(optimizer, loss, global_step, learning_rate):
@@ -607,7 +610,7 @@ def average_gradients(tower_grads):
         for g, v in grad_and_vars:
             expanded_g = tf.expand_dims(g,0)
             grads.append(expanded_g)
-        grad = tf.concat(axis=0,values=grads)
+        grad = tf.concat(0,values=grads)
         grad = tf.reduce_mean(grad,axis=0)
         grad_and_var = (grad,v)
         average_grads.append(grad_and_var)
@@ -621,7 +624,7 @@ def concat_loss_vector_towers(tower_loss_vectors):
         if concat_loss_vec is None:
             concat_loss_vec = tf.identity(loss_vec)
         else:
-            concat_loss_vec = tf.concat(axis=1,values=loss_vec)
+            concat_loss_vec = tf.concat(1,loss_vec)
 
     return concat_loss_vec
 
@@ -695,15 +698,15 @@ def add_with_action(
             pool_b_vel = tf.get_variable(TF_POOL_MOMENTUM)
 
         # calculating new weights
-        tf_new_weights = tf.concat(axis=3,values=[w,tf_weights_this])
-        tf_new_biases = tf.concat(axis=0,values=[b,tf_bias_this])
+        tf_new_weights = tf.concat(3,[w,tf_weights_this])
+        tf_new_biases = tf.concat(0,[b,tf_bias_this])
 
         if research_parameters['optimizer']=='Momentum':
 
-            new_weight_vel = tf.concat(axis=3,values=[w_vel, tf_wvelocity_this])
-            new_bias_vel = tf.concat(axis=0,values=[b_vel,tf_bvelocity_this])
-            new_pool_w_vel = tf.concat(axis=3,values=[pool_w_vel,tf_wvelocity_this])
-            new_pool_b_vel = tf.concat(axis=0,values=[pool_b_vel,tf_bvelocity_this])
+            new_weight_vel = tf.concat(3,[w_vel, tf_wvelocity_this])
+            new_bias_vel = tf.concat(0,[b_vel,tf_bvelocity_this])
+            new_pool_w_vel = tf.concat(3,[pool_w_vel,tf_wvelocity_this])
+            new_pool_b_vel = tf.concat(0,[pool_b_vel,tf_bvelocity_this])
 
             update_ops.append(tf.assign(w_vel,new_weight_vel,validate_shape=False))
             update_ops.append(tf.assign(b_vel,new_bias_vel,validate_shape=False))
@@ -727,13 +730,13 @@ def add_with_action(
                 pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
 
             tf_weights_next = tf.squeeze(tf_weights_next)
-            tf_new_weights = tf.concat(axis=0,values=[w,tf_weights_next])
+            tf_new_weights = tf.concat(0,[w,tf_weights_next])
 
             # updating velocity vectors
             if research_parameters['optimizer'] == 'Momentum':
                 tf_wvelocity_next = tf.squeeze(tf_wvelocity_next)
-                new_weight_vel = tf.concat(axis=0,values=[w_vel,tf_wvelocity_next])
-                new_pool_w_vel = tf.concat(axis=0, values=[pool_w_vel, tf_wvelocity_next])
+                new_weight_vel = tf.concat(0,[w_vel,tf_wvelocity_next])
+                new_pool_w_vel = tf.concat(0, [pool_w_vel, tf_wvelocity_next])
                 update_ops.append(tf.assign(w_vel,new_weight_vel,validate_shape=False))
                 update_ops.append(tf.assign(pool_w_vel,new_pool_w_vel,validate_shape=False))
 
@@ -752,11 +755,11 @@ def add_with_action(
                 w_vel = tf.get_variable(TF_TRAIN_MOMENTUM)
                 pool_w_vel = tf.get_variable(TF_POOL_MOMENTUM)
 
-            tf_new_weights=tf.concat(axis=2,values=[w,tf_weights_next])
+            tf_new_weights=tf.concat(2,[w,tf_weights_next])
 
             if research_parameters['optimizer']=='Momentum':
-                new_weight_vel = tf.concat(axis=2,values=[w_vel, tf_wvelocity_next])
-                new_pool_w_vel = tf.concat(axis=2, values=[pool_w_vel,tf_wvelocity_next])
+                new_weight_vel = tf.concat(2,[w_vel, tf_wvelocity_next])
+                new_pool_w_vel = tf.concat(2,[pool_w_vel,tf_wvelocity_next])
                 update_ops.append(tf.assign(w_vel, new_weight_vel, validate_shape=False))
                 update_ops.append(tf.assign(pool_w_vel,new_pool_w_vel, validate_shape=False))
 
@@ -982,6 +985,21 @@ def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx
         except Exception:
            raise AssertionError
 
+        #if tf_distort_data_batch is None:
+        #    tf_distort_data_batch = tf.placeholder(shape=[batch_size,image_size,image_size,num_channels],dtype=tf.float32)
+        #with tf.device('/gpu:0'):
+        #    if distorted_imgs is None:
+        #        distorted_imgs = distort_img_with_tf(tf_distort_data_batch)
+        #    for dist_i in range((size//batch_size)):
+        #        dist_databatch = session.run(distorted_imgs,feed_dict={tf_distort_data_batch:train_dataset[dist_i*batch_size:(dist_i+1)*batch_size,:,:,:]})
+        #        if rand_train_dataset is None:
+        #            rand_train_dataset = dist_databatch
+        #        else:
+        #            rand_train_dataset = np.append(rand_train_dataset,dist_databatch,axis=0)
+
+        #assert train_dataset.shape[0]==rand_train_dataset.shape[0]
+        #train_dataset = rand_train_dataset
+
     # labels is nx1 shape
     train_labels = fp2[:]
 
@@ -1116,10 +1134,9 @@ def reset_cnn(cnn_hyps):
         if 'conv' in op:
             with tf.variable_scope(op) as scope:
                 weights = tf.get_variable(name=TF_WEIGHTS)
-                new_weights = tf.random_uniform(cnn_hyps[op]['weights'],
-                                                minval=-np.sqrt(6./(np.prod(cnn_hyps[op]['weights'][:-1]) + cnn_hyps[op]['weights'][-1])),
-                                                maxval=np.sqrt(6. / (np.prod(cnn_hyps[op]['weights'][:-1]) + cnn_hyps[op]['weights'][-1]))
-                                                )
+                new_weights = tf.truncated_normal(cnn_hyps[op]['weights'],
+                                                    stddev=2./max(100,cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1])
+                                                    )
 
                 reset_ops.append(tf.assign(weights,new_weights,validate_shape = False))
 
@@ -1153,10 +1170,8 @@ def reset_cnn(cnn_hyps):
             with tf.variable_scope(op) as scope:
 
                 weights = tf.get_variable(name=TF_WEIGHTS)
-                new_weights = tf.random_uniform([cnn_hyps[op]['in'],cnn_hyps[op]['out']],
-                                                  minval=-np.sqrt(6./(cnn_hyps[op]['in']+cnn_hyps[op]['out'])),
-                                                  maxval = np.sqrt(6./(cnn_hyps[op]['in']+cnn_hyps[op]['out']))
-                                                  )
+                new_weights = tf.truncated_normal([cnn_hyps[op]['in'],cnn_hyps[op]['out']],
+                                                     stddev=2./cnn_hyps[op]['in'])
                 reset_ops.append(tf.assign(weights,new_weights,validate_shape = False))
 
                 with tf.variable_scope(TF_WEIGHTS) as child_scope:
@@ -1248,15 +1263,14 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
-    behavior = 'stationary'
+    behavior = 'non-stationary'
     research_parameters['adapt_structure'] = True
     research_parameters['pooling_for_nonadapt'] = False
-
     if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
         iterations_per_batch = 2
 
     if research_parameters['adapt_structure']:
-        epochs += 2 # for the trial one
+        #epochs += 2 # for the trial one
         research_parameters['hard_pool_acceptance_rate'] *= 2.0
 
     if behavior=='non-stationary':
@@ -1288,49 +1302,43 @@ if __name__=='__main__':
         num_labels = 10
         num_channels = 3 # rgb
         dataset_size = 50000
-        use_warmup_epoch = True
         final_2d_width = 3
         if behavior == 'non-stationary':
-            dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
+            dataset_filename='data_non_station_lifelong'+os.sep+'cifar-10-ll-nonstation-dataset.pkl'
+            label_filename='data_non_station_lifelong'+os.sep+'cifar-10-ll-nonstation-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
 
         elif behavior == 'stationary':
-            dataset_filename='data_non_station'+os.sep+'cifar-10-station-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'cifar-10-station-labels.pkl'
+            dataset_filename='data_non_station_lifelong'+os.sep+'cifar-10-ll-station-dataset.pkl'
+            label_filename='data_non_station_lifelong'+os.sep+'cifar-10-ll-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
 
-        interval_parameters['policy_interval'] = 24
-        interval_parameters['finetune_interval'] = 24
+        interval_parameters['policy_interval'] = 50
+        interval_parameters['finetune_interval'] = 50
         orig_finetune_interval = 50
-        trial_phase_threshold = 1.0
+
         research_parameters['start_adapting_after'] = 1000
         pool_size = batch_size * 10 * num_labels
         test_size=10000
-        test_dataset_filename='data_non_station'+os.sep+'cifar-10-test-dataset.pkl'
-        test_label_filename = 'data_non_station'+os.sep+'cifar-10-test-labels.pkl'
+        test_dataset_filename='data_non_station_lifelong'+os.sep+'cifar-10-ll-test-dataset.pkl'
+        test_label_filename = 'data_non_station_lifelong'+os.sep+'cifar-10-ll-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            #cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
-            cnn_string = "C,3,1,64#P,2,2,0#C,3,1,128#P,2,2,0#C,3,1,256#C,3,1,256#P,2,2,0#C,3,1,512#C,3,1,512#Terminate,0,0,0"
-
+            cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,32#P,2,2,0#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,64#C,3,1,64#Terminate,0,0,0"
-            #cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
-            filter_vector = [64,0,128,0,256,256,0,512,512]
-            add_amount, remove_amount = 16, 8
+            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,128,0,256]
+            add_amount, remove_amount = 8, 4
             filter_min_threshold = 24
 
-    elif datatype=='imagenet-250':
-        image_size = 64
-        num_labels = 250
+    elif datatype=='cifar-100':
+        image_size = 24
+        num_labels = 100
         num_channels = 3 # rgb
         dataset_size = 50000
-        use_warmup_epoch = True
-
-        final_2d_width = 4
+        final_2d_width = 3
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
@@ -1347,63 +1355,22 @@ if __name__=='__main__':
         interval_parameters['policy_interval'] = 24
         interval_parameters['finetune_interval'] = 24
         orig_finetune_interval = 50
-        trial_phase_threshold = 1.0
 
-        research_parameters['start_adapting_after'] = 1000
+        research_parameters['start_adapting_after'] = 2000
         research_parameters['hard_pool_max_threshold'] = 0.2
-
         pool_size = batch_size * 1 * num_labels
-        test_size= 12500
+        test_size=10000
         test_dataset_filename='data_non_station'+os.sep+'cifar-100-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,3,1,64#P,2,2,0#C,3,1,128#P,2,2,0#C,3,1,256#C,3,1,256#P,2,2,0#C,3,1,512#C,3,1,512#P,2,2,0#C,3,1,512#C,3,1,512#Terminate,0,0,0"
+            cnn_string = "C,5,1,128#C,5,1,128#C,5,1,128#P,3,2,0#C,3,1,256#C,3,1,256#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,32#P,2,2,0#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
-            filter_vector = [64,0,128,0,256,256,0,512,512,512,512]
+            cnn_string = "C,5,1,48#C,5,1,48#C,5,1,48#P,3,2,0#C,3,1,48#C,3,1,48#Terminate,0,0,0"
+            filter_vector = [128,128,128,0,256,256]
             filter_min_threshold = 24
             add_amount, remove_amount = 16, 8
 
-    elif datatype=='svhn-10':
-
-        image_size = 32
-        num_labels = 10
-        num_channels = 3
-        dataset_size = 128000
-        use_warmup_epoch = False
-        final_2d_width = 2
-        if behavior == 'non-stationary':
-            dataset_filename='data_non_station'+os.sep+'svhn-10-nonstation-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'svhn-10-nonstation-labels.pkl'
-            dataset_size = 1280000
-            chunk_size = 25600
-
-        elif behavior == 'stationary':
-            #research_parameters['hard_pool_max_threshold'] = 0.2
-            dataset_filename='data_non_station'+os.sep+'svhn-10-station-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'svhn-10-station-labels.pkl'
-            dataset_size = 1280000
-            chunk_size = 25600
-
-        interval_parameters['policy_interval'] = 50
-        interval_parameters['finetune_interval'] = 50
-        orig_finetune_interval = 50
-        trial_phase_threshold = 1.0
-
-        research_parameters['start_adapting_after'] = 1000
-        pool_size = batch_size * 10 * num_labels
-        test_size = 26032
-        test_dataset_filename = 'data_non_station' + os.sep + 'svhn-10-test-dataset.pkl'
-        test_label_filename = 'data_non_station' + os.sep + 'svhn-10-test-labels.pkl'
-
-        if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#Terminate,0,0,0"
-        else:
-            cnn_string = "C,5,1,24#P,3,2,0#C,5,1,24#P,3,2,0#C,3,1,24#Terminate,0,0,0"
-            filter_vector = [128,0,128,0,128]
-            add_amount, remove_amount = 4,2
-            filter_min_threshold = 12
 
     dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
@@ -1531,7 +1498,6 @@ if __name__=='__main__':
 
         first_fc = 'fulcon_out' if 'fulcon_0' not in cnn_ops else 'fulcon_0'
         # -1 is because we don't want to count pool_global
-        print(cnn_ops)
         layer_count = len([op for op in cnn_ops if 'conv' in op or 'pool' in op])-1
 
         # ids of the convolution ops
@@ -1559,7 +1525,7 @@ if __name__=='__main__':
         if research_parameters['adapt_structure']:
             # Adapting Policy Learner
             state_history_length = 4
-            adapter = qlearner.AdaCNNAdaptingQLearner(
+            adapter = AdaCNNAdaptingQLearner(
                 discount_rate=0.9, fit_interval=1,
                 exploratory_tries_factor=5, exploratory_interval=10000, stop_exploring_after=10,
                 filter_vector = filter_vector,
@@ -1571,8 +1537,7 @@ if __name__=='__main__':
                 state_history_length=state_history_length,
                 hidden_layers = [128,64,32], momentum=0.9, learning_rate = 0.01,
                 rand_state_length=32,add_amount=add_amount,remove_amount = remove_amount,
-                num_classes=num_labels,filter_min_threshold= filter_min_threshold,
-                trial_phase_threshold = trial_phase_threshold
+                num_classes=num_labels,filter_min_threshold= filter_min_threshold
             )
             reward_queue = queue.Queue(maxsize=state_history_length - 1)
 

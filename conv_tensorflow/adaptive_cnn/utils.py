@@ -119,7 +119,7 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
                 else:
                     output_size = image_size
 
-                if fulcon_depth_index==0 and output_size > final_2d_width:
+                if fulcon_depth_index==0 and output_size >= final_2d_width:
                     cnn_ops.append('pool_global')
                     #k_size = ceil(output_size//final_2d_width)+floor(ceil(output_size//final_2d_width)//2)
                     #s_size = k_size - floor(output_size//final_2d_width)

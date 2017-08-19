@@ -2,28 +2,40 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 
-log_dir = 'logs_to_plot' + os.sep + 'cifar-10-time-struct'
-cnn_layers = 4
-cnn_layer_ids = [0,1,2,4]
-cnn_layer_legends = ['Layer 1','Layer 2','Layer 3','Layer 4']
+log_dir = 'logs_to_plot' + os.sep + 'cifar10-cifar100-struct-dist'
+cifar10_cnn_layers = 3
+cifar10_cnn_layer_ids = [0,2,4]
+cifar10_ns_cnn_layer_legends = ['Layer 1 (NS)','Layer 3 (NS)','Layer 4 (NS)']
+cifar10_s_cnn_layer_legends = ['Layer 1 (S)','Layer 3 (S)','Layer 4 (S)']
+cifar10_layer_colors = ['red','blue','green','cyan']
+
+cifar100_cnn_layers = 3
+cifar100_cnn_layer_ids = [1,4,5]
+cifar100_ns_cnn_layer_legends = ['Layer 2 (NS)','Layer 4 (NS)','Layer 5 (NS)']
+cifar100_s_cnn_layer_legends = ['Layer 2 (S)','Layer 4 (S)','Layer 5 (S)']
+cifar100_layer_colors = ['red','blue','green','cyan','magenta']
+
 fig, axarr = plt.subplots(1,3)
 ax1 = axarr[0]
 ax2 = axarr[1]
 ax3 = axarr[2]
 
 fontsize_legend = 14
-fontsize_title = 16
+fontsize_title = 20
 fontsize_ticks = 14
 fontsize_label = 14
 fontsize_legend_small = 10
 # ======================================================================
-#                       Structure growth AdaCNN
+#                       Structure growth AdaCNN (CIFAR 10)
 # ======================================================================
-file_name = os.path.join(log_dir, 'cnn_structure.log')
-struct_y_data = [[] for _ in range(cnn_layers)]
-struct_x_axis = []
+cifar10_ns_file_name = os.path.join(log_dir, 'cifar10-nonstationary-cnn_structure.log')
+cifar10_s_file_name = os.path.join(log_dir, 'cifar10-stationary-cnn_structure.log')
+cifar10_ns_struct_y_data = [[] for _ in range(cifar10_cnn_layers)]
+cifar10_s_struct_y_data = [[] for _ in range(cifar10_cnn_layers)]
+cifar10_ns_struct_x_axis = []
+cifar10_s_struct_x_axis = []
 
-with open(file_name,'r') as f:
+with open(cifar10_ns_file_name,'r') as f:
     for line in f:
         if line.startswith('#'):
             continue
@@ -31,70 +43,82 @@ with open(file_name,'r') as f:
             line_tokens = line.split(':')
             if int(line_tokens[0])<10000:
                 continue
-            struct_x_axis.append(int(line_tokens[0]))
+            cifar10_ns_struct_x_axis.append(int(line_tokens[0]))
             cnn_struct = line_tokens[1][1:-1].split(',')
-            for idx,id in enumerate(cnn_layer_ids):
-                struct_y_data[idx].append(cnn_struct[id])
+            for idx,id in enumerate(cifar10_cnn_layer_ids):
+                cifar10_ns_struct_y_data[idx].append(cnn_struct[id])
 
-for id in range(cnn_layers):
-    ax2.plot(struct_x_axis,struct_y_data[id],label=cnn_layer_legends[id])
+with open(cifar10_s_file_name,'r') as f:
+    for line in f:
+        if line.startswith('#'):
+            continue
+        else:
+            line_tokens = line.split(':')
+            if int(line_tokens[0])<10000:
+                continue
+            cifar10_s_struct_x_axis.append(int(line_tokens[0]))
+            cnn_struct = line_tokens[1][1:-1].split(',')
+            for idx,id in enumerate(cifar10_cnn_layer_ids):
+                cifar10_s_struct_y_data[idx].append(cnn_struct[id])
+
+for id in range(cifar10_cnn_layers):
+    ax1.plot(cifar10_ns_struct_x_axis,cifar10_ns_struct_y_data[id],label=cifar10_ns_cnn_layer_legends[id],color=cifar10_layer_colors[id],linewidth=2)
+for id in range(cifar10_cnn_layers):
+    ax1.plot(cifar10_s_struct_x_axis, cifar10_s_struct_y_data[id], label=cifar10_s_cnn_layer_legends[id],linestyle='--',color=cifar10_layer_colors[id],linewidth=2)
+
+ax1.set_xlabel('Time ($t$)',fontsize=fontsize_label)
+ax1.set_ylabel('Number of kernels',fontsize=fontsize_label)
+ax1.tick_params(axis='both', which='major', labelsize=fontsize_ticks)
+ax1.set_title('Structure adaptation for CIFAR10 over time ($t$)',fontsize=fontsize_title,y=1.05)
+ax1.legend(fontsize=fontsize_legend,loc=2)
+
+# ======================================================================
+#                       Structure growth AdaCNN (CIFAR 100)
+# ======================================================================
+cifar100_ns_file_name = os.path.join(log_dir, 'cifar100-nonstationary-cnn_structure.log')
+cifar100_s_file_name = os.path.join(log_dir, 'cifar100-stationary-cnn_structure.log')
+cifar100_ns_struct_y_data = [[] for _ in range(cifar100_cnn_layers)]
+cifar100_s_struct_y_data = [[] for _ in range(cifar100_cnn_layers)]
+cifar100_ns_struct_x_axis = []
+cifar100_s_struct_x_axis = []
+
+with open(cifar100_ns_file_name,'r') as f:
+    for line in f:
+        if line.startswith('#'):
+            continue
+        else:
+            line_tokens = line.split(':')
+            if int(line_tokens[0])<10000:
+                continue
+            cifar100_ns_struct_x_axis.append(int(line_tokens[0]))
+            cnn_struct = line_tokens[1][1:-1].split(',')
+            for idx,id in enumerate(cifar100_cnn_layer_ids):
+                cifar100_ns_struct_y_data[idx].append(cnn_struct[id])
+
+with open(cifar100_s_file_name,'r') as f:
+    for line in f:
+        if line.startswith('#'):
+            continue
+        else:
+            line_tokens = line.split(':')
+            if int(line_tokens[0])<10000:
+                continue
+            cifar100_s_struct_x_axis.append(int(line_tokens[0]))
+            cnn_struct = line_tokens[1][1:-1].split(',')
+            for idx,id in enumerate(cifar100_cnn_layer_ids):
+                cifar100_s_struct_y_data[idx].append(cnn_struct[id])
+
+for id in range(cifar100_cnn_layers):
+    ax2.plot(cifar100_ns_struct_x_axis,cifar100_ns_struct_y_data[id],label=cifar100_ns_cnn_layer_legends[id],color=cifar100_layer_colors[id],linewidth=2)
+for id in range(cifar100_cnn_layers):
+    ax2.plot(cifar100_s_struct_x_axis, cifar100_s_struct_y_data[id], label=cifar100_s_cnn_layer_legends[id],linestyle='--',color=cifar100_layer_colors[id],linewidth=2)
+
 ax2.set_xlabel('Time ($t$)',fontsize=fontsize_label)
 ax2.set_ylabel('Number of kernels',fontsize=fontsize_label)
 ax2.tick_params(axis='both', which='major', labelsize=fontsize_ticks)
-ax2.set_title('Structure adaptation over time ($t$)',fontsize=fontsize_title)
+ax2.set_title('Structure adaptation for CIFAR100 over time ($t$)',fontsize=fontsize_title,y=1.05)
 ax2.legend(fontsize=fontsize_legend,loc=2)
 
-# ======================================================================
-#           Time consumption Rigid-CNN, Rigid-CNN-B, AdaCNN
-# ======================================================================
-time_filenames = ['time_rigid.log','time_rigidb.log','time_adacnn.log']
-num_algo = 3
-time_train_data = [[] for _ in range(num_algo)]
-time_full_data = [[] for _ in range(num_algo)]
-
-
-for fi,filename in enumerate(time_filenames):
-    file_name = os.path.join(log_dir, filename)
-    with open(file_name,'r') as f:
-        for line in f:
-            if line.startswith('#'):
-                continue
-            else:
-                line_tokens = line.split(',')
-                if int(line_tokens[0])<10:
-                    continue
-                time_train_data[fi].append(float(line_tokens[2]))
-                time_full_data[fi].append(float(line_tokens[1]))
-
-time_train_mean = [np.mean(time_train_data[i]) for i in range(num_algo)]
-time_train_std = [np.std(time_train_data[i]) for i in range(num_algo)]
-
-time_full_mean = [np.mean(time_full_data[i]) for i in range(num_algo)]
-time_full_std = [np.std(time_full_data[i]) for i in range(num_algo)]
-
-print(time_train_mean)
-print(time_train_std)
-print(time_full_mean)
-print(time_full_std)
-
-N=1
-indices = np.arange(N)
-width = 0.1
-
-#ax1.bar(indices,(time_train_mean[0]),width, color='r', yerr=(time_train_std[0]))
-#ax1.bar(indices+width,(time_train_mean[1]),width, color='y', yerr=(time_train_std[1]))
-#ax1.bar(indices+2*width,(time_train_mean[2]),width, color='b', yerr=(time_train_std[2]))
-
-ax1.bar(indices+0*width+0.1,(time_full_mean[0]),width, color='r', yerr=(time_full_std[0]))
-ax1.bar(indices+1*width+0.1,(time_full_mean[1]),width, color='y', yerr=(time_full_std[1]))
-ax1.bar(indices+2*width+0.1,(time_full_mean[2]),width, color='b', yerr=(time_full_std[2]))
-
-ax1.set_ylim([0,3])
-ax1.set_ylabel('Time per Iteration (s)',fontsize=fontsize_label)
-ax1.set_xticks([])
-ax1.legend(('Rigid-CNN', 'Rigid-CNN-B','AdaCNN'),loc=1,fontsize=fontsize_legend)
-ax1.tick_params(axis='both', which='major', labelsize=fontsize_ticks)
-ax1.set_title('Time consumption per Iteration',fontsize=fontsize_title)
 
 # ======================================================================
 #                       Data distribution
@@ -122,7 +146,9 @@ for id in range(num_classes):
 ax3.set_xlabel('Time ($t$)',fontsize=fontsize_label)
 ax3.set_ylabel('Proportion of instances of each class',fontsize=fontsize_label)
 ax3.tick_params(axis='both', which='major', labelsize=fontsize_ticks)
-ax3.set_title('Class distribution over time ($t$)',fontsize=fontsize_title)
+ax3.set_title('Class distribution over time ($t$)',fontsize=fontsize_title,y=1.05)
 ax3.legend(fontsize=fontsize_legend_small,loc=1)
+
+fig.subplots_adjust(wspace=0.15,hspace=0.15,bottom=0.1,top=0.88,right=0.97,left=0.07)
 
 plt.show()

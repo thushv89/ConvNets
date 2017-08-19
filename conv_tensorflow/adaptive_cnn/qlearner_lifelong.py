@@ -424,12 +424,10 @@ class AdaCNNAdaptingQLearner(object):
 
         self.trial_phase = 0
 
-        self.threshold_stop_adapting = 25 # fintune should not increase for this many steps
+        self.threshold_stop_adapting = 25
         self.ft_saturated_count = 0
         self.max_q_ft = -1000
         self.stop_adapting = False
-
-        self.trial_phase_threshold = params['trial_phase_threshold']
 
     def calculate_output_size(self):
         total = 0
@@ -562,7 +560,6 @@ class AdaCNNAdaptingQLearner(object):
     def action_list_with_index(self, action_idx):
         self.rl_logger.debug('Got: %d\n', action_idx)
         layer_actions=[None for _ in range(self.net_depth)]
-        self.rl_logger.debug('Layer actions: %s\n', layer_actions)
 
         if action_idx < self.output_size-self.global_actions:
             primary_action = action_idx//self.n_conv # action
@@ -647,28 +644,28 @@ class AdaCNNAdaptingQLearner(object):
         n_conv_first_half = int(ceil(self.n_conv*1.0/2.0))
         n_conv_last_half = int(self.n_conv - n_conv_first_half)
         assert n_conv_first_half+n_conv_last_half == self.n_conv
-        if self.trial_phase<self.trial_phase_threshold:
+        if self.trial_phase<1.0:
 
-            if self.trial_phase<=self.trial_phase_threshold/5.0:
+            if self.trial_phase<=0.2:
                 # more add actions
                 # actions are indexed as [{remove actions},{add actions},{do_nothing,finetune}]
                 trial_action_probs = [0.2/(1.0*self.n_conv) for _ in range(self.n_conv)] # remove
                 trial_action_probs.extend([0.6 / (1.0 * self.n_conv) for _ in range(self.n_conv)]) #add
                 trial_action_probs.extend([0.05,0.15])
-            elif self.trial_phase<=self.trial_phase_threshold/2.5:
+            elif self.trial_phase<=0.4:
                 trial_action_probs = [0/(1.0*self.n_conv) for _ in range(self.n_conv)] # remove
                 trial_action_probs.extend([0 / (1.0 * self.n_conv) for _ in range(self.n_conv)]) #add
                 trial_action_probs.extend([0.0,1.0])
-            elif self.trial_phase<=self.trial_phase_threshold/2.0:
+            elif self.trial_phase<=0.5:
                 trial_action_probs = [0.2/(1.0*self.n_conv) for _ in range(self.n_conv)] # remove
                 trial_action_probs.extend([0.6 / (1.0 * self.n_conv) for _ in range(self.n_conv)]) #add
                 trial_action_probs.extend([0.05,0.15])
 
-            elif self.trial_phase<=self.trial_phase_threshold/1.43:
+            elif self.trial_phase<=0.7:
                 trial_action_probs = [0.7 / (1.0 * self.n_conv) for _ in range(self.n_conv)]  # remove
                 trial_action_probs.extend([0.1 / (1.0 * self.n_conv) for _ in range(self.n_conv)])  # add
                 trial_action_probs.extend([0.05, 0.15])
-            elif self.trial_phase<=self.trial_phase_threshold/1.11:
+            elif self.trial_phase<=0.9:
                 trial_action_probs = [0/(1.0*self.n_conv) for _ in range(self.n_conv)] # remove
                 trial_action_probs.extend([0 / (1.0 * self.n_conv) for _ in range(self.n_conv)]) #add
                 trial_action_probs.extend([0.0,1.0])
@@ -734,6 +731,7 @@ class AdaCNNAdaptingQLearner(object):
                 self.q_logger.info("%d,%s", self.local_time_stamp, q_value_strings)
                 self.rl_logger.debug('\tPredicted Q: %s', q_for_actions[:10])
 
+
             if len(self.rand_state_list)<self.rand_state_length and \
                             np.random.random()<self.rand_state_accum_rate and \
                             len(history_t_plus_1)==self.state_history_length:
@@ -758,7 +756,7 @@ class AdaCNNAdaptingQLearner(object):
             # Finding when to stop adapting
             # for this we choose the point the finetune operation has the
             # maximum utility compared to other actions and itself previously
-            if self.trial_phase>self.trial_phase_threshold*1.5 and np.argmax(q_for_actions) == self.output_size - 1:
+            if self.trial_phase>1.5 and np.argmax(q_for_actions) == self.output_size - 1:
                 if q_for_actions[-1]>self.max_q_ft:
                     assert self.trial_phase>=1.0
                     self.max_q_ft = q_for_actions[-1]
@@ -900,7 +898,7 @@ class AdaCNNAdaptingQLearner(object):
             assert found_valid_action
 
         # decay epsilon
-        if self.trial_phase>=self.trial_phase_threshold:
+        if self.trial_phase>=1.0:
             self.epsilon = max(self.epsilon * 0.9, self.min_epsilon)
 
             # TODO: same action taking repeatedly
@@ -1127,10 +1125,10 @@ class AdaCNNAdaptingQLearner(object):
             # encourage taking finetune action consecutively
             if 'finetune' in curr_action_string and self.same_action_count >= 1:
                 self.rl_logger.info('Reward before magnification: %.5f', reward)
-                if reward > 0:
-                    reward *= min(self.same_action_count + 1,10)
-                else: # new
-                    self.same_action_count = 0 # reset action count # new
+                #if reward > 0:
+                #    reward *= min(self.same_action_count + 1,10)
+                #else: # new
+                #    self.same_action_count = 0 # reset action count # new
                 self.rl_logger.info('Reward after magnification: %.5f', reward)
 
 

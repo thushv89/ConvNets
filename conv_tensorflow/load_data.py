@@ -17,8 +17,9 @@ def load_and_save_data_imagenet():
     data_info_directory = "/home/tgan4199/imagenet/ILSVRC2015/ImageSets/"
 
     # get all the directories in there
-    class_distribution = [50,50]
-    resized_dimension = 224
+    # class distributio is how many natural classes and how many artificial classes
+    class_distribution = [125,125]
+    resized_dimension = 128
     num_channels = 3
 
     # label map is needed because I have to create my own class labels
@@ -118,6 +119,7 @@ def load_and_save_data_imagenet():
             resized_img = resized_img.reshape((resized_img.shape[0],resized_img.shape[1],1))
             resized_img = np.repeat(resized_img,3,axis=2)
             assert resized_img.shape[2]==num_channels
+
         if resized_img.shape[0]<resized_dimension:
             diff = resized_dimension - resized_img.shape[0]
             lpad,rpad = floor(float(diff)/2.0),ceil(float(diff)/2.0)
@@ -259,6 +261,7 @@ def load_and_save_data_imagenet():
     else:
         print('Valid data exists.')
 
+
 def load_and_save_data_imagenet_with_memmap():
     train_directory = "/home/tgan4199/imagenet/ILSVRC2015/Data/CLS-LOC/train/"
     valid_directory = "/home/tgan4199/imagenet/ILSVRC2015/Data/CLS-LOC/val/"
@@ -266,8 +269,8 @@ def load_and_save_data_imagenet_with_memmap():
     data_info_directory = "/home/tgan4199/imagenet/ILSVRC2015/ImageSets/"
     data_save_directory = "imagenet_small/"
     # get all the directories in there
-    class_distribution = [50,50]
-    resized_dimension = 224
+    class_distribution = [125,125]
+    resized_dimension = 128
     num_channels = 3
 
     # label map is needed because I have to create my own class labels
@@ -390,8 +393,8 @@ def load_and_save_data_imagenet_with_memmap():
 
     if not os.path.exists(data_save_directory+'imagenet_small_train_dataset'):
 
-        dataset_filename = data_save_directory+'imagenet_small_train_dataset'
-        label_filename = data_save_directory+'imagenet_small_train_labels'
+        dataset_filename = data_save_directory+'imagenet_250_train_dataset'
+        label_filename = data_save_directory+'imagenet_250_train_labels'
         fp1 = np.memmap(filename=dataset_filename, dtype='float32', mode='w+', shape=(train_size,resized_dimension,resized_dimension,num_channels))
         fp2 = np.memmap(filename=label_filename, dtype='int32', mode='w+', shape=(train_size,1))
         print("\tmemory allocated for (%d items)..."%train_size)
@@ -474,8 +477,8 @@ def load_and_save_data_imagenet_with_memmap():
 
     if not os.path.exists(data_save_directory+'imagenet_small_valid_dataset'):
         pixel_depth=-1
-        fp1 = np.memmap(filename=data_save_directory+'imagenet_small_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension,resized_dimension,num_channels))
-        fp2 = np.memmap(filename=data_save_directory+'imagenet_small_valid_labels', dtype='int32', mode='w+', shape=(len(selected_valid_files),1))
+        fp1 = np.memmap(filename=data_save_directory+'imagenet_250_valid_dataset', dtype='float32', mode='w+', shape=(len(selected_valid_files),resized_dimension,resized_dimension,num_channels))
+        fp2 = np.memmap(filename=data_save_directory+'imagenet_250_valid_labels', dtype='int32', mode='w+', shape=(len(selected_valid_files),1))
 
         valid_index = 0
         for fname,valid_class in selected_valid_files.items():
@@ -785,3 +788,7 @@ def reformat_data_cifar10(filename,**params):
         #test_dataset = test_dataset.reshape(test_dataset.shape[0],image_size,image_size,num_channels)
 
     return (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)
+
+if __name__ == '__main__':
+
+    load_and_save_data_imagenet_with_memmap()
