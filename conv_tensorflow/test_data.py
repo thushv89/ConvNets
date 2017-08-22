@@ -1,6 +1,6 @@
 __author__ = 'Thushan Ganegedara'
 
-import load_data
+import imagenet_load_data
 from scipy.misc import imsave
 import numpy as np
 import os

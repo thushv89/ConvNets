@@ -6,7 +6,7 @@ from six.moves import range
 import numpy as np
 import os
 from math import ceil,floor
-import load_data
+import imagenet_load_data
 import logging
 import sys
 import time
@@ -823,8 +823,8 @@ if __name__=='__main__':
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     test_logger.addHandler(fileHandler)
 
-    load_data.load_and_save_data_cifar10()
-    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels) = load_data.reformat_data_cifar10()
+    imagenet_load_data.load_and_save_data_cifar10()
+    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels) = imagenet_load_data.reformat_data_cifar10()
     train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
 
     graph = tf.Graph()

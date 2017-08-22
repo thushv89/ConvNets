@@ -3,7 +3,7 @@ __author__ = 'Thushan Ganegedara'
 import conv_net_plot
 import sys
 import getopt
-import load_data
+import imagenet_load_data
 import tensorflow as tf
 import logging
 import operator
@@ -61,7 +61,7 @@ if __name__=='__main__':
     fileHandler.setFormatter(logging.Formatter('%(message)s'))
     hyperparam_logger.addHandler(fileHandler)
 
-    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)=load_data.reformat_data_cifar10(data_filename)
+    (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)=imagenet_load_data.reformat_data_cifar10(data_filename)
     train_size,valid_size,test_size = train_dataset.shape[0],valid_dataset.shape[0],test_dataset.shape[0]
     datasets = {'train_dataset':train_dataset[:int(train_size*0.5),:],'train_labels':train_labels[:int(train_size*0.5),:],
                 'valid_dataset':valid_dataset,'valid_labels':valid_labels,

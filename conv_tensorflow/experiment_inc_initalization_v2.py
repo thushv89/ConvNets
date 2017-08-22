@@ -15,7 +15,7 @@ from six.moves import range
 import numpy as np
 import os
 from math import ceil,floor
-import load_data
+import imagenet_load_data
 import logging
 import sys
 import time
@@ -25,7 +25,7 @@ from data_pool import Pool
 import getopt
 from scipy.misc import imsave
 from skimage.transform import rotate
-import load_data
+import imagenet_load_data
 
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import gen_nn_ops
@@ -924,7 +924,7 @@ if __name__=='__main__':
             valid_dataset = fp1[:, :, :, :]
             valid_labels = fp2[:]
 
-            valid_dataset, valid_labels = load_data.reformat_data_imagenet_with_memmap_array(
+            valid_dataset, valid_labels = imagenet_load_data.reformat_data_imagenet_with_memmap_array(
                 valid_dataset, valid_labels, silent=True
             )
 
@@ -1012,8 +1012,8 @@ if __name__=='__main__':
 
                 if dataset_type == 'imagenet-100':
 
-                    start_memmap, end_memmap = load_data.get_next_memmap_indices((train_dataset_filename, train_label_filename),
-                                                                       chunk_size, train_size_clipped)
+                    start_memmap, end_memmap = imagenet_load_data.get_next_memmap_indices((train_dataset_filename, train_label_filename),
+                                                                                          chunk_size, train_size_clipped)
                     # Loading data from memmap
                     logger.info('Processing files %s,%s' % (train_dataset_filename, train_label_filename))
                     logger.debug('\tFrom index %d to %d',start_memmap,end_memmap)
@@ -1028,7 +1028,7 @@ if __name__=='__main__':
                     chunk_train_dataset = fp1[:, :, :, :]
                     chunk_train_labels = fp2[:]
 
-                    chunk_train_dataset, chunk_train_labels = load_data.reformat_data_imagenet_with_memmap_array(
+                    chunk_train_dataset, chunk_train_labels = imagenet_load_data.reformat_data_imagenet_with_memmap_array(
                         chunk_train_dataset,chunk_train_labels,silent=True
                     )
 
@@ -1038,7 +1038,7 @@ if __name__=='__main__':
                     if chunk_train_labels is None and chunk_train_labels is None:
                         (train_dataset, train_labels), \
                         (valid_dataset, valid_labels), \
-                        (test_dataset, test_labels) = load_data.reformat_data_cifar10(data_filename)
+                        (test_dataset, test_labels) = imagenet_load_data.reformat_data_cifar10(data_filename)
 
                         chunk_train_dataset,chunk_train_labels = train_dataset,train_labels
 

@@ -3,7 +3,7 @@ __author__ = 'Thushan Ganegedara'
 import conv_net_plot
 import sys
 import getopt
-from load_data import load_and_save_data_imagenet_with_memmap,reformat_data_imagenet_with_memmap_array,get_next_memmap_indices
+from imagenet_load_data import load_and_save_data_imagenet_with_memmap,reformat_data_imagenet_with_memmap_array,get_next_memmap_indices
 import tensorflow as tf
 import logging
 import operator

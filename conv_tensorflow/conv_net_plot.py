@@ -9,7 +9,7 @@ import sys
 import logging
 import getopt
 import os
-import load_data
+import imagenet_load_data
 from math import floor,ceil
 '''=========================================================================
 Batch size: 16
@@ -750,7 +750,7 @@ if __name__=='__main__':
             if opt == '--log_suffix':
                 log_suffix = arg
     if dataset_type=='cifar-10':
-        (full_train_dataset,full_train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)=load_data.reformat_data_cifar10(data_filename)
+        (full_train_dataset,full_train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)=imagenet_load_data.reformat_data_cifar10(data_filename)
 
     graph = tf.Graph()
 

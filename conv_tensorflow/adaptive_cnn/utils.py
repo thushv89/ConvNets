@@ -30,7 +30,7 @@ def get_final_x(dataset_info,cnn_ops,cnn_hyps):
     return x
 
 
-def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
+def get_ops_hyps_from_string(dataset_info,net_string):
     # E.g. String
     # Init,0,0,0#C,1,1,64#C,5,1,64#C,5,1,128#P,5,2,0#C,1,1,64#P,2,2,0#Terminate,0,0,0
 
@@ -49,6 +49,7 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
     last_feature_map_depth = 3  # need this to calculate the fulcon layer in size
     last_fc_out = 0
 
+    final_2d_width = image_size
     for token in op_tokens:
         # state (layer_depth,op=(type,kernel,stride,depth),out_size)
         token_tokens = token.split(',')
@@ -68,6 +69,7 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
             prev_conv_hyp = hyps  # need this to set the input depth for a conv layer
             last_feature_map_depth = op[3]
             depth_index += 1
+            final_2d_width = ceil(final_2d_width//hyps['stride'][2])
 
         elif op[0] == 'P':
             op_id = 'pool_' + str(depth_index)
@@ -75,27 +77,15 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
             cnn_ops.append(op_id)
             cnn_hyperparameters[op_id] = hyps
             depth_index += 1
+            final_2d_width = ceil(final_2d_width // hyps['stride'][2])
+
+        elif op[0] == 'PG':
+            cnn_ops.append('pool_global')
+            pg_hyps = {'type': 'max', 'kernel': [1, op[1], op[1], 1], 'stride': [1, op[2], op[2], 1], 'padding': 'SAME'}
+            cnn_hyperparameters['pool_global'] = pg_hyps
+            final_2d_width = ceil(final_2d_width // pg_hyps['stride'][2])
 
         elif op[0] == 'FC':
-            if fulcon_depth_index == 0:
-                if len(op_tokens) > 2:
-                    output_size = get_final_x(dataset_info,cnn_ops, cnn_hyperparameters)
-                # this could happen if we get terminal state without any other states in trajectory
-                else:
-                    output_size = image_size
-
-                if output_size > final_2d_width:
-                    cnn_ops.append('pool_global')
-
-                    #k_size = ceil(output_size // final_2d_width) + floor(ceil(output_size // final_2d_width) // 2)
-                    #s_size = k_size - floor(output_size // final_2d_width)
-                    k_size,s_size = output_size // final_2d_width,output_size // final_2d_width
-                    assert output_size % final_2d_width == 0
-                    pg_hyps = {'type': 'avg',
-                               'kernel': [1, k_size, k_size, 1],
-                               'stride': [1, s_size, s_size, 1],
-                               'padding': 'VALID'}
-                    cnn_hyperparameters['pool_global'] = pg_hyps
 
             op_id = 'fulcon_' + str(fulcon_depth_index)
             # for the first fulcon layer size comes from the last convolutional layer
@@ -113,23 +103,6 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
 
             # if no FCs are present
             if fulcon_depth_index == 0:
-                if len(op_tokens) > 2:
-                    output_size = get_final_x(dataset_info, cnn_ops, cnn_hyperparameters)
-                # this could happen if we get terminal state without any other states in trajectory
-                else:
-                    output_size = image_size
-
-                if fulcon_depth_index==0 and output_size >= final_2d_width:
-                    cnn_ops.append('pool_global')
-                    #k_size = ceil(output_size//final_2d_width)+floor(ceil(output_size//final_2d_width)//2)
-                    #s_size = k_size - floor(output_size//final_2d_width)
-                    k_size, s_size = output_size // final_2d_width, output_size // final_2d_width
-                    assert output_size%final_2d_width==0
-                    pg_hyps = {'type': 'avg',
-                               'kernel': [1, k_size,k_size, 1],
-                               'stride': [1, s_size,s_size, 1],
-                               'padding': 'VALID'}
-                    cnn_hyperparameters['pool_global'] = pg_hyps
 
                 op_id = 'fulcon_out'
                 if fulcon_depth_index==0:
@@ -154,7 +127,7 @@ def get_ops_hyps_from_string(dataset_info,net_string,final_2d_width=1):
             print('=' * 40)
             raise NotImplementedError
 
-    return cnn_ops, cnn_hyperparameters
+    return cnn_ops, cnn_hyperparameters,final_2d_width
 
 
 def get_cnn_string_from_ops(cnn_ops, cnn_hyps):

@@ -39,7 +39,8 @@ start_lr = 0.01
 min_learning_rate = 0.0001
 decay_learning_rate = True
 decay_rate = 0.5
-dropout_rate = 0.25
+dropout_rate = 0.5
+in_dropout_rate = 0.2
 use_dropout = True
 use_loc_res_norm = False
 #keep beta small (0.2 is too much >0.002 seems to be fine)
@@ -49,7 +50,7 @@ check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
 epochs = 5
-final_2d_width = 3
+final_2d_width = None
 
 lrn_radius = 5
 lrn_alpha = 0.0001
@@ -78,6 +79,7 @@ def lrelu(x, leak=0.2, name="lrelu"):
         f1 = 0.5 * (1 + leak)
         f2 = 0.5 * (1 - leak)
         return f1 * x + f2 * abs(x)
+
 
 def initialize_cnn_with_ops(cnn_ops, cnn_hyps):
     var_list = []
@@ -146,6 +148,9 @@ def inference(dataset,tf_cnn_hyperparameters,training):
         tr_x = (tr_x-mu)/tf.maximum(tf.sqrt(var),1.0/(image_size*image_size*num_channels))
         x = tf.transpose(tr_x,[3,0,1,2])
 
+    if training and use_dropout:
+        x = tf.nn.dropout(x,keep_prob=1.0-in_dropout_rate,name='input_dropped')
+
     logger.debug('\tReceived data for X(%s)...'%x.get_shape().as_list())
 
     #need to calculate the output according to the layers we have
@@ -175,6 +180,9 @@ def inference(dataset,tf_cnn_hyperparameters,training):
                 x = tf.nn.avg_pool(x,ksize=cnn_hyperparameters[op]['kernel'],
                                    strides=cnn_hyperparameters[op]['stride'],
                                    padding=cnn_hyperparameters[op]['padding'])
+            if training and use_dropout:
+                x = tf.nn.dropout(x,keep_prob=1.0-dropout_rate,name='dropout')
+
             if use_loc_res_norm and 'pool_global'!= op:
                 x = tf.nn.local_response_normalization(x,depth_radius=lrn_radius,alpha=lrn_alpha, beta=lrn_beta)
 
@@ -1117,8 +1125,12 @@ def reset_cnn(cnn_hyps):
             with tf.variable_scope(op) as scope:
                 weights = tf.get_variable(name=TF_WEIGHTS)
                 new_weights = tf.random_uniform(cnn_hyps[op]['weights'],
-                                                minval=-np.sqrt(6./(np.prod(cnn_hyps[op]['weights'][:-1]) + cnn_hyps[op]['weights'][-1])),
-                                                maxval=np.sqrt(6. / (np.prod(cnn_hyps[op]['weights'][:-1]) + cnn_hyps[op]['weights'][-1]))
+                                                minval=-np.sqrt(6./(cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1]*
+                                                                    (cnn_hyps[op]['weights'][-2] + cnn_hyps[op]['weights'][-1]))
+                                                                ),
+                                                maxval=np.sqrt(6. / (cnn_hyps[op]['weights'][0]*cnn_hyps[op]['weights'][1]*
+                                                                     (cnn_hyps[op]['weights'][-2] + cnn_hyps[op]['weights'][-1]))
+                                                               )
                                                 )
 
                 reset_ops.append(tf.assign(weights,new_weights,validate_shape = False))
@@ -1248,7 +1260,7 @@ if __name__=='__main__':
 
     #type of data training
     datatype = 'cifar-10'
-    behavior = 'stationary'
+    behavior = 'non-stationary'
     research_parameters['adapt_structure'] = True
     research_parameters['pooling_for_nonadapt'] = False
 
@@ -1276,8 +1288,6 @@ if __name__=='__main__':
     else:
         raise NotImplementedError
 
-    if research_parameters['adapt_structure']:
-        use_dropout = False
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
@@ -1289,7 +1299,7 @@ if __name__=='__main__':
         num_channels = 3 # rgb
         dataset_size = 50000
         use_warmup_epoch = True
-        final_2d_width = 3
+
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
@@ -1314,33 +1324,29 @@ if __name__=='__main__':
 
         if not research_parameters['adapt_structure']:
             #cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
-            cnn_string = "C,3,1,64#P,2,2,0#C,3,1,128#P,2,2,0#C,3,1,256#C,3,1,256#P,2,2,0#C,3,1,512#C,3,1,512#Terminate,0,0,0"
+            cnn_string = "C,3,1,96#C,3,1,96#C,3,1,96#P,3,2,0#C,3,1,192#C,3,1,192#C,3,1,192#PG,3,2,0#FC,2048,0,0#Terminate,0,0,0"
 
         else:
-            cnn_string = "C,3,1,32#P,2,2,0#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,64#C,3,1,64#Terminate,0,0,0"
+            cnn_string = "C,3,1,32#C,3,1,32#C,3,1,32#P,3,2,0#C,3,1,32#C,3,1,32#C,3,1,32#PG,3,2,0#FC,2048,0,0#Terminate,0,0,0"
             #cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
-            filter_vector = [64,0,128,0,256,256,0,512,512]
-            add_amount, remove_amount = 16, 8
+            filter_vector = [96,96,96,0,192,192,192]
+            add_amount, remove_amount = 8, 4
             filter_min_threshold = 24
 
     elif datatype=='imagenet-250':
         image_size = 64
         num_labels = 250
         num_channels = 3 # rgb
-        dataset_size = 50000
-        use_warmup_epoch = True
-
-        final_2d_width = 4
+        learning_rate = 0.001
         if behavior == 'non-stationary':
-            dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
+            dataset_filename='data_non_station'+os.sep+'imagenet-250-nonstation-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'imagenet-250-nonstation-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
-            start_lr = 0.008
 
         elif behavior == 'stationary':
-            dataset_filename='data_non_station'+os.sep+'cifar-100-station-dataset.pkl'
-            label_filename='data_non_station'+os.sep+'cifar-100-station-labels.pkl'
+            dataset_filename='data_non_station'+os.sep+'imagenet-250-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'imagenet-250-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
 
@@ -1349,19 +1355,19 @@ if __name__=='__main__':
         orig_finetune_interval = 50
         trial_phase_threshold = 1.0
 
-        research_parameters['start_adapting_after'] = 1000
+        research_parameters['start_adapting_after'] = 2000
         research_parameters['hard_pool_max_threshold'] = 0.2
 
         pool_size = batch_size * 1 * num_labels
         test_size= 12500
-        test_dataset_filename='data_non_station'+os.sep+'cifar-100-test-dataset.pkl'
-        test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
+        test_dataset_filename='data_non_station'+os.sep+'imagenet-250-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'imagenet-250-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,3,1,64#P,2,2,0#C,3,1,128#P,2,2,0#C,3,1,256#C,3,1,256#P,2,2,0#C,3,1,512#C,3,1,512#P,2,2,0#C,3,1,512#C,3,1,512#Terminate,0,0,0"
+            cnn_string = "C,3,1,64#P,2,2,0#C,3,1,128#P,2,2,0#C,3,1,256#C,3,1,256#P,2,2,0#C,3,1,512#C,3,1,512#P,2,2,0#C,3,1,512#C,3,1,512#PG,2,2,0#FC,4096,0,0#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,32#P,2,2,0#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#Terminate,0,0,0"
-            filter_vector = [64,0,128,0,256,256,0,512,512,512,512]
+            cnn_string = "C,3,1,32#P,2,2,0#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#PG,2,2,0#FC,4096,0,0#Terminate,0,0,0"
+            filter_vector = [64,0,128,0,256,256,0,512,512,0,512,512]
             filter_min_threshold = 24
             add_amount, remove_amount = 16, 8
 
@@ -1372,7 +1378,7 @@ if __name__=='__main__':
         num_channels = 3
         dataset_size = 128000
         use_warmup_epoch = False
-        final_2d_width = 2
+
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'svhn-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'svhn-10-nonstation-labels.pkl'
@@ -1398,9 +1404,9 @@ if __name__=='__main__':
         test_label_filename = 'data_non_station' + os.sep + 'svhn-10-test-labels.pkl'
 
         if not research_parameters['adapt_structure']:
-            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#Terminate,0,0,0"
+            cnn_string = "C,5,1,128#P,3,2,0#C,5,1,128#P,3,2,0#C,3,1,128#PG,6,4,0#Terminate,0,0,0"
         else:
-            cnn_string = "C,5,1,24#P,3,2,0#C,5,1,24#P,3,2,0#C,3,1,24#Terminate,0,0,0"
+            cnn_string = "C,5,1,24#P,3,2,0#C,5,1,24#P,3,2,0#C,3,1,24#PG,6,4,0#Terminate,0,0,0"
             filter_vector = [128,0,128,0,128]
             add_amount, remove_amount = 4,2
             filter_min_threshold = 12
@@ -1486,9 +1492,11 @@ if __name__=='__main__':
     #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
     #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
 
-    cnn_ops,cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string,final_2d_width)
-    init_cnn_ops,init_cnn_hyperparameters = utils.get_ops_hyps_from_string(dataset_info,cnn_string,final_2d_width)
+    cnn_ops,cnn_hyperparameters,final_2d_width = utils.get_ops_hyps_from_string(dataset_info,cnn_string)
+    init_cnn_ops,init_cnn_hyperparameters, final_2d_width = utils.get_ops_hyps_from_string(dataset_info,cnn_string)
 
+    print(cnn_ops)
+    print(cnn_hyperparameters)
 
     hyp_logger = logging.getLogger('hyperparameter_logger')
     hyp_logger.setLevel(logging.INFO)
@@ -1533,7 +1541,7 @@ if __name__=='__main__':
         # -1 is because we don't want to count pool_global
         print(cnn_ops)
         layer_count = len([op for op in cnn_ops if 'conv' in op or 'pool' in op])-1
-
+        print(layer_count)
         # ids of the convolution ops
         convolution_op_ids = []
         for op_i, op in enumerate(cnn_ops):
@@ -2492,6 +2500,9 @@ if __name__=='__main__':
                 op_count = len(graph.get_operations())
                 var_count = len(tf.global_variables()) + len(tf.local_variables()) + len(tf.model_variables())
                 perf_logger.info('%d,%.5f,%.5f,%d,%d',(batch_id_multiplier*epoch)+batch_id,t1-t0,(t1_train-t0_train)/num_gpus,op_count,var_count)
+
+            if decay_learning_rate and epoch>=1:
+                session.run(inc_global_step(global_step))
 
             # reset the network
             if research_parameters['adapt_structure'] and epoch ==0:

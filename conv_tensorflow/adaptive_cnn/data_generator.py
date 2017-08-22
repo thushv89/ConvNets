@@ -485,6 +485,7 @@ def load_slice_from_svhn_10(dataset_info,data_filename,start_idx,end_idx):
 def generate_imagenet_test_data(dataset_filename,label_filename,save_directory):
 
     resize_dim,test_size = dataset_info['resize_to'], dataset_info['test_size']
+    print('Test size: ',test_size)
     num_channels = dataset_info['num_channels']
     col_count = (dataset_info['image_size'],dataset_info['image_size'],dataset_info['num_channels'])
     fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
@@ -722,14 +723,16 @@ if __name__ == '__main__':
 
     elif dataset_type == 'imagenet-250':
 
+        dataset_sizes = pickle.load(open('..'+os.sep+'imagenet_small'+os.sep+'dataset_sizes.pickle',"rb"))
+
         image_size = 128
         num_labels = 250
         num_channels = 3
-        dataset_size = 319007
+        dataset_size = dataset_sizes['train_dataset']
         chunk_size = int(batch_size * 25)  # number of samples sampled for each instance of the gaussian curve
         data_in_memory = chunk_size
         resize_to = 64
-        test_size = 125000
+        test_size = dataset_sizes['valid_dataset']
         image_use_counter = {}
         dataset_info = {'dataset_type':dataset_type,'elements':elements,'chunk_size':chunk_size,'image_size':image_size,'num_labels':num_labels,'dataset_size':dataset_size,
                         'num_channels':num_channels,'data_in_memory':chunk_size,'resize_to':resize_to,'test_size':test_size}
@@ -756,6 +759,9 @@ if __name__ == '__main__':
     if dataset_type == 'imagenet-250':
         dataset_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_250_train_dataset'
         label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_250_train_labels'
+        test_dataset_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_250_valid_dataset'
+        test_label_filename = '..'+os.sep+'imagenet_small'+os.sep+'imagenet_250_valid_labels'
+
         if distribution_type == 'non-stationary':
             new_dataset_filename = data_save_directory+os.sep+'imagenet-250-nonstation-dataset.pkl'
             new_labels_filename = data_save_directory+os.sep+'imagenet-250-nonstation-labels.pkl'
@@ -766,8 +772,8 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, new_dataset_filename, new_labels_filename)
-        #generate_imagenet_test_data(dataset_filename,label_filename,data_save_directory)
+        #sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, new_dataset_filename, new_labels_filename)
+        generate_imagenet_test_data(test_dataset_filename,test_label_filename,data_save_directory)
 
     elif dataset_type == 'svhn-10':
         test_data_filename = '..' +os.sep +'svhn' + os.sep + 'test_32x32.mat'

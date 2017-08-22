@@ -5,7 +5,7 @@ import getopt
 import sys
 import logging
 from six.moves import cPickle as pickle
-import load_data
+import imagenet_load_data
 from scipy.misc import imsave
 from skimage.transform import rotate
 from tensorflow.python.framework import ops
@@ -83,7 +83,7 @@ def load_valid_dataset(dataset_type):
 
         (train_dataset, train_labels), \
         (valid_dataset, valid_labels), \
-        (test_dataset, test_labels) = load_data.reformat_data_cifar10(valid_dataset_filename)
+        (test_dataset, test_labels) = imagenet_load_data.reformat_data_cifar10(valid_dataset_filename)
 
         del train_dataset,train_labels,test_dataset,test_labels
 
@@ -99,7 +99,7 @@ def load_valid_dataset(dataset_type):
         v_dataset = fp1[:, :, :, :]
         v_labels = fp2[:]
 
-        v_dataset, v_labels = load_data.reformat_data_imagenet_with_memmap_array(
+        v_dataset, v_labels = imagenet_load_data.reformat_data_imagenet_with_memmap_array(
             v_dataset, v_labels, silent=True
         )
 
