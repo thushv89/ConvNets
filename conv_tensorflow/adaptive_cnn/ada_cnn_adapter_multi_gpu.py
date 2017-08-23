@@ -1259,10 +1259,10 @@ if __name__=='__main__':
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'cifar-10'
+    datatype = 'imagenet-250'
     behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = True
-    research_parameters['pooling_for_nonadapt'] = False
+    research_parameters['adapt_structure'] = False
+    research_parameters['pooling_for_nonadapt'] = True
 
     if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
         iterations_per_batch = 2
@@ -1287,7 +1287,6 @@ if __name__=='__main__':
         decay_rate = 0.5
     else:
         raise NotImplementedError
-
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None

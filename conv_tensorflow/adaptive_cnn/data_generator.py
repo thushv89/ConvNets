@@ -344,7 +344,10 @@ def sample_imagenet_with_distribution(dataset_info, dataset_filename, label_file
     # dataset_info => ['elements']['chunk_size']['type']['image_size']['resize_dim']['num_channels']
     elements,chunk_size = dataset_info['elements'],dataset_info['chunk_size']
     num_chunks = elements/chunk_size
-    num_slices = dataset_info['dataset_size']/dataset_info['data_in_memory']
+    if dataset_info['dataset_size']%dataset_info['data_in_memory']< chunk_size//2:
+        num_slices = (dataset_info['dataset_size']/dataset_info['data_in_memory'])-1 #  to avoid using small
+    else:
+        num_slices = (dataset_info['dataset_size']/dataset_info['data_in_memory'])
     dataset_type,image_size,resize_dim = dataset_info['dataset_type'],dataset_info['image_size'],dataset_info['resize_to']
     num_channels = dataset_info['num_channels']
 
@@ -491,7 +494,7 @@ def generate_imagenet_test_data(dataset_filename,label_filename,save_directory):
     fp1 = np.memmap(dataset_filename,dtype=np.float32,mode='r',
                     offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*0,shape=(test_size,col_count[0],col_count[1],col_count[2]))
     fp2 = np.memmap(label_filename,dtype=np.int32,mode='r',
-                    offset=np.dtype('int32').itemsize*1*test_size,shape=(test_size,1))
+                    offset=np.dtype('int32').itemsize*0*test_size,shape=(test_size,1))
 
     test_dataset = fp1[:,:,:,:]
     test_labels = fp2[:]
@@ -664,7 +667,7 @@ if __name__ == '__main__':
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
     dataset_type = 'imagenet-250'  # 'cifar-10 imagenet-250
-    distribution_type = 'non-stationary'
+    distribution_type = 'stationary'
     distribution_type2 = 'gauss'  # gauss or step
     data_save_directory = 'data_non_station'
 
@@ -729,7 +732,7 @@ if __name__ == '__main__':
         num_labels = 250
         num_channels = 3
         dataset_size = dataset_sizes['train_dataset']
-        chunk_size = int(batch_size * 25)  # number of samples sampled for each instance of the gaussian curve
+        chunk_size = int(batch_size * 50)  # number of samples sampled for each instance of the gaussian curve
         data_in_memory = chunk_size
         resize_to = 64
         test_size = dataset_sizes['valid_dataset']
@@ -772,8 +775,8 @@ if __name__ == '__main__':
             raise NotImplementedError
 
         print(new_dataset_filename)
-        #sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, new_dataset_filename, new_labels_filename)
-        generate_imagenet_test_data(test_dataset_filename,test_label_filename,data_save_directory)
+        sample_imagenet_with_distribution(dataset_info, dataset_filename, label_filename, priors, new_dataset_filename, new_labels_filename)
+        #generate_imagenet_test_data(test_dataset_filename,test_label_filename,data_save_directory)
 
     elif dataset_type == 'svhn-10':
         test_data_filename = '..' +os.sep +'svhn' + os.sep + 'test_32x32.mat'

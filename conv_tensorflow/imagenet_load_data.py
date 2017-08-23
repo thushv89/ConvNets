@@ -26,7 +26,8 @@ def save_imagenet_as_memmaps(train_dir,valid_dir, valid_annotation_dir, gloss_fn
     valid_dataset_filename = save_dir + os.sep+ 'imagenet_250_valid_dataset'
     valid_label_filename = save_dir + os.sep+ 'imagenet_250_valid_labels'
     gloss_cls_loc_fname = save_dir + os.sep+ 'gloss-cls-loc.txt' # the gloss.txt has way more categories than the 1000 imagenet ones. This files saves the 1000
-
+    id_to_label_map_fname = save_dir + os.sep + 'id_to_label.pkl'
+    selected_gloss_fname = save_dir + os.sep + 'selected-gloss.txt'
     if not os.path.exists(save_dir):
         os.mkdir(save_dir)
 
@@ -50,25 +51,29 @@ def save_imagenet_as_memmaps(train_dir,valid_dir, valid_annotation_dir, gloss_fn
     print('Subdirectories: %s\n' % train_subdirectories[:5])
     print('Num subdir: ',len(train_subdirectories))
 
-    synset_id_to_desc_map = write_art_nat_ordered_class_descriptions(train_subdirectories,gloss_fname, gloss_cls_loc_fname)
+    if not os.path.exists(gloss_cls_loc_fname):
+        synset_id_to_desc_map = write_art_nat_ordered_class_descriptions(train_subdirectories,gloss_fname, gloss_cls_loc_fname)
+    else:
+        synset_id_to_desc_map = retrieve_art_nat_ordered_class_descriptions(gloss_cls_loc_fname)
 
-    selected_natural_synsets, selected_artificial_synsets, id_to_label_map = sample_n_natural_and_artificial_classes(n_nat_classes,n_art_classes, gloss_cls_loc_fname)
+    if not os.path.exists(id_to_label_map_fname) and not os.path.exists(selected_gloss_fname):
+        selected_natural_synsets, selected_artificial_synsets, id_to_label_map = sample_n_natural_and_artificial_classes(n_nat_classes,n_art_classes, gloss_cls_loc_fname)
+        print('Summary of selected synsets ...')
+        print('\tNatural (%d): %s' % (len(selected_natural_synsets), selected_natural_synsets[:5]))
+        print('\tArtificial (%d): %s' % (len(selected_artificial_synsets), selected_artificial_synsets[:5]))
 
-    print('Summary of selected synsets ...')
-    print('\tNatural (%d): %s' % (len(selected_natural_synsets), selected_natural_synsets[:5]))
-    print('\tArtificial (%d): %s' % (len(selected_artificial_synsets), selected_artificial_synsets[:5]))
+        # check if the class synsets we chose are actually in the training data
+        for _ in range(10):
+            rand_nat = np.random.choice(selected_natural_synsets)
+            rand_art = np.random.choice(selected_artificial_synsets)
 
-    # check if the class synsets we chose are actually in the training data
-    for _ in range(10):
-        rand_nat = np.random.choice(selected_natural_synsets)
-        rand_art = np.random.choice(selected_artificial_synsets)
+            assert rand_nat in train_subdirectories
+            assert rand_art in train_subdirectories
 
-        assert rand_nat in train_subdirectories
-        assert rand_art in train_subdirectories
-
-    write_selected_art_nat_synset_ids_and_descriptions(selected_natural_synsets,selected_artificial_synsets,
-                                                       synset_id_to_desc_map,'selected-gloss.txt',save_dir)
-
+        write_selected_art_nat_synset_ids_and_descriptions(selected_natural_synsets,selected_artificial_synsets,
+                                                           synset_id_to_desc_map,selected_gloss_fname,save_dir,None)
+    else:
+        raise NotImplementedError
     # we use a shuffled train set when storing to avoid any order
     n_train = 0
     train_filenames = []
@@ -80,7 +85,7 @@ def save_imagenet_as_memmaps(train_dir,valid_dir, valid_annotation_dir, gloss_fn
             train_synset_ids.extend([subdir for _ in range(file_count)])
             n_train += file_count
 
-    train_filenames, train_synset_ids = shuffle_in_unison_scary(train_filenames, train_synset_ids)
+    train_filenames, train_synset_ids = shuffle_in_unison(train_filenames, train_synset_ids)
 
     print('Found %d training samples in %d subdirectories...\n' % (n_train, len(train_subdirectories)))
     assert n_train > 0, 'No training samples found'
@@ -110,7 +115,7 @@ def save_imagenet_as_memmaps(train_dir,valid_dir, valid_annotation_dir, gloss_fn
             id_to_label_map = pickle.load(f)
 
     write_selected_art_nat_synset_ids_and_descriptions(selected_natural_synsets,selected_artificial_synsets,
-                                                       valid_map,'gloss-cls-loc-with-class.txt',save_dir,id_to_label_map)
+                                                       synset_id_to_desc_map,'gloss-cls-loc-with-class.txt',save_dir,id_to_label_map)
 
     del fp1, fp2 # delete to save memory
 
@@ -139,9 +144,9 @@ def save_imagenet_as_memmaps(train_dir,valid_dir, valid_annotation_dir, gloss_fn
 
     if not os.path.exists(save_dir + os.sep+ valid_dataset_filename):
 
-        fp1 = np.memmap(filename=save_dir + valid_dataset_filename, dtype='float32', mode='w+',
+        fp1 = np.memmap(filename=valid_dataset_filename, dtype='float32', mode='w+',
                         shape=(len(selected_valid_files), resize_images_to, resize_images_to, num_channels))
-        fp2 = np.memmap(filename=save_dir + valid_label_filename, dtype='int32', mode='w+',
+        fp2 = np.memmap(filename=valid_label_filename, dtype='int32', mode='w+',
                         shape=(len(selected_valid_files), 1))
 
         save_train_data_in_filenames(selected_valid_files,selected_valid_synset_ids,fp1,fp2, resize_images_to, num_channels,id_to_label_map)
@@ -155,16 +160,18 @@ def save_imagenet_as_memmaps(train_dir,valid_dir, valid_annotation_dir, gloss_fn
     with open(save_dir + 'dataset_sizes.pickle', 'wb') as f:
         pickle.dump(filesize_dictionary, f, pickle.HIGHEST_PROTOCOL)
     with open(save_dir + 'dataset_sizes.txt', 'w') as f:
-        f.write(filesize_dictionary)
+        for k,v in filesize_dictionary.items():
+            f.write(k+','+str(v))
 
 
-def shuffle_in_unison_scary(a, b):
+def shuffle_in_unison(a, b):
     rng_state = np.random.get_state()
     np.random.shuffle(a)
     np.random.set_state(rng_state)
     np.random.shuffle(b)
 
     return a,b
+
 
 def build_or_retrieve_valid_mapping_from_filename_to_synset_id(valid_annotation_dir, data_save_dir):
 
@@ -191,6 +198,14 @@ def build_or_retrieve_valid_mapping_from_filename_to_synset_id(valid_annotation_
 
     return valid_map
 
+def retrieve_art_nat_ordered_class_descriptions(gloss_cls_loc_fname):
+    synset_id_to_description=_to_description = {}
+    with open(gloss_cls_loc_fname, 'r') as f:
+        for line in f:
+            subdir_str = line.split('\t')[0]
+            synset_id_to_description[subdir_str] = line.split('\t')[1]
+
+    return synset_id_to_description
 
 def write_art_nat_ordered_class_descriptions(train_subdirectories,gloss_file_name,gloss_cls_loc_fname):
     '''
@@ -243,7 +258,7 @@ def sample_n_natural_and_artificial_classes(n_nat,n_art,gloss_fname):
 
     all_selected = selected_natural_synsets + selected_artificial_synsets
     class_labels = range(0,n_nat+n_art)
-    synset_id_to_label_map = dict(all_selected,class_labels)
+    synset_id_to_label_map = dict(zip(all_selected,class_labels))
     return selected_natural_synsets,selected_artificial_synsets,synset_id_to_label_map
 
 
@@ -258,21 +273,20 @@ def write_selected_art_nat_synset_ids_and_descriptions(sel_nat_synsets, sel_art_
     :param save_dir:
     :return:
     '''
-
-    with open(save_dir + os.sep + filename, 'w') as f:
+    print(label_map)
+    with open(filename, 'w') as f:
         for nat_id in sel_nat_synsets:
             if not label_map:
-                current_str = str(nat_id) + '\t' + synset_id_description_map[nat_id]
+                current_str = nat_id + '\t' + synset_id_description_map[str(nat_id)]
             else:
-                current_str = str(nat_id) +'\t' + label_map[nat_id] + '\t' + synset_id_description_map[nat_id]
-
+                current_str = nat_id +'\t' + str(label_map[nat_id]) + '\t' + synset_id_description_map[nat_id]
             f.write(current_str)
 
         for art_id in sel_art_synsets:
             if not label_map:
                 current_str = str(art_id) + '\t' + synset_id_description_map[art_id]
             else:
-                current_str = str(art_id) + '\t' + label_map[art_id] + '\t' + synset_id_description_map[art_id]
+                current_str = str(art_id) + '\t' + str(label_map[str(art_id)]) + '\t' + synset_id_description_map[art_id]
             f.write(current_str)
 
 
@@ -330,7 +344,7 @@ def save_train_data_in_filenames(train_filenames, train_synset_ids, memmap_img, 
 
         synset_id = train_synset_ids[fidx]
 
-        print('Processing file %s (%d)' % (file, train_offset))
+        print('Processing file %s (%d/%d) %.2f%%' % (file, train_offset, len(train_filenames), (train_offset*1.0/len(train_filenames))*100.0))
         if train_offset % int(len(train_filenames) * 0.05) == 0:
             print('\t%d%% complete' % (train_offset // int(len(train_filenames) * 100.0)))
 
@@ -359,7 +373,7 @@ def save_train_data_in_filenames(train_filenames, train_synset_ids, memmap_img, 
 
 
 def save_data_chunk_with_offset(train_offset, train_filenames, train_synset_ids, id_to_label_map):
-
+    raise NotImplementedError
 
 def reformat_data_imagenet_with_npy(train_filenames,**params):
 
@@ -446,205 +460,6 @@ def reformat_data_imagenet_with_memmap_array(dataset,labels,**params):
     assert np.all(labels==np.argmax(ohe_labels,axis=1))
     return dataset,ohe_labels
 
-#reformat_data_imagenet_with_memmap(('imagenet_small_train_dataset_2.npy','imagenet_small_train_labels_2.npy'),test_images=True)
-
-def load_and_save_data_cifar10(filename,**params):
-
-    valid_size_required = 10000
-    cifar_file = '..'+os.sep+'data'+os.sep+filename
-
-    if os.path.exists(cifar_file):
-        return
-
-    train_pickle_file = '..'+os.sep+'data'+os.sep+'cifar_10_data_batch_'
-    test_pickle_file = '..'+os.sep+'data' + os.sep + 'cifar_10_test_batch'
-    train_raw = None
-    test_dataset = None
-    train_raw_labels = None
-    test_labels = None
-
-    #train data
-    for i in range(1,5+1):
-        with open(train_pickle_file+str(i),'rb') as f:
-            save = pickle.load(f,encoding="latin1")
-
-            if train_raw is None:
-                train_raw = np.asarray(save['data'],dtype=np.float32)
-                train_raw_labels = np.asarray(save['labels'],dtype=np.int16)
-            else:
-
-                train_raw = np.append(train_raw,save['data'],axis=0)
-                train_raw_labels = np.append(train_raw_labels,save['labels'],axis=0)
-
-    #test file
-    with open(test_pickle_file,'rb') as f:
-        save = pickle.load(f,encoding="latin1")
-        test_dataset = np.asarray(save['data'],dtype=np.float32)
-        test_labels = np.asarray(save['labels'],dtype=np.int16)
-
-
-    valid_rand_idx = np.random.randint(0,train_raw.shape[0]-valid_size_required)
-    valid_perm = np.random.permutation(train_raw.shape[0])[valid_rand_idx:valid_rand_idx+valid_size_required]
-
-    valid_dataset = np.asarray(train_raw[valid_perm,:],dtype=np.float32)
-    valid_labels = np.asarray(train_raw_labels[valid_perm],dtype=np.int16)
-    print('Shape of valid dataset (%s) and labels (%s)'%(valid_dataset.shape,valid_labels.shape))
-
-    train_dataset = np.delete(train_raw,valid_perm,axis=0)
-    train_labels = np.delete(train_raw_labels,valid_perm,axis=0)
-    print('Shape of train dataset (%s) and labels (%s)'%(train_dataset.shape,train_labels.shape))
-
-    print('Per image whitening ...')
-    pixel_depth = 255 if np.max(train_dataset[0,:])>1.1 else 1
-    print('\tDectected pixel depth: %d'%pixel_depth)
-    print('\tZero mean and Unit variance')
-
-    train_dataset = (train_dataset-np.mean(train_dataset,axis=1).reshape(-1,1))/np.std(train_dataset,axis=1).reshape(-1,1)
-
-    valid_dataset = (valid_dataset-np.mean(valid_dataset,axis=1).reshape(-1,1))/np.std(valid_dataset,axis=1).reshape(-1,1)
-
-    test_dataset = (test_dataset-np.mean(test_dataset,axis=1).reshape(-1,1))/np.std(test_dataset,axis=1).reshape(-1,1)
-
-
-    print('\tTrain Mean/Variance:%.2f,%.2f'%(
-        np.mean(np.mean(train_dataset,axis=1),axis=0),
-        np.mean(np.std(train_dataset,axis=1),axis=0)**2)
-          )
-    print('\tValid Mean/Variance:%.2f,%.2f'%(
-        np.mean(np.mean(valid_dataset,axis=1),axis=0),
-        np.mean(np.std(valid_dataset,axis=1),axis=0)**2)
-          )
-    print('\tTest Mean/Variance:%.2f,%.2f'%(
-        np.mean(np.mean(test_dataset,axis=1),axis=0),
-        np.mean(np.std(test_dataset,axis=1),axis=0)**2)
-          )
-    print('Successfully whitened data ...\n')
-
-    if len(params)>0 and params['zca_whiten']:
-        datasets = [train_dataset,valid_dataset,test_dataset]
-
-        for d_i,dataset in enumerate(datasets):
-            if params['separate_rgb']:
-                red = zca_whiten(dataset[:,:1024])
-                whiten_dataset = red.reshape(-1,1024)
-                green = zca_whiten(dataset[:,1024:2048])
-                whiten_dataset = np.append(whiten_dataset,green.reshape(-1,1024),axis=1)
-                blue = zca_whiten(dataset[:,2048:3072])
-                whiten_dataset = np.append(whiten_dataset,blue.reshape(-1,1024),axis=1)
-            else:
-                whiten_dataset = zca_whiten(dataset)
-
-            print("Whiten data shape: ",whiten_dataset.shape)
-            if d_i==0:
-                train_dataset = whiten_dataset
-            elif d_i == 1:
-                valid_dataset = whiten_dataset
-            elif d_i ==2:
-                test_dataset = whiten_dataset
-            else:
-                raise NotImplementedError
-
-    print('\nDumping processed data')
-    cifar_data = {'train_dataset':train_dataset,'train_labels':train_labels,
-                  'valid_dataset':valid_dataset,'valid_labels':valid_labels,
-                  'test_dataset':test_dataset,'test_labels':test_labels
-                  }
-    try:
-        with open(cifar_file, 'wb') as f:
-            pickle.dump(cifar_data, f, pickle.HIGHEST_PROTOCOL)
-    except Exception as e:
-        print('Unable to save cifar_data:', e)
-        print(e)
-
-
-def zca_whiten(x,gcn=False,variance_cut=False):
-    print('ZCA Whitening')
-    print('\tMax, Min data:',np.max(x[1,:].flatten()),',',np.min(x[1,:].flatten()))
-    print('\tMax, Min mean of data:',np.max(np.mean(x[1,:].flatten())),',',np.min(np.mean(x[1,:].flatten())))
-
-    assert np.all(np.abs(np.mean(np.mean(x[1,:].flatten())))<0.05)
-    #assert np.all(np.std(np.mean(x[1,:].flatten()))<1.1)
-    print('\tData is already zero')
-
-    original_x = np.asarray(x)
-    x = x.T #features x samples (3072 X 10000)
-
-    if gcn:
-        x = x/np.std(x,axis=0)
-        print('\tMin, Max data:',np.max(x[1,:].flatten()),',',np.min(x[1,:].flatten()))
-        print('\tMin max variance of x: ',np.max(np.std(x,axis=0)),', ',np.min(np.std(x,axis=0)))
-        assert np.std(x[:,1])<1.1 and np.std(x[:,1]) > 0.9
-        print('\tData is unit variance')
-
-    #x_perm = np.random.permutation(x.shape[1])
-    #x_sample = x[:,np.r_[x_perm[:min(10000,x.shape[1])]]]
-    #print(x_sample.shape)
-    sigma = np.dot(x,x.T)/x.shape[1]
-    print("\tCov min: %s"%np.min(sigma))
-    print("\tCov max: %s"%np.max(sigma))
-
-    # since cov matrix is symmetrice SVD is numerically more stable
-    U,S,V = np.linalg.svd(sigma)
-    print('\tEig val shape: %s'%S.shape)
-    print('\tEig vec shape: %s,%s'%(U.shape[0],U.shape[1]))
-
-    if variance_cut:
-        var_total,stop_idx = 0,0
-        for e_val in S[::-1]:
-            var_total += np.asarray(e_val/np.sum(S))
-            stop_idx += 1
-            if var_total>0.99:
-                break
-        print("\tTaking only %s eigen vectors"%stop_idx)
-
-        U = U[:,-stop_idx:] #e.g. 1024x400
-        S = S[-stop_idx:]
-
-    assert np.all(S>0.0)
-
-    # unit covariance
-    zcaMat = np.dot(np.dot(U, np.diag(1.0/np.sqrt(S+5e-2))),U.T)
-    zcaOut = np.dot(zcaMat,x).T
-    print('ZCA whitened data shape:',zcaOut.shape)
-
-    return 0.5 *zcaOut + original_x * 0.5
-
-def reformat_data_cifar10(filename,**params):
-
-    image_size = 32
-    num_labels = 10
-    num_channels = 3 # rgb
-
-    print("Reformatting data ...")
-    cifar10_file = '..'+os.sep+'data'+os.sep+filename
-    with open(cifar10_file,'rb') as f:
-        save = pickle.load(f)
-        train_dataset, train_labels = save['train_dataset'],save['train_labels']
-        valid_dataset, valid_labels = save['valid_dataset'],save['valid_labels']
-        test_dataset, test_labels = save['test_dataset'],save['test_labels']
-
-        train_dataset = train_dataset.reshape((-1,image_size,image_size,num_channels),order='F').astype(np.float32)
-        valid_dataset = valid_dataset.reshape((-1,image_size,image_size,num_channels),order='F').astype(np.float32)
-        test_dataset = test_dataset.reshape((-1,image_size,image_size,num_channels),order='F').astype(np.float32)
-
-        print('\tFinal shape (train):%s',train_dataset.shape)
-        print('\tFinal shape (valid):%s',valid_dataset.shape)
-        print('\tFinal shape (test):%s',test_dataset.shape)
-
-        train_labels = (np.arange(num_labels) == train_labels[:,None]).astype(np.float32)
-        valid_labels = (np.arange(num_labels) == valid_labels[:,None]).astype(np.float32)
-        test_labels = (np.arange(num_labels) == test_labels[:,None]).astype(np.float32)
-
-        print('\tFinal shape (train) labels:%s',train_labels.shape)
-        print('\tFinal shape (valid) labels:%s',valid_labels.shape)
-        print('\tFinal shape (test) labels:%s',test_labels.shape)
-
-        #valid_dataset = zca_whiten(valid_dataset)
-        #valid_dataset = valid_dataset.reshape(valid_dataset.shape[0],image_size,image_size,num_channels)
-        #test_dataset = zca_whiten(test_dataset)
-        #test_dataset = test_dataset.reshape(test_dataset.shape[0],image_size,image_size,num_channels)
-
-    return (train_dataset,train_labels),(valid_dataset,valid_labels),(test_dataset,test_labels)
 
 if __name__ == '__main__':
 

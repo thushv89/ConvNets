@@ -6,6 +6,37 @@ import numpy as np
 import os
 from six.moves import cPickle as pickle
 
+def load_and_test_imagenet_data(train_image_fname, train_label_fname, test_image_fname, test_label_fname,datasize_fname,save_data_to_dir):
+
+    with open(datasize_fname,'rb') as f:
+        dataset_sizes = pickle.load(f)
+
+    train_size = dataset_sizes['train_dataset']
+    valid_size = dataset_sizes['valid_dataset']
+    fp1 = np.memmap(data_save_directory+train_dataset_filename,dtype=np.float32,mode='r',
+                    offset=np.dtype('float32').itemsize*col_count[0]*col_count[1]*col_count[2]*0,shape=(train_size//4,col_count[0],col_count[1],col_count[2]))
+    fp2 = np.memmap(data_save_directory+train_label_filename,dtype=np.int32,mode='r',
+                    offset=np.dtype('int32').itemsize*1*0,shape=(train_size//4,1))
+
+    trdataset = fp1[:,:,:,:]
+    trlabels = fp2[:,0]
+
+    fp1 = np.memmap(data_save_directory + valid_dataset_fname, dtype=np.float32, mode='r',
+                    offset=np.dtype('float32').itemsize * 0,
+                    shape=(valid_size // 2, col_count[0], col_count[1], col_count[2]))
+    fp2 = np.memmap(data_save_directory + valid_label_fname, dtype=np.int32, mode='r',
+                    offset=np.dtype('int32').itemsize * 0, shape=(valid_size // 2, 1))
+
+    vdataset = fp1[:, :, :, :]
+    vlabels = fp2[:, 0]
+
+    if not os.path.exists(save_data_to_dir)
+        os.mkdir(save_data_to_dir)
+
+    for img,lbl in zip(trdataset,trlabels):
+
+
+
 if __name__=='__main__':
 
     '''load_data.load_and_save_data_cifar10(filename='cifar-10-white.pickle',zca_whiten=True,return_original=True,separate_rgb=False)

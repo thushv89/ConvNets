@@ -109,7 +109,7 @@ def test_test_dataset_of_a_given_datatype(datatype,batch_size):
         image_size = 64
         num_labels = 250
         num_channels = 3  # rgb
-        chunk_size = 51200
+        chunk_size = 12500
 
         dataset_size = 12500
         dataset_filename = 'data_non_station' + os.sep + 'imagenet-250-test-dataset.pkl'
@@ -137,7 +137,7 @@ def test_test_dataset_of_a_given_datatype(datatype,batch_size):
 
             print('Memmap Idx: %d, Size: %d, Batch ID: %d'%(memmap_idx,chunk_size+batch_size,batch_id))
             train_dataset, train_labels = load_data_from_memmap(dataset_info, dataset_filename, label_filename, memmap_idx,
-                                                                chunk_size + batch_size)
+                                                                dataset_size)
             memmap_idx += chunk_size
 
         batch_data = train_dataset[chunk_batch_id * batch_size:(chunk_batch_id + 1) * batch_size, :, :, :]
@@ -162,7 +162,8 @@ def test_test_dataset_of_a_given_datatype(datatype,batch_size):
 
 if __name__ == '__main__':
     datatype = 'imagenet-250'
-    data_behavior = 'stationary'
+    data_behavior = 'non-stationary'
     batch_size = 256
 
     test_train_dataset_of_a_given_datatype(datatype,data_behavior,256)
+    test_test_dataset_of_a_given_datatype(datatype,256)
