@@ -63,7 +63,7 @@ def test_train_dataset_of_a_given_datatype(datatype,data_behavior,batch_size):
 
     batches_in_chunk = chunk_size // batch_size
 
-    persist_dir = 'train_data_' + datatype + '_' + data_behavior
+    persist_dir = 'testing_train_data_' + datatype + '_' + data_behavior
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
 
@@ -125,7 +125,7 @@ def test_test_dataset_of_a_given_datatype(datatype,batch_size):
     dataset_info['chunk_size'] = chunk_size
     dataset_info['num_labels'] = num_labels
 
-    persist_dir = 'test_data_' + datatype
+    persist_dir = 'testing_test_data_' + datatype
     if not os.path.exists(persist_dir):
         os.makedirs(persist_dir)
 
@@ -162,7 +162,7 @@ def test_test_dataset_of_a_given_datatype(datatype,batch_size):
 
 if __name__ == '__main__':
     datatype = 'imagenet-250'
-    data_behavior = 'non-stationary'
+    data_behavior = 'stationary'
     batch_size = 256
 
     test_train_dataset_of_a_given_datatype(datatype,data_behavior,256)

@@ -843,9 +843,11 @@ class AdaCNNAdaptingQLearner(object):
                 self.rl_logger.debug('\tR:%s', r.shape)
                 self.rl_logger.debug('\tNextState:%s', next_state.shape)
 
-                pred_q = self.session.run(self.tf_out_target_op,feed_dict={self.tf_state_input:x})
+                pred_q,pred_target_q = self.session.run([self.tf_out_op,self.tf_out_target_op],feed_dict={self.tf_state_input:x})
+
                 self.rl_logger.debug('\tPredicted %s:',pred_q.shape)
-                target_q = r.flatten() + self.discount_rate * np.max(pred_q,axis=1).flatten()
+                max_q = pred_target_q[np.asscalar(np.argmax(pred_q,axis=1))]
+                target_q = r.flatten() + self.discount_rate * max_q
 
                 self.rl_logger.debug('\tTarget Q %s:', target_q.shape)
                 self.rl_logger.debug('\tTarget Q Values %s:', target_q[:5])

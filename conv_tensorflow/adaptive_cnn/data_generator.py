@@ -209,7 +209,7 @@ def generate_gaussian_priors_for_labels(batch_size,elements,chunk_size,num_label
     f_prior -= f_prior.min()
     # use below line to control the scale of gaussians higher the power, higher the fluctuations are
     # original was sqrt(num_labels)
-    f_prior = f_prior ** math.ceil(num_labels/25.0)
+    f_prior = f_prior ** math.ceil(15)
     f_prior /= np.sum(f_prior, axis=1).reshape(-1, 1)
 
     return f_prior
@@ -667,7 +667,7 @@ if __name__ == '__main__':
     persist_dir = 'data_generator_dir' # various things we persist related to ConstructorRL
 
     dataset_type = 'imagenet-250'  # 'cifar-10 imagenet-250
-    distribution_type = 'stationary'
+    distribution_type = 'non-stationary'
     distribution_type2 = 'gauss'  # gauss or step
     data_save_directory = 'data_non_station'
 

@@ -39,13 +39,15 @@ start_lr = 0.01
 min_learning_rate = 0.0001
 decay_learning_rate = True
 decay_rate = 0.5
-dropout_rate = 0.5
+decay_steps = 1
+fulcon_dropout = 0.1
+dropout_rate = 0.1
 in_dropout_rate = 0.2
 use_dropout = True
 use_loc_res_norm = False
 #keep beta small (0.2 is too much >0.002 seems to be fine)
 include_l2_loss = True
-beta = 1e-5
+beta = 1e-4
 check_early_stopping_from = 5
 accuracy_drop_cap = 3
 iterations_per_batch = 1
@@ -202,7 +204,7 @@ def inference(dataset,tf_cnn_hyperparameters,training):
                     x = tf.reshape(x, [batch_size, tf_cnn_hyperparameters[op][TF_FC_WEIGHT_IN_STR]])
                     x = lrelu(tf.matmul(x, w)+b,name=scope.name+'/top')
                     if training and use_dropout:
-                        x = tf.nn.dropout(x,keep_prob= 1.0-dropout_rate,name='dropout')
+                        x = tf.nn.dropout(x,keep_prob= 1.0-fulcon_dropout,name='dropout')
 
                 elif 'fulcon_out' == op:
                     x = tf.matmul(x, w)+ b
@@ -290,7 +292,7 @@ def apply_gradient_with_momentum(optimizer,learning_rate,global_step):
     grads_and_vars = []
     # for each trainable variable
     if decay_learning_rate:
-        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=decay_steps,decay_rate=decay_rate,staircase=True))
     for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
         with tf.variable_scope(v.name.split(':')[0],reuse=True):
             vel = tf.get_variable(TF_TRAIN_MOMENTUM)
@@ -302,7 +304,7 @@ def apply_gradient_with_pool_momentum(optimizer,learning_rate,global_step):
     grads_and_vars = []
     # for each trainable variable
     if decay_learning_rate:
-        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=decay_steps,decay_rate=decay_rate,staircase=True))
     for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
         with tf.variable_scope(v.name.split(':')[0],reuse=True):
             vel = tf.get_variable(TF_POOL_MOMENTUM)
@@ -310,11 +312,28 @@ def apply_gradient_with_pool_momentum(optimizer,learning_rate,global_step):
 
     return optimizer.apply_gradients(grads_and_vars)
 
+
+def apply_gradient_with_both_momentums(optimizer,learning_rate,global_step):
+    grads_and_vars = []
+    # for each trainable variable
+    if decay_learning_rate:
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=decay_steps,decay_rate=decay_rate,staircase=True))
+    for v in tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=TF_GLOBAL_SCOPE):
+        with tf.variable_scope(v.name.split(':')[0],reuse=True):
+            pool_vel = tf.get_variable(TF_POOL_MOMENTUM)
+        with tf.variable_scope(v.name.split(":")[0], reuse=True):
+            vel = tf.get_variable(TF_TRAIN_MOMENTUM)
+
+        grads_and_vars.append(((vel+pool_vel)*learning_rate/2.0,v))
+
+    return optimizer.apply_gradients(grads_and_vars)
+
+
 def optimize_with_momentum(optimizer, loss, global_step, learning_rate):
     vel_update_ops, grad_update_ops = [],[]
 
     if decay_learning_rate:
-        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=decay_steps,decay_rate=decay_rate,staircase=True))
 
     for op in cnn_ops:
         if 'conv' in op and 'fulcon' in op:
@@ -355,7 +374,7 @@ def optimize_masked_momentum_gradient(optimizer, filter_indices_to_replace, op, 
     global cnn_ops,cnn_hyperparameters
 
     if decay_learning_rate:
-        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True))
+        learning_rate = tf.maximum(min_learning_rate,tf.train.exponential_decay(learning_rate,global_step,decay_steps=decay_steps,decay_rate=decay_rate,staircase=True))
     else:
         learning_rate = tf.constant(start_lr, dtype=tf.float32, name='learning_rate')
 
@@ -669,6 +688,15 @@ def accuracy(predictions, labels):
     return (100.0 * np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
             / predictions.shape[0])
 
+def top_n_accuracy(predictions,labels,n):
+    assert predictions.shape[0] == labels.shape[0]
+    correct_total = 0
+    for pred_item, lbl_item in zip(predictions,labels):
+        lbl_idx = int(np.argmax(lbl_item))
+        top_preds = list(np.argsort(pred_item).flatten()[-n:])
+        if lbl_idx in top_preds:
+            correct_total += 1
+    return (100.0 * correct_total)/predictions.shape[0]
 
 def add_with_action(
         op, tf_action_info, tf_weights_this, tf_bias_this,
@@ -965,6 +993,7 @@ def remove_with_action(op, tf_action_info, tf_activations,tf_cnn_hyperparameters
 
 tf_distort_data_batch,distorted_imgs = None,None
 
+
 def load_data_from_memmap(dataset_info,dataset_filename,label_filename,start_idx,size,randomize):
     global logger,tf_distort_data_batch,distorted_imgs
 
@@ -1221,6 +1250,7 @@ research_parameters = {
     'pool_randomize_rate':0.25,
     'pooling_for_nonadapt':True,
     'hard_pool_max_threshold':0.5,
+    'use_both_momentums':True,
 }
 
 interval_parameters = {
@@ -1238,11 +1268,17 @@ num_gpus = -1
 if __name__=='__main__':
     global cnn_ops,cnn_hyperparameters
 
+    allow_growth = False
+    use_multiproc = False
     try:
         opts,args = getopt.getopt(
-            sys.argv[1:],"",["output_dir=","num_gpus=","memory="])
+            sys.argv[1:],"",["output_dir=","num_gpus=","memory=",'pool_workers=','allow_growth=',
+                             'dataset_type=', 'dataset_behavior=',
+                             'adapt_structure=','pooling_for_non_adapt=',
+                             'use_multiproc='])
     except getopt.GetoptError as err:
-        print('<filename>.py --output_dir= --num_gpus= --memory=')
+        print(err)
+        print('<filename>.py --output_dir= --num_gpus= --memory= --pool_workers=')
 
     if len(opts)!=0:
         for opt,arg in opts:
@@ -1252,41 +1288,33 @@ if __name__=='__main__':
                 num_gpus = int(arg)
             if opt == '--memory':
                 mem_frac = float(arg)
+            if opt=='--pool_workers':
+                pool_workers = int(arg)
+            if opt=='--allow_growth':
+                allow_growth = bool(arg)
+            if opt=='--dataset_type':
+                datatype = str(arg)
+            if opt=='--dataset_behavior':
+                behavior = str(arg)
+            if opt=='--adapt_structure':
+                research_parameters['adapt_structure'] = bool(int(arg))
+            if opt=='--pooling_for_non_adapt':
+                research_parameters['pooling_for_nonadapt'] = bool(int(arg))
+            if opt=='--use_multiproc':
+                use_multiproc = bool(arg)
 
-    assert interval_parameters['test_interval']%num_gpus==0
+
+    print(research_parameters['adapt_structure'])
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
     #type of data training
-    datatype = 'imagenet-250'
-    behavior = 'non-stationary'
-    research_parameters['adapt_structure'] = False
-    research_parameters['pooling_for_nonadapt'] = True
+    #datatype = 'cifar-10'
+    #behavior = 'non-stationary'
+    #research_parameters['adapt_structure'] = True
+    #research_parameters['pooling_for_nonadapt'] = False
 
-    if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
-        iterations_per_batch = 2
-
-    if research_parameters['adapt_structure']:
-        epochs += 2 # for the trial one
-        research_parameters['hard_pool_acceptance_rate'] *= 2.0
-
-    if behavior=='non-stationary':
-        include_l2_loss = False
-        use_loc_res_norm = True
-        lrn_radius = 5
-        lrn_alpha = 0.0001
-        lrn_beta = 0.75
-        start_lr = 0.01
-        decay_rate = 0.8
-    elif behavior =='stationary':
-        start_lr = 0.01
-        include_l2_loss = True
-        beta = 0.0001
-        use_loc_res_norm = False
-        decay_rate = 0.5
-    else:
-        raise NotImplementedError
 
     dataset_info = {'dataset_type':datatype,'behavior':behavior}
     dataset_filename,label_filename = None,None
@@ -1297,19 +1325,32 @@ if __name__=='__main__':
         num_labels = 10
         num_channels = 3 # rgb
         dataset_size = 50000
-        use_warmup_epoch = True
+        use_warmup_epoch = False
 
+        use_loc_res_norm = False
+        lrn_radius = 5
+        lrn_alpha = 0.001
+        lrn_beta = 0.75
+
+        decay_rate = 0.5
+        include_l2_loss = True
+        start_lr = 0.01
+
+        dropout_rate = 0.5
+
+        beta = 0.001
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-nonstation-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
-
+            start_lr = 0.008
         elif behavior == 'stationary':
             dataset_filename='data_non_station'+os.sep+'cifar-10-station-dataset.pkl'
             label_filename='data_non_station'+os.sep+'cifar-10-station-labels.pkl'
             dataset_size = 1280000
             chunk_size = 51200
+
 
         interval_parameters['policy_interval'] = 24
         interval_parameters['finetune_interval'] = 24
@@ -1323,20 +1364,28 @@ if __name__=='__main__':
 
         if not research_parameters['adapt_structure']:
             #cnn_string = "C,3,1,128#C,3,1,128#C,3,1,128#P,3,2,0#C,3,1,256#Terminate,0,0,0"
-            cnn_string = "C,3,1,96#C,3,1,96#C,3,1,96#P,3,2,0#C,3,1,192#C,3,1,192#C,3,1,192#PG,3,2,0#FC,2048,0,0#Terminate,0,0,0"
+            cnn_string = "C,3,1,138#C,3,1,138#C,3,1,138#P,3,2,0#C,3,1,288#C,3,1,288#C,3,1,288#PG,3,2,0#Terminate,0,0,0"
 
         else:
-            cnn_string = "C,3,1,32#C,3,1,32#C,3,1,32#P,3,2,0#C,3,1,32#C,3,1,32#C,3,1,32#PG,3,2,0#FC,2048,0,0#Terminate,0,0,0"
+            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#C,3,1,48#C,3,1,48#PG,3,2,0#Terminate,0,0,0"
             #cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#P,3,2,0#C,3,1,48#Terminate,0,0,0"
-            filter_vector = [96,96,96,0,192,192,192]
+            filter_vector = [138,138,138,0,288,288,288]
             add_amount, remove_amount = 8, 4
-            filter_min_threshold = 24
+            filter_min_threshold = 32
 
     elif datatype=='imagenet-250':
+        epochs = 7
+        decay_steps = 2
         image_size = 64
         num_labels = 250
         num_channels = 3 # rgb
-        learning_rate = 0.001
+        batch_size = 128
+        start_lr = 0.01
+        dropout_rate = 0.0
+        fulcon_dropout = 0.0
+        beta = 0.0005
+        use_warmup_epoch = False
+
         if behavior == 'non-stationary':
             dataset_filename='data_non_station'+os.sep+'imagenet-250-nonstation-dataset.pkl'
             label_filename='data_non_station'+os.sep+'imagenet-250-nonstation-labels.pkl'
@@ -1354,10 +1403,10 @@ if __name__=='__main__':
         orig_finetune_interval = 50
         trial_phase_threshold = 1.0
 
-        research_parameters['start_adapting_after'] = 2000
+        research_parameters['start_adapting_after'] = 1000
         research_parameters['hard_pool_max_threshold'] = 0.2
-
-        pool_size = batch_size * 1 * num_labels
+        research_parameters['finetune_rate'] = 0.3
+        pool_size = int(batch_size * 0.5 * num_labels)
         test_size= 12500
         test_dataset_filename='data_non_station'+os.sep+'imagenet-250-test-dataset.pkl'
         test_label_filename = 'data_non_station'+os.sep+'imagenet-250-test-labels.pkl'
@@ -1365,10 +1414,62 @@ if __name__=='__main__':
         if not research_parameters['adapt_structure']:
             cnn_string = "C,3,1,64#P,2,2,0#C,3,1,128#P,2,2,0#C,3,1,256#C,3,1,256#P,2,2,0#C,3,1,512#C,3,1,512#P,2,2,0#C,3,1,512#C,3,1,512#PG,2,2,0#FC,4096,0,0#Terminate,0,0,0"
         else:
-            cnn_string = "C,3,1,32#P,2,2,0#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#P,2,2,0#C,3,1,32#C,3,1,32#PG,2,2,0#FC,4096,0,0#Terminate,0,0,0"
+            cnn_string = "C,3,1,64#P,2,2,0#C,3,1,64#P,2,2,0#C,3,1,64#C,3,1,64#P,2,2,0#C,3,1,128#C,3,1,128#P,2,2,0#C,3,1,128#C,3,1,128#PG,2,2,0#FC,4096,0,0#Terminate,0,0,0"
             filter_vector = [64,0,128,0,256,256,0,512,512,0,512,512]
-            filter_min_threshold = 24
-            add_amount, remove_amount = 16, 8
+            filter_min_threshold = 63
+            add_amount, remove_amount = 12, 6
+
+    elif datatype=='cifar-100':
+        image_size = 24
+        num_labels = 100
+        num_channels = 3 # rgb
+        batch_size = 128
+        start_lr = 0.01
+        dropout_rate = 0.5
+        fulcon_dropout = 0.0
+        beta = 0.0005
+        use_warmup_epoch = False
+
+        if behavior == 'non-stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-nonstation-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-nonstation-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+            start_lr = 0.008
+
+        elif behavior == 'stationary':
+            dataset_filename='data_non_station'+os.sep+'cifar-100-station-dataset.pkl'
+            label_filename='data_non_station'+os.sep+'cifar-100-station-labels.pkl'
+            dataset_size = 1280000
+            chunk_size = 25600
+
+        interval_parameters['policy_interval'] = 24
+        interval_parameters['finetune_interval'] = 24
+        orig_finetune_interval = 50
+        trial_phase_threshold = 1.0
+
+        research_parameters['start_adapting_after'] = 1000
+        research_parameters['hard_pool_max_threshold'] = 0.2
+        pool_size = int(batch_size * 1 * num_labels)
+        test_size= 10000
+        test_dataset_filename='data_non_station'+os.sep+'cifar-100-test-dataset.pkl'
+        test_label_filename = 'data_non_station'+os.sep+'cifar-100-test-labels.pkl'
+
+        if not research_parameters['adapt_structure']:
+            cnn_string = "C,3,1,64#C,3,1,128#C,3,1,256#" \
+                         "C,3,1,256#P,2,2,0#C,3,1,256#" \
+                         "C,3,1,256#P,2,2,0#C,3,1,256#" \
+                         "C,3,1,256#PG,2,2,0#Terminate,0,0,0"
+        else:
+            cnn_string = "C,3,1,48#C,3,1,48#C,3,1,48#" \
+                         "C,3,1,48#P,2,2,0#C,3,1,48#" \
+                         "C,3,1,48#P,2,2,0#C,3,1,48#" \
+                         "C,3,1,48#PG,2,2,0#Terminate,0,0,0"
+
+            filter_vector = [64,128,256,256,0,256,256,0,256,256]
+            filter_min_threshold = 32
+            add_amount, remove_amount = 8, 4
+
 
     elif datatype=='svhn-10':
 
@@ -1409,6 +1510,27 @@ if __name__=='__main__':
             filter_vector = [128,0,128,0,128]
             add_amount, remove_amount = 4,2
             filter_min_threshold = 12
+
+    if num_gpus==3:
+        interval_parameters['policy_interval'] = 30
+        interval_parameters['finetune_interval'] = 24
+        interval_parameters['test_interval'] = 99
+        interval_parameters['history_dump_interval'] = 501
+        orig_finetune_interval = 50
+
+    if not (research_parameters['adapt_structure'] and research_parameters['pooling_for_nonadapt']):
+        iterations_per_batch = 2
+
+
+    if research_parameters['adapt_structure']:
+        epochs += 2 # for the trial one
+        research_parameters['hard_pool_acceptance_rate'] *= 2.0
+        if datatype != 'imagenet-250':
+            research_parameters['momentum']=0.0
+            research_parameters['pool_momentum']= 0.9
+        dropout_rate = 0.0
+        fulcon_dropout = 0.0
+
 
     dataset_info['image_w']=image_size
     dataset_info['num_labels']=num_labels
@@ -1477,6 +1599,9 @@ if __name__=='__main__':
     # Loading test data
     train_dataset,train_labels = None,None
 
+    logger.info('=' * 80)
+    logger.info('\tTest Size: %d' % test_size)
+    logger.info('=' * 80)
     test_dataset,test_labels = load_data_from_memmap(dataset_info,test_dataset_filename,test_label_filename,0,test_size,False)
 
     assert chunk_size%batch_size==0
@@ -1486,16 +1611,15 @@ if __name__=='__main__':
     logger.info('\tTrain Size: %d'%dataset_size)
     logger.info('='*80)
 
-    #cnn_string = "C,5,1,256#P,3,2,0#C,5,1,512#C,3,1,128#FC,2048,0,0#Terminate,0,0,0"
-
-    #cnn_string = "C,3,1,128#P,5,2,0#C,5,1,128#C,3,1,512#C,5,1,128#C,5,1,256#P,2,2,0#C,5,1,64#Terminate,0,0,0"
-    #cnn_string = "C,3,4,128#P,5,2,0#Terminate,0,0,0"
-
     cnn_ops,cnn_hyperparameters,final_2d_width = utils.get_ops_hyps_from_string(dataset_info,cnn_string)
     init_cnn_ops,init_cnn_hyperparameters, final_2d_width = utils.get_ops_hyps_from_string(dataset_info,cnn_string)
 
+    logger.info('=' * 80)
     print(cnn_ops)
+    logger.info('=' * 80)
     print(cnn_hyperparameters)
+    logger.info('=' * 80)
+    print(final_2d_width)
 
     hyp_logger = logging.getLogger('hyperparameter_logger')
     hyp_logger.setLevel(logging.INFO)
@@ -1526,6 +1650,8 @@ if __name__=='__main__':
     config = tf.ConfigProto()
     config.allow_soft_placement=True
     config.log_device_placement=False
+    config.gpu_options.allow_growth = allow_growth
+
     if mem_frac is not None:
         config.gpu_options.per_process_gpu_memory_fraction=mem_frac
     else:
@@ -1674,6 +1800,8 @@ if __name__=='__main__':
             tf_mean_pool_activations = mean_tower_activations(tower_pool_activation_update_ops)
             mean_pool_loss = tf.reduce_mean(tower_pool_losses)
 
+            apply_both_grads_op = apply_gradient_with_both_momentums(optimizer,start_lr,global_step)
+
         with tf.variable_scope(TF_GLOBAL_SCOPE) as main_scope,tf.device('/gpu:0'):
 
             increment_global_step_op = tf.assign(global_step,global_step+1)
@@ -1783,6 +1911,90 @@ if __name__=='__main__':
         assert batches_in_chunk%num_gpus ==0
         assert num_gpus>0
 
+        memmap_idx = 0
+        if use_warmup_epoch:
+
+            print('='*80)
+            print('Running warmup epoch')
+
+            for batch_id in range(0,ceil(dataset_size//batch_size)-num_gpus,num_gpus):
+                print(batch_id)
+                if batch_id+1>=research_parameters['stop_training_at']:
+                    break
+
+                t0 = time.clock() # starting time for a batch
+
+                logger.debug('='*80)
+                logger.debug('tf op count: %d',len(graph.get_operations()))
+                logger.debug('=' * 80)
+
+                logger.debug('\tTraining with batch %d',batch_id)
+
+                chunk_batch_id = batch_id%batches_in_chunk
+
+                if chunk_batch_id==0:
+                    # We load 1 extra batch (chunk_size+1) because we always make the valid batch the batch_id+1
+                    logger.info('\tCurrent memmap start index: %d', memmap_idx)
+                    if memmap_idx+chunk_size+batch_size<dataset_size:
+                        train_dataset,train_labels = load_data_from_memmap(dataset_info,dataset_filename,label_filename,memmap_idx,chunk_size+batch_size,True)
+                    else:
+                        train_dataset, train_labels = load_data_from_memmap(dataset_info, dataset_filename, label_filename,
+                                                                            memmap_idx, chunk_size,True)
+                    memmap_idx += chunk_size
+                    logger.info('Loading dataset chunk of size (chunk size + batch size): %d',train_dataset.shape[0])
+                    logger.info('\tDataset shape: %s',train_dataset.shape)
+                    logger.info('\tLabels shape: %s',train_labels.shape)
+                    logger.info('\tNext memmap start index: %d',memmap_idx)
+
+                # Feed dicitonary with placeholders for each tower
+                batch_data,batch_labels,batch_weights = [],[],[]
+                train_feed_dict = {}
+                for gpu_id in range(num_gpus):
+
+                    batch_data.append(train_dataset[(chunk_batch_id+gpu_id)*batch_size:(chunk_batch_id+gpu_id+1)*batch_size, :, :, :])
+                    batch_labels.append(train_labels[(chunk_batch_id+gpu_id)*batch_size:(chunk_batch_id+gpu_id+1)*batch_size, :])
+
+                    cnt = Counter(np.argmax(batch_labels[-1], axis=1))
+                    if behavior=='non-stationary':
+                        batch_w = np.zeros((batch_size,))
+                        batch_labels_int = np.argmax(batch_labels[-1], axis=1)
+
+                        for li in range(num_labels):
+                            batch_w[np.where(batch_labels_int==li)[0]] = max(1.0 - (cnt[li]*1.0/batch_size),1.0/num_labels)
+                        batch_weights.append(batch_w)
+
+                    elif behavior=='stationary':
+                        batch_weights.append(np.ones((batch_size,)))
+                    else:
+                        raise NotImplementedError
+
+                    train_feed_dict.update({
+                        tf_train_data_batch[gpu_id] : batch_data[-1], tf_train_label_batch[gpu_id] : batch_labels[-1],
+                        tf_data_weights[gpu_id]:batch_weights[-1]
+                    })
+
+                t0_train = time.clock()
+                for _ in range(iterations_per_batch):
+                    if (research_parameters['adapt_structure'] or research_parameters['pooling_for_nonadapt']) and research_parameters['use_both_momentums']:
+                        _, _, l, super_loss_vec, current_activations_list, train_predictions = session.run(
+                            [apply_grads_op, update_train_velocity_op, mean_loss_op, concat_loss_vec_op,
+                             tf_mean_activation, tower_predictions], feed_dict=train_feed_dict
+                        )
+                    else:
+                        _, _, l, super_loss_vec, current_activations_list, train_predictions = session.run(
+                            [apply_grads_op, update_train_velocity_op, mean_loss_op, concat_loss_vec_op,
+                             tf_mean_activation, tower_predictions], feed_dict=train_feed_dict
+                        )
+
+        print('='*80)
+        print('dropout (non-fulcon) ',dropout_rate)
+        print('fulcon dropout ',fulcon_dropout)
+        print('learning rate decay ',decay_rate)
+        print('beta ',beta)
+        print('include l2 ',include_l2_loss)
+        print('learning rate: ',start_lr)
+        print('LRN', use_loc_res_norm)
+        print('='*80)
         for epoch in range(epochs):
             memmap_idx = 0
 
@@ -1844,9 +2056,16 @@ if __name__=='__main__':
 
                 t0_train = time.clock()
                 for _ in range(iterations_per_batch):
-                    _, _,l, super_loss_vec, current_activations_list,train_predictions = session.run(
-                        [apply_grads_op, update_train_velocity_op,mean_loss_op, concat_loss_vec_op, tf_mean_activation,tower_predictions], feed_dict=train_feed_dict
-                    )
+                    if (research_parameters['adapt_structure'] or research_parameters['pooling_for_nonadapt']) and research_parameters['use_both_momentums']:
+                        _, _, l, super_loss_vec, current_activations_list, train_predictions = session.run(
+                            [apply_grads_op, update_train_velocity_op, mean_loss_op, concat_loss_vec_op,
+                             tf_mean_activation, tower_predictions], feed_dict=train_feed_dict
+                        )
+                    else:
+                        _, _, l, super_loss_vec, current_activations_list, train_predictions = session.run(
+                            [apply_grads_op, update_train_velocity_op, mean_loss_op, concat_loss_vec_op,
+                             tf_mean_activation, tower_predictions], feed_dict=train_feed_dict
+                        )
 
                 t1_train = time.clock()
 
@@ -1866,13 +2085,17 @@ if __name__=='__main__':
                 assert not np.isnan(l)
 
                 # rolling activation mean update
-                for op,op_activations in current_activations.items():
-                    logger.debug('checking %s',op)
-                    logger.debug('\tRolling size (%s): %s',op,rolling_ativation_means[op].shape)
-                    logger.debug('\tCurrent size (%s): %s', op, op_activations.shape)
-                for op, op_activations in current_activations.items():
-                    assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3]
-                    rolling_ativation_means[op]=act_decay * rolling_ativation_means[op] + current_activations[op]
+                if research_parameters['adapt_structure']:
+                    for op,op_activations in current_activations.items():
+                        logger.debug('checking %s',op)
+                        logger.debug('\tRolling size (%s): %s',op,rolling_ativation_means[op].shape)
+                        logger.debug('\tCurrent size (%s): %s', op, op_activations.shape)
+                    for op, op_activations in current_activations.items():
+                        assert current_activations[op].size == cnn_hyperparameters[op]['weights'][3], \
+                            'did not match (op %s). activation %d cnn_hyp %d'\
+                            %(op,current_activations[op].size,cnn_hyperparameters[op]['weights'][3])
+
+                        rolling_ativation_means[op]=act_decay * rolling_ativation_means[op] + current_activations[op]
 
                 train_losses.append(l)
 
@@ -1896,22 +2119,35 @@ if __name__=='__main__':
                 if ((research_parameters['pooling_for_nonadapt'] and (not research_parameters['adapt_structure'])) or stop_adapting) and\
                         (batch_id>0 and batch_id%interval_parameters['finetune_interval']==0):
                     logger.info('Pooling for non-adaptive CNN')
+                    interval_parameters['finetune_interval'] = orig_finetune_interval
+
                     if research_parameters['adapt_structure']:
-                        interval_parameters['finetune_interval'] = orig_finetune_interval
                         logger.info('Adaptations stopped. Finetune is at its maximum utility (Batch: %d)'%(batch_id_multiplier*epoch+batch_id))
+                        research_parameters['pool_momentum'] = 0.0
+                        research_parameters['momentum'] = 0.9
+                        if datatype=='cifar-10' or datatype=='cifar-100':
+                            dropout_rate = 0.5
+                            logger.info('Using dropout rate of: %d',dropout_rate)
 
                     if hard_pool.get_size() > batch_size:
                         pool_dataset, pool_labels = hard_pool.get_pool_data(True)
                         if research_parameters['pool_randomize'] and np.random.random() < \
                                 research_parameters['pool_randomize_rate']:
-                            try:
-                                pool = MPPool(processes=10)
-                                distorted_imgs = pool.map(distort_img, pool_dataset)
-                                pool_dataset = np.asarray(distorted_imgs)
-                                pool.close()
-                                pool.join()
-                            except Exception:
-                                raise AssertionError
+                            if use_multiproc:
+                                try:
+                                    pool = MPPool(processes=pool_workers)
+                                    distorted_imgs = pool.map(distort_img, pool_dataset)
+                                    pool_dataset = np.asarray(distorted_imgs)
+                                    pool.close()
+                                    pool.join()
+                                except Exception:
+                                    raise AssertionError
+                            else:
+                                distorted_imgs = []
+                                for img in pool_dataset:
+                                    distorted_imgs.append(distort_img(img))
+                                pool_dataset = np.vstack(distorted_imgs)
+
                         # Train with latter half of the data
 
                         for pool_id in range((hard_pool.get_size() // batch_size) // 2,
@@ -1960,7 +2196,7 @@ if __name__=='__main__':
                     logger.info('='*60)
                     logger.info('\tBatch ID: %d'%batch_id)
                     if decay_learning_rate:
-                        logger.info('\tLearning rate: %.5f'%session.run(tf.train.exponential_decay(start_lr,global_step,decay_steps=1,decay_rate=decay_rate,staircase=True)))
+                        logger.info('\tLearning rate: %.5f'%session.run(tf.train.exponential_decay(start_lr,global_step,decay_steps=decay_steps,decay_rate=decay_rate,staircase=True)))
                     else:
                         logger.info('\tLearning rate: %.5f' %start_lr)
 
@@ -2070,7 +2306,6 @@ if __name__=='__main__':
 
                                     _, _ = session.run([apply_pool_grads_op, update_pool_velocity_ops],
                                                        feed_dict=pool_feed_dict)
-
 
                     if (start_adapting and not stop_adapting) and batch_id>0 and batch_id%interval_parameters['policy_interval']==0:
 
@@ -2427,10 +2662,14 @@ if __name__=='__main__':
                             pbatch_labels = pool_labels[pool_id*batch_size:(pool_id+1)*batch_size, :]
                             pool_feed_dict = {tf_pool_data_batch[0]:pbatch_data,tf_pool_label_batch[0]:pbatch_labels}
                             p_predictions = session.run(pool_pred, feed_dict=pool_feed_dict)
-                            pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
+                            if datatype != 'imagenet-250':
+                                pool_accuracy.append(accuracy(p_predictions,pbatch_labels))
+                            else:
+                                pool_accuracy.append(top_n_accuracy(p_predictions, pbatch_labels,5))
 
                         # don't use current state as the next state, current state is for a different layer
                         next_state = []
+                        affected_layer_index = 0
                         for li,la in enumerate(current_action):
                             if la is None:
                                 assert li not in convolution_op_ids
@@ -2438,8 +2677,10 @@ if __name__=='__main__':
                                 continue
                             elif la[0]=='add':
                                 next_state.append(current_state[li] + la[1])
+                                affected_layer_index = li
                             elif la[0]=='remove':
                                 next_state.append(current_state[li] - la[1])
+                                affected_layer_index = li
                             else:
                                 next_state.append(current_state[li])
 
@@ -2460,7 +2701,8 @@ if __name__=='__main__':
                                                'prev_pool_accuracy': prev_pool_accuracy,
                                                'max_pool_accuracy':max_pool_accuracy,
                                                'invalid_actions':curr_invalid_actions,
-                                               'batch_id':(batch_id_multiplier*epoch)+batch_id},True)
+                                               'batch_id':(batch_id_multiplier*epoch)+batch_id,
+                                               'layer_index':affected_layer_index},True)
 
                         if len(state_action_history)>10:
                             del state_action_history[0]
@@ -2527,6 +2769,12 @@ if __name__=='__main__':
 
             if research_parameters['adapt_structure'] and epoch == 1:
                 stop_adapting = True
+                if behavior=='non-stationary':
+                    dropout_rate = 0.0
+                    fulcon_dropout = 0.1
+                elif behavior=='stationary':
+                    dropout_rate = 0.0
+                    fulcon_dropout = 0.1
 
             # Inc Algorithm
             if research_parameters['adapt_structure']:
